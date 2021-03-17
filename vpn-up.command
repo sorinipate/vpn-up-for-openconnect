@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Author : Sorin-Doru Ipate
+# Author: Sorin-Doru Ipate
 # Copyright (c) Sorin-Doru Ipate
 
 #VPN OPTION 1
