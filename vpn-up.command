@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Author : Sorin-Doru Ipate
+# Copyright (c) Sorin-Doru Ipate
+
 #VPN OPTION 1
 export VPN1_NAME="VPN OPTION 1"
 export VPN1_HOST=<vpn.url>
