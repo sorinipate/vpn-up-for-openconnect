@@ -8,17 +8,17 @@ A shell script for openconnect which allows:</br>
 - to run openconnect without entering the username and password. 
 
 ### Sample configuration section ###
-**If you don't want to run in background, so make this false** </br>
-BACKGROUND=true
+```
+BACKGROUND=true   # If you don't want to run in background, so make this false
 
-#Company VPN</br>
-export COM_NAME="My Company VPN"</br>
-export COM_HOST=vpn.mycompany.com</br>
-export COM_AUTHGROUP=developers</br>
-export COM_USER=sorin.ipate</br>
-export COM_PASSWD="MyPassword"</br>
-export COM_SERVER_CERTIFICATE="SHA1-OtherCharachters" </br>
-**note: if you don't have server certificate so don't fill this** 
+# Company VPN
+export COM_NAME="My Company VPN"
+export COM_HOST=vpn.mycompany.com
+export COM_AUTHGROUP=developers
+export COM_USER=sorin.ipate
+export COM_PASSWD="MyPassword"
+export COM_SERVER_CERTIFICATE="SHA1-OtherCharachters"     # If you don't have server certificate so don't fill this
+```
 
 ### Run VPN Up ###
 
