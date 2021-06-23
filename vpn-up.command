@@ -14,7 +14,7 @@ export VPN1_PASSWD="<password>"
 export VPN1_SERVER_CERTIFICATE="<vpn.servercert>"  # SHA 
 
 #VPN OPTION 2
-export VPN2_NAME="VPN OPTION 1"
+export VPN2_NAME="VPN OPTION 2"
 export VPN2_HOST=<vpn.url>
 export VPN2_AUTHGROUP=<group>
 export VPN2_USER=<username>
@@ -63,14 +63,14 @@ function connect(){
         fi
     echo "Starting the $VPN_NAME... for $VPN_HOST"
     echo "Connecting..."
-    if [ $SERVER_CERTIFICATE = "<vpn.servercert>" ]
+    if [[ $SERVER_CERTIFICATE == "<vpn.servercert>" ]]
         then
             echo "Connecting without server certificate"
             echo $VPN_PASSWD | sudo openconnect --background $VPN_HOST --user=$VPN_USER --passwd-on-stdin --authgroup=$VPN_GROUP
         else
             echo "Connecting with certificate"
             echo $VPN_PASSWD | sudo openconnect --background $VPN_HOST --user=$VPN_USER --passwd-on-stdin --authgroup=$VPN_GROUP --servercert=$SERVER_CERTIFICATE
-        
+        fi
     
 }
 
