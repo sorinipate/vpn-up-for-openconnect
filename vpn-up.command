@@ -4,6 +4,9 @@
 # Edited by: Mohammad Amin Dadgar
 # Copyright (c) Sorin-Doru Ipate
 
+# RUN IN Background
+BACKGROUND=true
+
 #VPN OPTION 1
 #If you don't have the server certificate don't edit it
 export VPN1_NAME="VPN OPTION 1"
@@ -11,7 +14,7 @@ export VPN1_HOST=<vpn.url>
 export VPN1_AUTHGROUP=<group>
 export VPN1_USER=<username>
 export VPN1_PASSWD="<password>"
-export VPN1_SERVER_CERTIFICATE="<vpn.servercert>"  # SHA 
+export VPN1_SERVER_CERTIFICATE=""  # SHA 
 
 #VPN OPTION 2
 export VPN2_NAME="VPN OPTION 2"
@@ -19,7 +22,7 @@ export VPN2_HOST=<vpn.url>
 export VPN2_AUTHGROUP=<group>
 export VPN2_USER=<username>
 export VPN2_PASSWD="<password>"
-export VPN2_SERVER_CERTIFICATE="<vpn.servercert>"  # SHA 
+export VPN2_SERVER_CERTIFICATE=""  # SHA 
 
 function start(){
     echo "Which VPN do you want to connect to?"
@@ -62,15 +65,27 @@ function connect(){
             return
         fi
     echo "Starting the $VPN_NAME... for $VPN_HOST"
-    echo "Connecting..."
-    if [[ $SERVER_CERTIFICATE == "<vpn.servercert>" ]]
+    if [ "$BACKGROUND" = true ]
         then
-            echo "Connecting without server certificate"
-            echo $VPN_PASSWD | sudo openconnect --background $VPN_HOST --user=$VPN_USER --passwd-on-stdin --authgroup=$VPN_GROUP
+            if [ "$SERVER_CERTIFICATE" = "" ]
+                then
+                    echo "Connecting without server certificate ..."
+                    echo $VPN_PASSWD | sudo openconnect --background $VPN_HOST --user=$VPN_USER --passwd-on-stdin --authgroup=$VPN_GROUP
+                else
+                    echo "Connecting with certificate ..."
+                    echo $VPN_PASSWD | sudo openconnect --background $VPN_HOST --user=$VPN_USER --passwd-on-stdin --authgroup=$VPN_GROUP --servercert=$SERVER_CERTIFICATE
+                fi
         else
-            echo "Connecting with certificate"
-            echo $VPN_PASSWD | sudo openconnect --background $VPN_HOST --user=$VPN_USER --passwd-on-stdin --authgroup=$VPN_GROUP --servercert=$SERVER_CERTIFICATE
+            if [ "$SERVER_CERTIFICATE" = "" ]
+                then
+                    echo "Connecting without server certificate ..."
+                    echo $VPN_PASSWD | sudo openconnect $VPN_HOST --user=$VPN_USER --passwd-on-stdin --authgroup=$VPN_GROUP
+                else
+                    echo "Connecting with certificate ..."
+                    echo $VPN_PASSWD | sudo openconnect $VPN_HOST --user=$VPN_USER --passwd-on-stdin --authgroup=$VPN_GROUP --servercert=$SERVER_CERTIFICATE
+                fi
         fi
+         
     
 }
 
