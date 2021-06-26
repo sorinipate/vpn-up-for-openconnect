@@ -35,7 +35,7 @@ function start(){
             export VPN_GROUP=$VPN1_AUTHGROUP
             export VPN_USER=$VPN1_USER
             export VPN_PASSWD=$VPN1_PASSWD
-            export VPN_CERTIFICATE=$VPN1_SERVER_CERTIFICATE
+            export SERVER_CERTIFICATE=$VPN1_SERVER_CERTIFICATE
             connect
             break
             ;;
