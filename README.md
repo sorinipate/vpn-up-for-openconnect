@@ -5,7 +5,9 @@ VPN Up for OpenConnect
 
 A shell script for openconnect which allows:</br>
 - to define multiple VPN connections</br>
-- to run openconnect without entering the username and password. 
+- to run openconnect without entering the username and password</br>
+- to run in the background</br>
+- to authenticate with a certiftcate
 
 ### Sample configuration section ###
 ```
