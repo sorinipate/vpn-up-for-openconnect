@@ -4,10 +4,16 @@ VPN Up for OpenConnect
 ### Features ###
 
 A shell script for openconnect which allows:</br>
-- to define multiple VPN connections</br>
+- to define multiple VPN connections, using different protocols</br>
 - to run openconnect without entering the username and password</br>
 - to run in the background</br>
-- to authenticate with a certiftcate
+- to authenticate with a certiftcate</br>
+- to check the status of the vpn connection
+
+### What's new ###
+- added support for using different protocols</br>
+- added options (start, stop, status, restart, status)</br>
+- can check status of the vpn connection
 
 ### Sample configuration section ###
 ```
@@ -15,6 +21,7 @@ BACKGROUND=true   # If you don't want to run in background, so make this false
 
 # Company VPN
 export COM_NAME="My Company VPN"
+export COM_PROTOCOL=anyconnect
 export COM_HOST=vpn.mycompany.com
 export COM_AUTHGROUP=developers
 export COM_USER=sorin.ipate
