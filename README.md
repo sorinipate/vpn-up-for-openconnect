@@ -1,5 +1,5 @@
 # vpn-up-for-openconnect
-VPN Up for OpenConnect
+VPN Up for OpenConnect for Mac OS
 
 ### Features ###
 
