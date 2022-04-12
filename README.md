@@ -12,7 +12,7 @@ A shell script for OpenConnect which allows:</br>
 - to check the status of the vpn connection
 
 ### What's new ###
-- (NEW) Now supports Two-Factor Authentication (2FA) from Duo
+- 🆒 added support for Two-Factor Authentication (2FA) from Duo
 - added support for using different protocols</br>
 - added options (start, stop, status, restart, status)</br>
 - can check status of the vpn connection
