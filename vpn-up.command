@@ -138,18 +138,6 @@ function start(){
                     connect
                     break
                     ;;
-                "$VPN3_NAME")
-                    export VPN_NAME=$VPN3_NAME
-                    export VPN_HOST=$VPN3_HOST
-                    export VPN_GROUP=$VPN3_AUTHGROUP
-                    export VPN_USER=$VPN3_USER
-                    export VPN_PASSWD=$VPN3_PASSWD
-                    export VPN_DUO2FAMETHOD=$VPN3_DUO2FAMETHOD
-                    export SERVER_CERTIFICATE=$VPN3_SERVER_CERTIFICATE
-                    export PROTOCOL=$VPN3_PROTOCOL
-                    connect
-                    break
-                    ;;
                 "Quit")
                     printf "$WARNING"
                     printf "You chose to close the app!\n"
