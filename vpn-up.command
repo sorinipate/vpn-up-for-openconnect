@@ -21,6 +21,17 @@ QUIET=TRUE
     # TRUE          Less output
     # FALSE         Detailed output
 
+SUDO=FALSE
+    # TRUE          
+    # FALSE         
+SUDO_PASSWORD=""
+
+PRIMARY="\x1b[36;1m"
+SUCCESS="\x1b[32;1m"
+WARNING="\x1b[35;1m"
+DANGER="\x1b[31;1m"
+RESET="\x1b[0m"
+  
 # VPN PROFILE 1
 export VPN1_NAME="VPN PROFILE 1"
 export VPN1_PROTOCOL=<protocol>
@@ -61,18 +72,45 @@ function start(){
 
     if ! is_network_available
         then 
-            printf "Network is not available. Check your internet connection. \n"
+            printf "$DANGER"
+            printf "Please check your internet connection or try again later!\n"
+            printf "$RESET"
             exit 1
     fi
 
     if is_vpn_running
         then
-            printf "VPN is already running\n"
+            printf "$WARNING"
+            printf "Already connected to a VPN!\n"
+            printf "$RESET"
             exit 1
     fi
 
-    echo "Which VPN do you want to connect to?"
+    if [ "$SUDO" = TRUE ]
+        then
+            if [[ -z $SUDO_PASSWORD ]]
+                then
+                    printf "$DANGER"
+                    printf "Variable 'SUDO_PASSWORD' is not declared! Update the variable 'SUDO_PASSWORD' declaration in OPTIONS ..."
+                    printf "$RESET"
+                    return
+                else
+                    echo sudo -S <<< $SUDO_PASSWORD
+                    printf "$WARNING"
+                    printf "Running as root ...\n"
+                    printf "$RESET"
+            fi
+        else
+            printf "$WARNING"
+            printf "Running as normal user! OpenConnect requires to be executed with root privileges; please enter the root password when prompted...\n"
+            printf "$RESET"
+
+    fi
+
+    printf "$PRIMARY"
+    printf "Which VPN do you want to connect to?\n"
     options=("$VPN1_NAME" "$VPN2_NAME" "$VPN3_NAME" "Quit")
+    printf "$RESET"
     select option in "${options[@]}";
         do
             case $option in
@@ -113,35 +151,48 @@ function start(){
                     break
                     ;;
                 "Quit")
-                echo "User requested exit"
+                    printf "$WARNING"
+                    printf "You chose to close the app!\n"
+                    printf "$RESET"
                     exit
                     ;;
                 *)
-                echo "invalid option $REPLY";; 
+                
+                printf "$DANGER"
+                printf "Invalid option! Please choose one of the options above...\n"
+                printf "$RESET"
+                printf "$REPLY";;
             esac
-            if is_vpn_running
-            then 
-                printf "VPN is connected \n"
-                print_current_ip_address
-                break
-            else
-                printf "VPN failed to connect! \n"
-        fi
         done
+    if is_vpn_running
+                then 
+                    printf "$SUCCESS"
+                    printf "Connected to $VPN_NAME\n"
+                    print_current_ip_address
+                    printf "$RESET"
+                else
+                    printf "$DANGER"
+                    printf "Failed to connect!\n"
+                    printf "$RESET"
+            fi
 }
 
 function connect(){
     if [[ -z $VPN_HOST ]]
         then
-            echo "Variable 'VPN_HOST' is not declared! Update the variable 'VPN_HOST' declaration in VPN PROFILES ..."
+            printf "$DANGER"
+            printf "Variable 'VPN_HOST' is not declared! Update the variable 'VPN_HOST' declaration in VPN PROFILES ...\n"
+            printf "$RESET"
             return
     fi
     if [[ -z $PROTOCOL ]]
         then
-            echo "Variable 'PROTOCOL' is not declared! Update the variable 'PROTOCOL' declaration in VPN PROFILES ..."
+            printf "$DANGER"
+            printf "Variable 'PROTOCOL' is not declared! Update the variable 'PROTOCOL' declaration in VPN PROFILES ..."
+            printf "$RESET"
             return
     fi
-    
+
     case $PROTOCOL in
         "anyconnect")
             export PROTOCOL_DESCRIPTION="Cisco AnyConnect SSL VPN"
@@ -156,7 +207,9 @@ function connect(){
             export PROTOCOL_DESCRIPTION="Pulse Connect Secure SSL VPN"
             ;;
         *)
-            echo "Unsupported protocol! Update the variable 'PROTOCOL' declaration in VPN PROFILES ..."
+            printf "$DANGER"
+            printf "Unsupported protocol! Update the variable 'PROTOCOL' declaration in VPN PROFILES ..."
+            printf "$RESET"
             return
             ;;
     esac
@@ -171,152 +224,236 @@ function connect(){
         "sms")
             export VPN_DUO2FAMETHOD_DESCRIPTION="SMS"
             ;;
+        "")
+            export VPN_DUO2FAMETHOD_DESCRIPTION="NONE"
+            ;;
         *)
             if [[ "$VPN_DUO2FAMETHOD" =~ ^[0-9]{6}$ ]]
                 then
                     export VPN_DUO2FAMETHOD_DESCRIPTION="PASSCODE"
                 else
-                    echo "Unsupported PASSCODE format! Update the variable 'VPN_DUO2FAMETHOD' declaration in VPN PROFILES ..."
+                    printf "$DANGER"
+                    printf "Unsupported PASSCODE format! Update the variable 'VPN_DUO2FAMETHOD' declaration in VPN PROFILES ..."
+                    printf "$RESET"
                     return
             fi
             ;;
     esac
         
-    echo "Starting the $VPN_NAME on $VPN_HOST using $PROTOCOL_DESCRIPTION ..."
-    
+    printf "$PRIMARY"
+    printf "Starting the $VPN_NAME on $VPN_HOST using $PROTOCOL_DESCRIPTION ...\n"
+    printf "$RESET"
+
     if [ "$VPN_DUO2FAMETHOD" = "" ]
         then
-            echo "Connecting without 2FA ..."
+            printf "$WARNING"
+            printf "Connecting without 2FA ($VPN_DUO2FAMETHOD_DESCRIPTION) ...\n"
+            printf "$RESET"
             if [ "$SERVER_CERTIFICATE" = "" ]
                 then
-                    echo "Connecting without server certificate ..."
+                    printf "$WARNING"
+                    printf "Connecting without server certificate ...\n"
+                    printf "$RESET"
                     if [ "$BACKGROUND" = TRUE ]
                         then
-                            echo "Running the $VPN_NAME in background ..."
+                            printf "$PRIMARY"
+                            printf "Running the $VPN_NAME in background ...\n"
+                            printf "$RESET"
                             if [ "$QUIET" = TRUE ]
                             then
-                                echo "Running the $VPN_NAME with less output (quiet) ..."
+                                printf "$PRIMARY"
+                                printf "Running the $VPN_NAME with less output (quiet) ...\n"
+                                printf "$RESET"
                                 echo $VPN_PASSWD | sudo openconnect --protocol=$PROTOCOL --background -q $VPN_HOST --user=$VPN_USER --authgroup=$VPN_GROUP --passwd-on-stdin --pid-file $PID_FILE_PATH > $LOG_FILE_PATH 2>&1
                             else
-                                echo "Running the $VPN_NAME with detailed output ..."
+                                printf "$PRIMARY"
+                                printf "Running the $VPN_NAME with detailed output ...\n"
+                                printf "$RESET"
                                 echo $VPN_PASSWD | sudo openconnect --protocol=$PROTOCOL --background $VPN_HOST --user=$VPN_USER --authgroup=$VPN_GROUP --passwd-on-stdin --pid-file $PID_FILE_PATH > $LOG_FILE_PATH 2>&1
                             fi
                         else
-                            echo "Running the $VPN_NAME ..."
+                            printf "$PRIMARY"
+                            printf "Running the $VPN_NAME ...\n"
+                            printf "$RESET"
                             if [ "$QUIET" = TRUE ]
                             then
-                                echo "Running the $VPN_NAME with less output (quiet) ..."
+                                printf "$PRIMARY"
+                                printf "Running the $VPN_NAME with less output (quiet) ...\n"
+                                printf "$RESET"
                                 echo $VPN_PASSWD | sudo openconnect --protocol=$PROTOCOL -q $VPN_HOST --user=$VPN_USER --authgroup=$VPN_GROUP --passwd-on-stdin --pid-file $PID_FILE_PATH > $LOG_FILE_PATH 2>&1
                             else
-                                echo "Running the $VPN_NAME with detailed output ..."
+                                printf "$PRIMARY"
+                                printf "Running the $VPN_NAME with detailed output ...\n"
+                                printf "$RESET"
                                 echo $VPN_PASSWD | sudo openconnect --protocol=$PROTOCOL $VPN_HOST --user=$VPN_USER --authgroup=$VPN_GROUP --passwd-on-stdin --pid-file $PID_FILE_PATH > $LOG_FILE_PATH 2>&1
                             fi
                         fi
                 else
-                    echo "Connecting with certificate ..."
+                    printf "$PRIMARY"
+                    printf "Connecting with certificate ...\n"
+                    printf "$RESET"
                     if [ "$BACKGROUND" = TRUE ]
                         then
-                            echo "Running the $VPN_NAME in background ..."
+                            printf "$PRIMARY"
+                            printf "Running the $VPN_NAME in background ...\n"
+                            printf "$RESET"
                             if [ "$QUIET" = TRUE ]
                             then
-                                echo "Running the $VPN_NAME with less output (quiet) ..."
+                                printf "$PRIMARY"
+                                printf "Running the $VPN_NAME with less output (quiet) ...\n"
+                                printf "$RESET"
                                 echo $VPN_PASSWD | sudo openconnect --protocol=$PROTOCOL --background -q $VPN_HOST --user=$VPN_USER --authgroup=$VPN_GROUP --passwd-on-stdin --servercert=$SERVER_CERTIFICATE --pid-file $PID_FILE_PATH > $LOG_FILE_PATH 2>&1
                             else
-                                echo "Running the $VPN_NAME with detailed output ..."
+                                printf "$PRIMARY"
+                                printf "Running the $VPN_NAME with detailed output ...\n"
+                                printf "$RESET"
                                 echo $VPN_PASSWD | sudo openconnect --protocol=$PROTOCOL --background $VPN_HOST --user=$VPN_USER --authgroup=$VPN_GROUP --passwd-on-stdin --servercert=$SERVER_CERTIFICATE --pid-file $PID_FILE_PATH > $LOG_FILE_PATH 2>&1
                             fi
                         else
-                            echo "Running the $VPN_NAME ..."
+                            printf "$PRIMARY"
+                            printf "Running the $VPN_NAME ...\n"
+                            printf "$RESET"
                             if [ "$QUIET" = TRUE ]
                             then
-                                echo "Running the $VPN_NAME with less output (quiet) ..."
+                                printf "$PRIMARY"
+                                printf "Running the $VPN_NAME with less output (quiet) ...\n"
+                                printf "$RESET"
                                 echo $VPN_PASSWD | sudo openconnect --protocol=$PROTOCOL -q $VPN_HOST --user=$VPN_USER --authgroup=$VPN_GROUP --passwd-on-stdin --servercert=$SERVER_CERTIFICATE --pid-file $PID_FILE_PATH > $LOG_FILE_PATH 2>&1
                             else
-                                echo "Running the $VPN_NAME with detailed output ..."
+                                printf "$PRIMARY"
+                                printf "Running the $VPN_NAME with detailed output ...\n"
+                                printf "$RESET"
                                 echo $VPN_PASSWD | sudo openconnect --protocol=$PROTOCOL $VPN_HOST --user=$VPN_USER --authgroup=$VPN_GROUP --passwd-on-stdin --servercert=$SERVER_CERTIFICATE --pid-file $PID_FILE_PATH > $LOG_FILE_PATH 2>&1
                             fi
                         fi
                 fi
 
         else
-            echo "Connecting with Two-Factor Authentication (2FA) from Duo ($VPN_DUO2FAMETHOD_DESCRIPTION) ..."
+            printf "$PRIMARY"
+            printf "Connecting with Two-Factor Authentication (2FA) from Duo ($VPN_DUO2FAMETHOD_DESCRIPTION) ...\n"
+            printf "$RESET"
             if [ "$SERVER_CERTIFICATE" = "" ]
                 then
-                    echo "Connecting without server certificate ..."
+                    printf "$WARNING"
+                    printf "Connecting without server certificate ...\n"
+                    printf "$RESET"
                     if [ "$BACKGROUND" = TRUE ]
                         then
-                            echo "Running the $VPN_NAME in background ..."
+                            printf "$PRIMARY"
+                            printf "Running the $VPN_NAME in background ...\n"
+                            printf "$RESET"
                             if [ "$QUIET" = TRUE ]
                             then
-                                echo "Running the $VPN_NAME with less output (quiet) ..."
+                                printf "$PRIMARY"
+                                printf "Running the $VPN_NAME with less output (quiet) ...\n"
+                                printf "$RESET"
                                 { echo $VPN_PASSWD; sleep 1; echo $VPN_DUO2FAMETHOD; } | sudo openconnect --protocol=$PROTOCOL --background -q $VPN_HOST --user=$VPN_USER --authgroup=$VPN_GROUP --passwd-on-stdin --pid-file $PID_FILE_PATH > $LOG_FILE_PATH 2>&1
                             else
-                                echo "Running the $VPN_NAME with detailed output ..."
+                                printf "$PRIMARY"
+                                printf "Running the $VPN_NAME with detailed output ...\n"
+                                printf "$RESET"
                                 { echo $VPN_PASSWD; sleep 1; echo $VPN_DUO2FAMETHOD; } | sudo openconnect --protocol=$PROTOCOL --background $VPN_HOST --user=$VPN_USER --authgroup=$VPN_GROUP --passwd-on-stdin --pid-file $PID_FILE_PATH > $LOG_FILE_PATH 2>&1
                             fi
                         else
-                            echo "Running the $VPN_NAME ..."
+                            printf "$PRIMARY"
+                            printf "Running the $VPN_NAME ...\n"
+                            printf "$RESET"
                             if [ "$QUIET" = TRUE ]
                             then
-                                echo "Running the $VPN_NAME with less output (quiet) ..."
+                                printf "$PRIMARY"
+                                printf "Running the $VPN_NAME with less output (quiet) ...\n"
+                                printf "$RESET"
                                 { echo $VPN_PASSWD; sleep 1; echo $VPN_DUO2FAMETHOD; } | sudo openconnect --protocol=$PROTOCOL -q $VPN_HOST --user=$VPN_USER --authgroup=$VPN_GROUP --passwd-on-stdin --pid-file $PID_FILE_PATH > $LOG_FILE_PATH 2>&1
                             else
-                                echo "Running the $VPN_NAME with detailed output ..."
+                                printf "$PRIMARY"
+                                printf "Running the $VPN_NAME with detailed output ...\n"
+                                printf "$RESET"
                                 { echo $VPN_PASSWD; sleep 1; echo $VPN_DUO2FAMETHOD; } | sudo openconnect --protocol=$PROTOCOL $VPN_HOST --user=$VPN_USER --authgroup=$VPN_GROUP --passwd-on-stdin --pid-file $PID_FILE_PATH > $LOG_FILE_PATH 2>&1
                             fi
                         fi
                 else
-                    echo "Connecting with certificate ..."
+                    printf "$PRIMARY"
+                    printf "Connecting with certificate ...\n"
+                    printf "$RESET"
                     if [ "$BACKGROUND" = TRUE ]
                         then
-                            echo "Running the $VPN_NAME in background ..."
+                            printf "$PRIMARY"
+                            printf "Running the $VPN_NAME in background ...\n"
+                            printf "$RESET"
                             if [ "$QUIET" = TRUE ]
                             then
-                                echo "Running the $VPN_NAME with less output (quiet) ..."
+                                printf "$PRIMARY"
+                                printf "Running the $VPN_NAME with less output (quiet) ...\n"
+                                printf "$RESET"
                                 { echo $VPN_PASSWD; sleep 1; echo $VPN_DUO2FAMETHOD; } | sudo openconnect --protocol=$PROTOCOL --background -q $VPN_HOST --user=$VPN_USER --authgroup=$VPN_GROUP --passwd-on-stdin --servercert=$SERVER_CERTIFICATE --pid-file $PID_FILE_PATH > $LOG_FILE_PATH 2>&1
                             else
-                                echo "Running the $VPN_NAME with detailed output ..."
+                                printf "$PRIMARY"
+                                printf "Running the $VPN_NAME with detailed output ...\n"
+                                printf "$RESET"
                                 { echo $VPN_PASSWD; sleep 1; echo $VPN_DUO2FAMETHOD; } | sudo openconnect --protocol=$PROTOCOL --background $VPN_HOST --user=$VPN_USER --authgroup=$VPN_GROUP --passwd-on-stdin --servercert=$SERVER_CERTIFICATE --pid-file $PID_FILE_PATH > $LOG_FILE_PATH 2>&1
                             fi
                         else
-                            echo "Running the $VPN_NAME ..."
+                            printf "$PRIMARY"
+                            printf "Running the $VPN_NAME ...\n"
+                            printf "$RESET"
                             if [ "$QUIET" = TRUE ]
                             then
-                                echo "Running the $VPN_NAME with less output (quiet) ..."
+                                printf "$PRIMARY"
+                                printf "Running the $VPN_NAME with less output (quiet) ...\n"
+                                printf "$RESET"
                                 { echo $VPN_PASSWD; sleep 1; echo $VPN_DUO2FAMETHOD; } | sudo openconnect --protocol=$PROTOCOL -q $VPN_HOST --user=$VPN_USER --authgroup=$VPN_GROUP --passwd-on-stdin --servercert=$SERVER_CERTIFICATE --pid-file $PID_FILE_PATH > $LOG_FILE_PATH 2>&1
                             else
-                                echo "Running the $VPN_NAME with detailed output ..."
+                                printf "$PRIMARY"
+                                printf "Running the $VPN_NAME with detailed output ...\n"
+                                printf "$RESET"
                                 { echo $VPN_PASSWD; sleep 1; echo $VPN_DUO2FAMETHOD; } | sudo openconnect --protocol=$PROTOCOL $VPN_HOST --user=$VPN_USER --authgroup=$VPN_GROUP --passwd-on-stdin --servercert=$SERVER_CERTIFICATE --pid-file $PID_FILE_PATH > $LOG_FILE_PATH 2>&1
                             fi
                         fi
                 fi
         fi
-    status
+    #status
 }
 
 function status() {
-    is_vpn_running && printf "VPN is running \n" || printf "VPN is stopped \n"
+    if is_vpn_running
+        then
+            printf "$SUCCESS"
+            printf "Connected ...\n"
+        else
+            printf "$PRIMARY"
+            printf "Not connected ...\n"      
+    fi
     print_current_ip_address
+    printf "$RESET"
 }
 
 function stop() {
-
+    
     if is_vpn_running
         then
-            echo "VPN is running ... Removing $PID_FILE_PATH ..."
-            
-            # kill -9 $(pgrep openconnect) > /dev/null 2>&1
+            printf "$WARNING"
+            printf "Connected ...\nRemoving $PID_FILE_PATH ...\n"
+            printf "$RESET"
             local pid=$(cat $PID_FILE_PATH)
             kill -9 $pid > /dev/null 2>&1
             rm -f $PID_FILE_PATH > /dev/null 2>&1
+            printf "$SUCCESS"
+            printf "Disconnected ...\n"
+        else
+            printf "$PRIMARY"
+            printf "Disconnected ...\n"
     fi
     
-    printf "VPN is disconnected \n"
     print_current_ip_address
+    printf "$RESET"
 }
 
 function print_info() {
-    echo "Usage: $(basename "$0") (start|stop|status|restart)"
+    
+    printf "$WARNING"
+    printf "Usage: $(basename "$0") (start|stop|status|restart)\n"
+    printf "$RESET"
+
 }
 
 function is_network_available() {
@@ -325,13 +462,11 @@ function is_network_available() {
 
 function is_vpn_running() {
     test -f $PID_FILE_PATH && return 0
-     #local pid=$(cat $PID_FILE_PATH)
-    # kill -0 $pid > /dev/null 2>&1
 }
 
 function print_current_ip_address() {
     local ip=$(dig -4 TXT +short o-o.myaddr.l.google.com @ns1.google.com)
-    printf "Your IP address is $ip \n"
+    printf "Your IP address is $ip ...\n"
 }
 
 case "$1" in
