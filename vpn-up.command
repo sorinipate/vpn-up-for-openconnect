@@ -5,12 +5,9 @@
 # Copyright (c) Sorin-Doru Ipate
 
 PROGRAM_NAME=$(basename $0)
-echo "Starting $PROGRAM_NAME ..."
 
 PID_FILE_PATH="${PWD}/${PROGRAM_NAME}.pid"
-echo "Process ID (PID) stored in $PID_FILE_PATH ..."
 LOG_FILE_PATH="${PWD}/${PROGRAM_NAME}.log"
-echo "Logs file (LOG) stored in $LOG_FILE_PATH ..."
 
 # OPTIONS
 BACKGROUND=TRUE
@@ -108,8 +105,20 @@ function start(){
     fi
 
     printf "$PRIMARY"
+    printf "Starting $PROGRAM_NAME ...\n"
+    printf "$RESET"
+    
+    printf "$WARNING"
+    printf "Process ID (PID) stored in $PID_FILE_PATH ...\n"
+    printf "$RESET"
+
+    printf "$WARNING"
+    printf "Logs file (LOG) stored in $LOG_FILE_PATH ...\n"
+    printf "$RESET"
+
+    printf "$PRIMARY"
     printf "Which VPN do you want to connect to?\n"
-    options=("$VPN1_NAME" "$VPN2_NAME" "$VPN3_NAME" "Quit")
+    options=("$VPN1_NAME" "$VPN2_NAME" "Quit")
     printf "$RESET"
     select option in "${options[@]}";
         do
