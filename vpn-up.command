@@ -6,7 +6,7 @@
 # Copyright (c) Sorin-Doru Ipate
 
 PROGRAM_NAME=$(basename "$0")
-PROGRAM_PATH=${PWD}
+PROGRAM_PATH=$(dirname "$0)
 
 CONFIGURATION_FILE="${PROGRAM_PATH}/config/${PROGRAM_NAME}.config"
 PROFILES_FILE="${PROGRAM_PATH}/config/${PROGRAM_NAME}.profiles"
