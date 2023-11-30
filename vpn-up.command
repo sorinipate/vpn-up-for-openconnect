@@ -9,39 +9,35 @@ PROGRAM_NAME=$(basename "$0")
 PROGRAM_PATH=${PWD}
 
 CONFIGURATION_FILE="${PROGRAM_PATH}/config/${PROGRAM_NAME}.config"
-PROFILES_FILE="${PROGRAM_PATH}/config/${PROGRAM_NAME}.profiles"
+PROFILES_FILE="${PROGRAM_PATH}/config/${PROGRAM_NAME}.profiles.xml"
 
 PID_FILE_PATH="${PROGRAM_PATH}/logs/${PROGRAM_NAME}.pid"
 LOG_FILE_PATH="${PROGRAM_PATH}/logs/${PROGRAM_NAME}.log"
 
 function start() {
 
-    if ! does_configuration_file_exist
-        then
-            printf "%b" "${DANGER}"
-            printf "Configuration file missing! \n"
-            printf "%b" "${RESET}"
-            exit 1
-        else
-            source $CONFIGURATION_FILE
-            printf "%b" "${WARNING}"
-            printf "Loaded configuration from $CONFIGURATION_FILE ...\n"
-            printf "%b" "${RESET}"
+    if ! does_configuration_file_exist; then
+        printf "%b" "${DANGER}"
+        printf "Configuration file missing! \n"
+        printf "%b" "${RESET}"
+        exit 1
+    else
+        source $CONFIGURATION_FILE
+        printf "%b" "${WARNING}"
+        printf "Loaded configuration from $CONFIGURATION_FILE ...\n"
+        printf "%b" "${RESET}"
     fi
 
-    if ! does_profiles_file_exist
-        then
-            printf "%b" "${DANGER}"
-            printf "Profiles file missing! \n"
-            printf "%b" "${RESET}"
-            exit 1
-        else
-            source $PROFILES_FILE
-            printf "%b" "${WARNING}"
-            printf "Loaded profiles from $PROFILES_FILE ...\n"
-            printf "%b" "${RESET}"
+    if ! does_profiles_file_exist; then
+        printf "%b" "${DANGER}"
+        printf "Profiles file missing! \n"
+        printf "%b" "${RESET}"
+        exit 1
+    else
+        IFS=$'\n' read -d '' -r -a vpn_names < <(xmlstarlet sel -t -m "//VPN" -v "name" -n $PROFILES_FILE)
+        vpn_names+=("Quit")
     fi
-    
+
     if ! is_network_available; then
         printf "%b" "${DANGER}"
         printf "Please check your internet connection or try again later!\n"
@@ -89,49 +85,30 @@ function start() {
 
     printf "%b" "${PRIMARY}"
     printf "Which VPN do you want to connect to?\n"
-    options=("$VPN1_NAME" "$VPN2_NAME" "Quit")
     printf "%b" "${RESET}"
-    select option in "${options[@]}"; do
-        case $option in
-        "$VPN1_NAME")
-            export VPN_NAME=$VPN1_NAME
-            export VPN_HOST=$VPN1_HOST
-            export VPN_GROUP=$VPN1_AUTHGROUP
-            export VPN_USER=$VPN1_USER
-            export VPN_PASSWD=$VPN1_PASSWD
-            export VPN_DUO2FAMETHOD=$VPN1_DUO2FAMETHOD
-            export SERVER_CERTIFICATE=$VPN1_SERVER_CERTIFICATE
-            export PROTOCOL=$VPN1_PROTOCOL
-            connect
-            break
-            ;;
-        "$VPN2_NAME")
-            export VPN_NAME=$VPN2_NAME
-            export VPN_HOST=$VPN2_HOST
-            export VPN_GROUP=$VPN2_AUTHGROUP
-            export VPN_USER=$VPN2_USER
-            export VPN_PASSWD=$VPN2_PASSWD
-            export VPN_DUO2FAMETHOD=$VPN2_DUO2FAMETHOD
-            export SERVER_CERTIFICATE=$VPN2_SERVER_CERTIFICATE
-            export PROTOCOL=$VPN2_PROTOCOL
-            connect
-            break
-            ;;
-        "Quit")
+    select option in "${vpn_names[@]}"; do
+        if [[ $option == "Quit" ]]; then
             printf "%b" "${WARNING}"
             printf "You chose to close the app!\n"
             printf "%b" "${RESET}"
             exit
-            ;;
-        *)
+        elif [[ " ${vpn_names[@]} " =~ " ${option} " ]]; then
+            IFS=$'\n' read -r -d '' VPN_NAME PROTOCOL VPN_HOST VPN_GROUP VPN_USER VPN_PASSWD VPN_DUO2FAMETHOD SERVER_CERTIFICATE < <(xmlstarlet sel -t -m "//VPN[name='$option']" -v "name" -o $'\n' -v "protocol" -o $'\n' -v "host" -o $'\n' -v "authGroup" -o $'\n' -v "user" -o $'\n' -v "password" -o $'\n' -v "duo2FAMethod" -o $'\n' -v "serverCertificate" -n $PROFILES_FILE)
 
+            # Debugging output
+            echo "Debugging VPN Variables:"
+            echo "Name: $VPN_NAME, Protocol: $PROTOCOL, Host: $VPN_HOST, Group: $VPN_GROUP, User: $VPN_USER, Password: $VPN_PASSWD, 2FA Method: $VPN_DUO2FAMETHOD, Certificate: $SERVER_CERTIFICATE"
+
+            export VPN_NAME PROTOCOL VPN_HOST VPN_GROUP VPN_USER VPN_PASSWD VPN_DUO2FAMETHOD SERVER_CERTIFICATE
+            connect
+            break
+        else
             printf "%b" "${DANGER}"
             printf "Invalid option! Please choose one of the options above...\n"
             printf "%b" "${RESET}"
-            printf "%b" "${REPLY}"
-            ;;
-        esac
+        fi
     done
+
     if is_vpn_running; then
         printf "%b" "${SUCCESS}"
         printf "Connected to %s\n" "${VPN_NAME}"
@@ -450,11 +427,11 @@ function print_current_ip_address() {
     printf "Your IP address is %s ...\n" "${ip}"
 }
 
-function does_configuration_file_exist () {
+function does_configuration_file_exist() {
     test -f $CONFIGURATION_FILE && return 0
 }
 
-function does_profiles_file_exist () {
+function does_profiles_file_exist() {
     test -f $PROFILES_FILE && return 0
 }
 

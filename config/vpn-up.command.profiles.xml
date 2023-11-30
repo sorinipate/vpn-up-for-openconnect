@@ -1,0 +1,21 @@
+<VPNs>
+    <VPN name="VPN1">
+        <host>vpn1.example.com</host>
+        <authGroup>group1</authGroup>
+        <user>user1</user>
+        <password>password1</password>
+        <duo2FAMethod>method1</duo2FAMethod>
+        <serverCertificate>cert1</serverCertificate>
+        <protocol>protocol1</protocol>
+    </VPN>
+    <VPN name="VPN2">
+        <host>vpn2.example.com</host>
+        <authGroup>group2</authGroup>
+        <user>user2</user>
+        <password>password2</password>
+        <duo2FAMethod>method2</duo2FAMethod>
+        <serverCertificate>cert2</serverCertificate>
+        <protocol>protocol2</protocol>
+    </VPN>
+    <!-- Add more VPN profiles as needed -->
+</VPNs>
