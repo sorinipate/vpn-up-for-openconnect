@@ -95,10 +95,6 @@ function start() {
         elif [[ " ${vpn_names[@]} " =~ " ${option} " ]]; then
             IFS=$'\n' read -r -d '' VPN_NAME PROTOCOL VPN_HOST VPN_GROUP VPN_USER VPN_PASSWD VPN_DUO2FAMETHOD SERVER_CERTIFICATE < <(xmlstarlet sel -t -m "//VPN[name='$option']" -v "name" -o $'\n' -v "protocol" -o $'\n' -v "host" -o $'\n' -v "authGroup" -o $'\n' -v "user" -o $'\n' -v "password" -o $'\n' -v "duo2FAMethod" -o $'\n' -v "serverCertificate" -n $PROFILES_FILE)
 
-            # Debugging output
-            echo "Debugging VPN Variables:"
-            echo "Name: $VPN_NAME, Protocol: $PROTOCOL, Host: $VPN_HOST, Group: $VPN_GROUP, User: $VPN_USER, Password: $VPN_PASSWD, 2FA Method: $VPN_DUO2FAMETHOD, Certificate: $SERVER_CERTIFICATE"
-
             export VPN_NAME PROTOCOL VPN_HOST VPN_GROUP VPN_USER VPN_PASSWD VPN_DUO2FAMETHOD SERVER_CERTIFICATE
             connect
             break
