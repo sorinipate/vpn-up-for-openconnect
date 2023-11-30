@@ -1,2 +1,3 @@
-bin/vpn-up.command
+/logs/vpn-up.command.log
+/logs/vpn-up.command.pid
 .DS_Store
