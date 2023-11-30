@@ -21,18 +21,18 @@ A shell script for OpenConnect which allows:</br>
 ### Sample configuration section ###
 
 readonly SUDO=FALSE
-        ├ TRUE
-        └ FALSE
+        # TRUE
+        # FALSE
 
 readonly SUDO_PASSWORD=""
 
 readonly BACKGROUND=TRUE
-        ├ TRUE          Runs in background after startup
-        └ FALSE         Runs in foreground after startup
+        # TRUE          Runs in background after startup
+        # FALSE         Runs in foreground after startup
 
 readonly QUIET=TRUE
-        ├ TRUE          Less output
-        └ FALSE         Detailed output
+        # TRUE          Less output
+        # FALSE         Detailed output
 
 ### Sample VPN profile ###
 
