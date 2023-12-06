@@ -9,10 +9,59 @@ PROGRAM_NAME=$(basename "$0")
 PROGRAM_PATH=$(dirname "$0")
 
 CONFIGURATION_FILE="${PROGRAM_PATH}/config/${PROGRAM_NAME}.config"
-PROFILES_FILE="${PROGRAM_PATH}/config/${PROGRAM_NAME}.profiles.xml"
+PROFILES_FILE="${PROGRAM_PATH}/config/${PROGRAM_NAME}.profiles"
 
 PID_FILE_PATH="${PROGRAM_PATH}/logs/${PROGRAM_NAME}.pid"
 LOG_FILE_PATH="${PROGRAM_PATH}/logs/${PROGRAM_NAME}.log"
+
+# Function to install Homebrew
+install_homebrew() {
+    echo "Installing Homebrew..."
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    if [ $? -ne 0 ]; then
+        echo "Failed to install Homebrew."
+        return 1
+    fi
+}
+
+# Function to install dependencies
+install_dependencies() {
+    local dependencies=("xmlstarlet" "openconnect")
+
+    echo "Attempting to install missing dependencies..."
+    for dep in "${dependencies[@]}"; do
+        if ! command -v "$dep" &> /dev/null; then
+            if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+                sudo apt-get install -y "$dep" || sudo yum install -y "$dep" || sudo dnf install -y "$dep"
+            elif [[ "$OSTYPE" == "darwin"* ]]; then
+                # Check if Homebrew is installed
+                if ! command -v brew &> /dev/null; then
+                    echo "Homebrew is not installed."
+                    read -p "Do you want to install Homebrew? (y/n) " choice
+                    case "$choice" in 
+                        y|Y ) install_homebrew;;
+                        n|N ) echo "Please install Homebrew manually and rerun this script."; return 1;;
+                        * ) echo "Invalid response."; return 1;;
+                    esac
+                fi
+                brew install "$dep"
+            fi
+        fi
+    done
+}
+
+# Check for required commands and offer to install missing dependencies
+for cmd in basename dirname printf echo kill test sudo xmlstarlet ping dig openconnect; do
+    if ! command -v "$cmd" &> /dev/null; then
+        echo "Required command '$cmd' is not installed."
+        read -p "Do you want to try installing the missing dependencies? (y/n) " choice
+        case "$choice" in 
+            y|Y ) install_dependencies; break;;
+            n|N ) echo "Exiting script. Please install the missing dependencies and try again."; exit 1;;
+            * ) echo "Invalid response."; exit 1;;
+        esac
+    fi
+done
 
 # Utility function for printing success messages
 print_success() {
@@ -138,7 +187,7 @@ function start() {
 
     print_warning "Process ID (PID) stored in %s ...\n" "${PID_FILE_PATH}"
     
-    print_warining "Logs file (LOG) stored in %s ...\n" "${LOG_FILE_PATH}"
+    print_warning "Logs file (LOG) stored in %s ...\n" "${LOG_FILE_PATH}"
     
     print_primary "Which VPN do you want to connect to?\n"
     
