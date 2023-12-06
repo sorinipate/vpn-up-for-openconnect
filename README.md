@@ -1,7 +1,3 @@
-Here's a rewritten and well-formatted version of the `README.md` file for GitHub:
-
----
-
 # VPN Up for OpenConnect
 
 ## A Command-Line Client for Cisco AnyConnect on macOS
