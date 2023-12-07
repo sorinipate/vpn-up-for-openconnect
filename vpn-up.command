@@ -112,9 +112,33 @@ function run_openconnect() {
     [ -n "$SERVER_CERTIFICATE" ] && server_cert_flag="--servercert=\"$SERVER_CERTIFICATE\""
 
     local vpn_pass_pipe_cmd="echo $VPN_PASSWD"
-    [ -n "$VPN_DUO2FAMETHOD" ] && vpn_pass_pipe_cmd="{ echo $VPN_PASSWD; sleep 1; echo $VPN_DUO2FAMETHOD; }"
+    
+    if [ "$VPN_DUO2FAMETHOD" = "passcode" ]; then
+        read -p "Enter your Duo passcode: " duo_passcode
+        vpn_pass_pipe_cmd="{ echo $VPN_PASSWD; sleep 1; echo $duo_passcode; }"
+    elif [ -n "$VPN_DUO2FAMETHOD" ]; then
+        vpn_pass_pipe_cmd="{ echo $VPN_PASSWD; sleep 1; echo $VPN_DUO2FAMETHOD; }"
+    fi
 
-    eval "$vpn_pass_pipe_cmd | sudo openconnect --protocol=\"$PROTOCOL\" $background_flag $quiet_flag \"$VPN_HOST\" --user=\"$VPN_USER\" --authgroup=\"$VPN_GROUP\" --passwd-on-stdin $server_cert_flag --pid-file \"$PID_FILE_PATH\" | sudo tee \"$LOG_FILE_PATH\" 2>&1"
+    # Before attempting to write to the log file
+    if [ ! -w "$LOG_FILE_PATH" ]; then
+        echo "Cannot write to log file: $LOG_FILE_PATH. Please check permissions."
+        exit 1
+    fi
+
+    # Start the VPN connection and run it in the background
+    eval "$vpn_pass_pipe_cmd | sudo openconnect --protocol=\"$PROTOCOL\" $background_flag $quiet_flag \"$VPN_HOST\" --user=\"$VPN_USER\" --authgroup=\"$VPN_GROUP\" --passwd-on-stdin $server_cert_flag --pid-file \"$PID_FILE_PATH\" > \"$LOG_FILE_PATH\" 2>&1 &"
+
+    local vpn_pid=$!
+    sleep 5  # Give some time for the VPN process to initialize
+
+    if kill -0 $vpn_pid 2> /dev/null; then
+        echo "VPN connection process is running. Checking connection status..."
+        return 0
+    else
+        echo "VPN process ended unexpectedly."
+        return 1
+    fi
 }
 
 # Function to set protocol description
@@ -137,13 +161,13 @@ function set_2fa_method_description() {
     "push") VPN_DUO2FAMETHOD_DESCRIPTION="PUSH" ;;
     "phone") VPN_DUO2FAMETHOD_DESCRIPTION="PHONE" ;;
     "sms") VPN_DUO2FAMETHOD_DESCRIPTION="SMS" ;;
-    "") VPN_DUO2FAMETHOD_DESCRIPTION="NONE" ;;
-    *) if [[ "$VPN_DUO2FAMETHOD" =~ ^[0-9]{6}$ ]]; then
-        VPN_DUO2FAMETHOD_DESCRIPTION="PASSCODE"
-    else
-        printf "%bUnsupported PASSCODE format! Update the variable 'VPN_DUO2FAMETHOD' declaration in ${PROFILES_FILE} ...%b" "${DANGER}" "${RESET}"
+    "passcode")
+        VPN_DUO2FAMETHOD_DESCRIPTION="PASSCODE (to be entered interactively)"
+        ;;
+    *) 
+        printf "%bUnsupported 2FA method! Update the variable 'VPN_DUO2FAMETHOD' declaration in ${PROFILES_FILE} ...%b" "${DANGER}" "${RESET}"
         return
-    fi ;;
+    ;;
     esac
 }
 
@@ -185,15 +209,15 @@ function start() {
     # VPN Selection and Connection
     print_primary "Starting ${PROGRAM_NAME} ..."
 
-    print_warning "Process ID (PID) stored in %s ...\n" "${PID_FILE_PATH}"
+    print_warning "Process ID (PID) stored in ${PID_FILE_PATH} ..."
     
-    print_warning "Logs file (LOG) stored in %s ...\n" "${LOG_FILE_PATH}"
+    print_warning "Logs file (LOG) stored in ${LOG_FILE_PATH} ..."
     
-    print_primary "Which VPN do you want to connect to?\n"
+    print_primary "Which VPN do you want to connect to?"
     
     select option in "${vpn_names[@]}"; do
         if [[ $option == "Quit" ]]; then
-            print_warning "You chose to close the app!\n"
+            print_warning "You chose to close the app!"
             exit
         elif [[ " ${vpn_names[@]} " =~ " ${option} " ]]; then
             IFS=$'\n' read -r -d '' VPN_NAME PROTOCOL VPN_HOST VPN_GROUP VPN_USER VPN_PASSWD VPN_DUO2FAMETHOD SERVER_CERTIFICATE < <(xmlstarlet sel -t -m "//VPN[name='$option']" -v "name" -o $'\n' -v "protocol" -o $'\n' -v "host" -o $'\n' -v "authGroup" -o $'\n' -v "user" -o $'\n' -v "password" -o $'\n' -v "duo2FAMethod" -o $'\n' -v "serverCertificate" -n $PROFILES_FILE)
@@ -202,28 +226,28 @@ function start() {
             connect
             break
         else
-            print_danger "Invalid option! Please choose one of the options above...\n"
+            print_danger "Invalid option! Please choose one of the options above..."
         fi
     done
 
-    # Post-connection checks
-    if is_vpn_running; then
-        print_success "Connected to %s\n" "${VPN_NAME}"
-        print_current_ip_address
-    else
-        print_danger "Failed to connect!\n"
-    fi
+#    # Post-connection checks
+#    if is_vpn_running; then
+#        print_success "Connected to ${VPN_NAME}"
+#        print_current_ip_address
+#    else
+#        print_danger "Failed to connect!"
+#    fi
 }
 
 function connect() {
     # Check if required variables are declared
     if [[ -z "${VPN_HOST}" ]]; then
-        print_danger "Variable 'VPN_HOST' is not declared! Update the variable 'VPN_HOST' declaration in ${PROFILES_FILE} ...\n"
+        print_danger "Variable 'VPN_HOST' is not declared! Update the variable 'VPN_HOST' declaration in ${PROFILES_FILE} ..."
         return
     fi
 
     if [[ -z $PROTOCOL ]]; then
-        print_danger "Variable 'PROTOCOL' is not declared! Update the variable 'PROTOCOL' declaration in ${PROFILES_FILE} ...\n"
+        print_danger "Variable 'PROTOCOL' is not declared! Update the variable 'PROTOCOL' declaration in ${PROFILES_FILE} ..."
         return
     fi
 
@@ -234,24 +258,38 @@ function connect() {
     set_2fa_method_description
 
     # Display connection information
-    print_primary "Starting the %s on %s using %s ...\n" "${VPN_NAME}" "${VPN_HOST}" "${PROTOCOL_DESCRIPTION}"
+    print_primary "Starting the ${VPN_NAME} on ${VPN_HOST} using ${PROTOCOL_DESCRIPTION} ..."
 
     # Check and display 2FA information
     if [ -z "$VPN_DUO2FAMETHOD" ]; then
-        print_warning "Connecting without 2FA (%s) ...\n" "${VPN_DUO2FAMETHOD_DESCRIPTION}"
+        print_warning "Connecting without 2FA (${VPN_DUO2FAMETHOD_DESCRIPTION}) ..."
     else
-        print_primary "Connecting with Two-Factor Authentication (2FA) from Duo (%s) ...\n" "${VPN_DUO2FAMETHOD_DESCRIPTION}"
+        print_primary "Connecting with Two-Factor Authentication (2FA) from Duo (${VPN_DUO2FAMETHOD_DESCRIPTION}) ..."
     fi
 
     # Call the function to run openconnect
     run_openconnect
+
+    if [ $? -eq 0 ]; then
+        # Add a delay to allow network changes to take effect
+        sleep 10
+
+    # Check the connection status and print success message
+    if is_vpn_running; then
+        print_success "Connected to ${VPN_NAME}"
+    else
+        print_danger "Failed to connect!"
+    fi
+    else
+    print_danger "Failed to initiate VPN connection!"
+    fi
 }
 
 function status() {
     if is_vpn_running; then
-        print_success "Connected ...\n"
+        print_success "Connected ..."
     else
-        print_primary "Not connected ...\n"
+        print_primary "Not connected ..."
     fi
     print_current_ip_address
 }
@@ -259,14 +297,14 @@ function status() {
 function stop() {
 
     if is_vpn_running; then
-        print_warning "Connected ...\nRemoving %s ...\n" "${PID_FILE_PATH}"
+        print_warning "Connected ... Removing ${PID_FILE_PATH} ..."
         local pid
         pid=$(cat "${PID_FILE_PATH}")
         kill -9 "${pid}" >/dev/null 2>&1
         rm -f "${PID_FILE_PATH}" >/dev/null 2>&1
-        print_success "Disconnected ...\n"
+        print_success "Disconnected ..."
     else
-        print_success "Disconnected ...\n"
+        print_success "Disconnected ..."
     fi
 
     print_current_ip_address
