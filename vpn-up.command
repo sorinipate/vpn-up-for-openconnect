@@ -11,8 +11,48 @@ PROGRAM_PATH=$(dirname "$0")
 CONFIGURATION_FILE="${PROGRAM_PATH}/config/${PROGRAM_NAME}.config"
 PROFILES_FILE="${PROGRAM_PATH}/config/${PROGRAM_NAME}.profiles"
 
+# Function to ensure the logs directory and log file exists and are writable
+ensure_logs_directory_and_file_exists() {
+    local logs_dir="${PROGRAM_PATH}/logs"
+    local log_file="${logs_dir}/${PROGRAM_NAME}.log"
+
+    # Check and create logs directory if it doesn't exist
+    if [ ! -d "$logs_dir" ]; then
+        echo "Logs directory not found. Creating: $logs_dir"
+        mkdir -p "$logs_dir"
+        if [ $? -ne 0 ]; then
+            echo "Failed to create logs directory. Please check permissions."
+            exit 1
+        fi
+        # Optionally, set specific permissions on logs directory
+        chmod 755 "$logs_dir"
+    fi
+
+    # Check if log file exists and is writable, create if it doesn't exist
+    if [ ! -f "$log_file" ]; then
+        echo "Log file not found. Creating: $log_file"
+        touch "$log_file"
+        if [ $? -ne 0 ]; then
+            echo "Failed to create log file. Please check permissions."
+            exit 1
+        fi
+    fi
+
+    # Ensure the log file is writable
+    if [ ! -w "$log_file" ]; then
+        echo "Log file is not writable. Setting permissions."
+        chmod 644 "$log_file"
+        if [ $? -ne 0 ]; then
+            echo "Failed to set permissions on log file. Please check permissions."
+            exit 1
+        fi
+    fi
+}
+
 PID_FILE_PATH="${PROGRAM_PATH}/logs/${PROGRAM_NAME}.pid"
 LOG_FILE_PATH="${PROGRAM_PATH}/logs/${PROGRAM_NAME}.log"
+
+ensure_logs_directory_and_file_exists
 
 # Function to install Homebrew
 install_homebrew() {
@@ -113,9 +153,13 @@ function run_openconnect() {
 
     local vpn_pass_pipe_cmd="echo $VPN_PASSWD"
     
+    # Handle Duo 2FA method if required
     if [ "$VPN_DUO2FAMETHOD" = "passcode" ]; then
         read -p "Enter your Duo passcode: " duo_passcode
         vpn_pass_pipe_cmd="{ echo $VPN_PASSWD; sleep 1; echo $duo_passcode; }"
+    elif [ "$VPN_DUO2FAMETHOD_DESCRIPTION" = "Not required" ]; then
+        # If 2FA is not required, proceed without additional input
+        vpn_pass_pipe_cmd="echo $VPN_PASSWD"
     elif [ -n "$VPN_DUO2FAMETHOD" ]; then
         vpn_pass_pipe_cmd="{ echo $VPN_PASSWD; sleep 1; echo $VPN_DUO2FAMETHOD; }"
     fi
@@ -157,18 +201,23 @@ function set_protocol_description() {
 
 # Function to set 2FA method description
 function set_2fa_method_description() {
-    case $VPN_DUO2FAMETHOD in
-    "push") VPN_DUO2FAMETHOD_DESCRIPTION="PUSH" ;;
-    "phone") VPN_DUO2FAMETHOD_DESCRIPTION="PHONE" ;;
-    "sms") VPN_DUO2FAMETHOD_DESCRIPTION="SMS" ;;
-    "passcode")
-        VPN_DUO2FAMETHOD_DESCRIPTION="PASSCODE (to be entered interactively)"
-        ;;
-    *) 
-        printf "%bUnsupported 2FA method! Update the variable 'VPN_DUO2FAMETHOD' declaration in ${PROFILES_FILE} ...%b" "${DANGER}" "${RESET}"
-        return
-    ;;
-    esac
+    if [ -z "$VPN_DUO2FAMETHOD" ]; then
+        # If VPN_DUO2FAMETHOD is empty or not set, consider 2FA not required
+        VPN_DUO2FAMETHOD_DESCRIPTION="Not required"
+    else
+        case $VPN_DUO2FAMETHOD in
+        "push") VPN_DUO2FAMETHOD_DESCRIPTION="PUSH" ;;
+        "phone") VPN_DUO2FAMETHOD_DESCRIPTION="PHONE" ;;
+        "sms") VPN_DUO2FAMETHOD_DESCRIPTION="SMS" ;;
+        "passcode")
+            VPN_DUO2FAMETHOD_DESCRIPTION="PASSCODE (to be entered interactively)"
+            ;;
+        *) 
+            printf "%bUnsupported 2FA method! Update the variable 'VPN_DUO2FAMETHOD' declaration in ${PROFILES_FILE} ...%b" "${DANGER}" "${RESET}"
+            return
+            ;;
+        esac
+    fi
 }
 
 function start() {
