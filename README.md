@@ -218,7 +218,7 @@ Thanks to all contributors and users who helped test and refine this release.
 
 ## 🔖 Version History
 
-See [CHANGELOG.md](CHANGELOG.md) for full release history.
+See [CHANGELOG.md](CHANCELOG.md) for full release history.
 
 ---
 
