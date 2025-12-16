@@ -1,3 +1,4 @@
 /bin/*
 /logs/*
 .DS_Store
+config/vpn-up.command.profiles

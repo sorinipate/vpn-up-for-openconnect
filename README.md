@@ -1,72 +1,225 @@
 # VPN Up for OpenConnect
 
-## A Command-Line Client for Cisco AnyConnect on macOS and Linux
+## Secure Command-Line Client for Cisco AnyConnect (macOS & Linux)
 
-VPN Up is a shell script designed to enhance your experience with OpenConnect, now on both macOS and Linux distributions. It simplifies the process of establishing a VPN connection and offers a range of features to make VPN usage more efficient and user-friendly.
+**VPN Up for OpenConnect** is a modern, secure, and user-friendly Bash-based wrapper around `openconnect`, designed to simplify VPN connections while following best practices for security and maintainability.
 
----
-
-## Features
-
-- **Cross-Platform Support**: Works seamlessly on macOS and various Linux distributions.
-- **Dynamic VPN Connection Options**: Generates VPN connection options dynamically from a centralized XML configuration.
-- **Multiple VPN Connections**: Define and manage multiple VPN connections using different protocols.
-- **Password-Free Login**: Run OpenConnect without entering a username and password every time.
-- **Background Mode**: Option to run the script in the background or quietly.
-- **Certificate Authentication**: Supports authenticating with a certificate.
-- **Two-Factor Authentication**: Integrated support for Duo's 2FA.
-- **VPN Connection Status**: Easily check the status of your VPN connection.
-- **Automatic Dependency Management**: Checks for and installs required dependencies automatically.
+This project is intended for **legitimate and authorized VPN access only**.
 
 ---
 
-## What's New in v1.6-alpha
+## 🚀 Features
 
-- **Enhanced Cross-Platform Compatibility**: The script has been updated for compatibility with both macOS and Linux distributions.
-- **Automatic Dependency Checks and Installation**: The script now checks for required dependencies at startup and offers an automatic installation option for missing dependencies.
-- **Homebrew Integration for macOS**: Automated checks and installation option for Homebrew on macOS, used for installing other dependencies.
-- **Improved User Interaction and Feedback**: Enhanced user prompts and feedback for better clarity and user guidance.
-- **Robust Error Handling**: Improved error handling mechanisms for a smoother user experience.
+### 🔐 Security First
+- **No plaintext passwords**
+- Secure storage via:
+  - macOS **Keychain**
+  - Linux **Secret Service**
+  - OpenSSL-encrypted vault fallback (AES-256-CBC + PBKDF2)
+- Automatic migration of legacy plaintext passwords
+- Optional secure storage of sudo password (never stored in config)
+
+### 🧠 Modern Architecture
+- Requires **Bash ≥ 4**
+- Fully modular codebase
+- Safe command execution (no `eval`)
+- Robust error handling and diagnostics
+
+### 🔑 VPN & Authentication
+- Multiple VPN profiles via XML
+- Supported protocols:
+  - Cisco AnyConnect (default)
+  - Juniper Network Connect
+  - Palo Alto GlobalProtect
+  - Pulse Secure
+- Duo 2FA support:
+  - `push`, `phone`, `sms`, or 6-digit passcode
+  - Empty 2FA field allows gateway auto-push
+- Correct handling of **AuthGroup** (realm) selection
+
+### 🌍 Cross-Platform
+- macOS (Apple Silicon & Intel)
+- Linux (Debian/Ubuntu/RHEL/Fedora)
+- Background or foreground execution
+- Split routing handled by OpenConnect
+
+### 🎨 User Experience
+- Interactive profile selection
+- Setup wizard
+- ASCII banner (shown when interactive)
+- Clear, color-coded output
+- Diagnostic command (`doctor`)
 
 ---
 
-## Sample Configuration
+## 📋 Requirements
+
+### Mandatory
+- **Bash ≥ 4**
+- `openconnect`
+- `xmlstarlet`
+
+### Optional (recommended)
+- `openssl` (for encrypted vault fallback)
+- `secret-tool` (Linux keyring)
+
+---
+
+## 🛠 Installation
+
+### macOS (Apple Silicon / Intel)
+
+macOS ships with Bash 3.2. Install modern Bash:
 
 ```bash
-readonly SUDO=FALSE  # Options: TRUE or FALSE
-readonly SUDO_PASSWORD=""
+brew install bash openconnect xmlstarlet
+```
 
-readonly BACKGROUND=TRUE  # Options: TRUE (Runs in background), FALSE (Runs in foreground)
-readonly QUIET=TRUE       # Options: TRUE (Less output), FALSE (Detailed output)
+Ensure Homebrew Bash is first in your PATH:
+```bash
+echo 'export PATH="/opt/homebrew/bin:$PATH"' >> ~/.zprofile
+exec $SHELL -l
+```
+
+Or hard-wire the shebang in `vpn-up.command`:
+```bash
+#!/opt/homebrew/bin/bash
 ```
 
 ---
 
-## Sample VPN Profile (XML Format)
+### Linux
+
+```bash
+# Debian / Ubuntu
+sudo apt install bash openconnect xmlstarlet openssl
+
+# RHEL / CentOS
+sudo yum install bash openconnect xmlstarlet openssl
+
+# Fedora
+sudo dnf install bash openconnect xmlstarlet openssl
+```
+
+---
+
+## ⚙️ Setup
+
+```bash
+chmod +x vpn-up.command
+./vpn-up.command setup
+```
+
+The setup wizard will:
+- Create configuration files
+- Validate dependencies
+- Prepare secure storage backends
+
+---
+
+## 📁 Configuration
+
+### Main Config
+`config/vpn-up.command.config`
+
+```bash
+readonly QUIET=TRUE
+readonly BACKGROUND=TRUE
+readonly ENCRYPTION_ENABLED=TRUE
+```
+
+> ⚠️ `ENCRYPTION_KEY` is intentionally ignored.  
+> OS keychain/keyring is always preferred.  
+> The OpenSSL vault prompts for a passphrase when needed.
+
+---
+
+### VPN Profiles
+`config/vpn-up.command.profiles`
 
 ```xml
-<VPN>
-    <name>VPN PROFILE 1</name>
-    <protocol options="anyconnect, nc, gp, pulse">anyconnect</protocol>
-    <host>vpn.example.com</host>
-    <authGroup>developers</authGroup>
-    <user>username</user>
-    <password>&lt;password&gt;</password>
-    <duo2FAMethod options="passcode, push, phone, sms">&lt;2famethod&gt;</duo2FAMethod>
-    <serverCertificate>SHA1-OtherCharacters</serverCertificate>
-</VPN>
+<VPNs>
+  <VPN>
+    <name>Frankfurt VPN</name>
+    <protocol>anyconnect</protocol>
+    <host>frankfurt.example.com</host>
+    <authGroup>SimplicaEmployees</authGroup>
+    <user>your.username</user>
+    <password></password>
+    <duo2FAMethod>push</duo2FAMethod>
+    <serverCertificate>pin-sha256:BASE64_HASH</serverCertificate>
+  </VPN>
+</VPNs>
+```
+
+#### Supported tag aliases
+- `username` or `user`
+- `group` or `authGroup`
+- `duoMethod` or `duo2FAMethod`
+
+---
+
+## ▶️ Usage
+
+### Basic Commands
+```bash
+./vpn-up.command start
+./vpn-up.command status
+./vpn-up.command stop
+```
+
+### Secrets Management
+```bash
+./vpn-up.command set-secret "Frankfurt VPN" password
+./vpn-up.command delete-secret "Frankfurt VPN" password
+
+# Optional sudo password (secure storage only)
+./vpn-up.command set-secret __GLOBAL__ sudo_password
+./vpn-up.command delete-secret __GLOBAL__ sudo_password
+```
+
+### Diagnostics
+```bash
+./vpn-up.command doctor
 ```
 
 ---
 
-## Installation and Setup
+## 🔄 Migration Notes
 
-1. **Download the Script**: Get the latest release from [this link](https://github.com/sorinipate/vpn-up-for-openconnect/releases/latest).
-2. **Set Up the Script**:
-   - Move the `vpn-up-for-openconnect` folder to a suitable directory (e.g., `bin`).
-   - Update `vpn-up.command.config` with your settings.
-   - Set up your VPN profiles in `vpn-up.command.profiles.xml`.
-3. **Create an Alias**: Set up an alias in your shell (`bash` or `zsh`). Instructions [here](https://wpbeaches.com/make-an-alias-in-bash-or-zsh-shell-in-macos-with-terminal/).
-4. **Run VPN Up**: Execute `vpn-up` in your terminal to start. The script will handle any missing dependencies automatically.
+- Plaintext `<password>` values in profiles are **automatically migrated** on first use
+- You may safely remove passwords from profile XML afterward
+- Ensure correct `authGroup` is set to avoid login prompts
 
 ---
+
+## ⚠️ Known Behavior
+
+- Some AnyConnect gateways emit:
+  ```
+  Unexpected 404 result from server
+  ```
+  This is **benign** if the connection proceeds successfully.
+
+---
+
+## 📄 License
+
+MIT License  
+© Sorin-Doru Ipate
+
+---
+
+## 🙏 Acknowledgments
+
+Thanks to all contributors and users who helped test and refine this release.
+
+---
+
+## 🔖 Version History
+
+See [CHANGELOG.md](CHANGELOG.md) for full release history.
+
+---
+
+**This project is production-ready, secure, and actively maintained.**
