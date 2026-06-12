@@ -44,6 +44,10 @@ readonly SHOW_BANNER=__SHOW_BANNER__
 #        ├ TRUE          Show the ASCII banner on start (interactive only)
 #        └ FALSE         Never show the banner
 
+readonly NOTIFICATIONS=__NOTIFICATIONS__
+#        ├ TRUE          Desktop notification on connect/disconnect
+#        └ FALSE         No notifications
+
 # ENCRYPTION
 readonly ENCRYPTION_ENABLED=TRUE  # Toggle affects only file fallback; keychain/keyring are preferred.
 CFG
@@ -51,6 +55,7 @@ CFG
   sed -i.bak "s/__BACKGROUND__/${__WZ_BACKGROUND}/" "${tmp}"
   sed -i.bak "s/__QUIET__/${__WZ_QUIET}/" "${tmp}"
   sed -i.bak "s/__SHOW_BANNER__/${__WZ_SHOW_BANNER}/" "${tmp}"
+  sed -i.bak "s/__NOTIFICATIONS__/${__WZ_NOTIFICATIONS}/" "${tmp}"
   rm -f "${tmp}.bak"
   mv "${tmp}" "${CONFIGURATION_FILE}"
   chmod 600 "${CONFIGURATION_FILE}"
@@ -132,6 +137,9 @@ setup_wizard() {
 
   read -r -p "Show ASCII banner on start? (TRUE/FALSE) [TRUE]: " _in_banner
   __WZ_SHOW_BANNER="$(_bool_default "${_in_banner}" "TRUE")"
+
+  read -r -p "Desktop notifications on connect/disconnect? (TRUE/FALSE) [TRUE]: " _in_notif
+  __WZ_NOTIFICATIONS="$(_bool_default "${_in_notif}" "TRUE")"
 
   # Clean up any sudo password stored by older versions; storing it defeats
   # sudo's protection (any process running as this user could retrieve it).

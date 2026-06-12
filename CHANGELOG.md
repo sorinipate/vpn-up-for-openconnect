@@ -5,6 +5,29 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ---
 
+## [v3.4.0] — 2026-06-12
+### Service & Notifications Update
+
+### Added
+- `service install|uninstall|status` — run a profile as a login service with
+  auto-reconnect: launchd user agent on macOS, systemd user unit on Linux.
+  The service manager supervises openconnect in the foreground and restarts
+  it if the tunnel drops (30s throttle). Preflight checks catch missing
+  passwordless sudo, missing stored password, and passcode-2FA profiles.
+- Desktop notifications on connect/disconnect/failure (macOS Notification
+  Center via osascript, Linux via notify-send); new `NOTIFICATIONS` setting
+  (default `TRUE`), prompted in setup and shown by `doctor`.
+- Foreground sessions now record their own PID/state (openconnect only
+  writes `--pid-file` when daemonizing), so `status` and `stop` work during
+  foreground and service sessions too.
+
+### Changed
+- Service mode (`VPN_UP_SERVICE=1`) fails fast with clear errors instead of
+  prompting: non-interactive `sudo -n`, stored-secret requirement, and a
+  passcode-2FA guard.
+
+---
+
 ## [v3.3.0] — 2026-06-12
 ### Profiles & Completion Update
 

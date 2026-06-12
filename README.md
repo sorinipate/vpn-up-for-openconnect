@@ -147,6 +147,7 @@ automatically on first run.
 readonly QUIET=TRUE          # openconnect output verbosity
 readonly BACKGROUND=TRUE
 readonly SHOW_BANNER=TRUE    # ASCII banner on start (independent of QUIET)
+readonly NOTIFICATIONS=TRUE  # desktop notification on connect/disconnect
 readonly ENCRYPTION_ENABLED=TRUE
 ```
 
@@ -197,6 +198,23 @@ readonly ENCRYPTION_ENABLED=TRUE
 
 Each profile keeps its own log and PID/state files under `~/.config/vpn-up`,
 so `status`, `stop`, and `logs` are profile-aware.
+
+### Run as a login service (auto-reconnect)
+```bash
+./vpn-up.command service install "Frankfurt VPN"    # connect at login, reconnect on drop
+./vpn-up.command service status
+./vpn-up.command service uninstall "Frankfurt VPN"
+```
+Uses a launchd user agent on macOS and a systemd user unit on Linux; the
+service manager supervises openconnect in the foreground and relaunches it
+if the tunnel drops (30s throttle). Requirements:
+- the passwordless sudoers rule for openconnect (see above) — there is no TTY
+  to type a sudo password into
+- the profile's password stored in the secrets backend
+- a non-interactive 2FA method (`push`, `phone`, `sms` — not `passcode`)
+
+Desktop notifications fire on connect/disconnect (macOS Notification Center /
+`notify-send`); disable with `NOTIFICATIONS=FALSE` in the config.
 
 ### Shell completion
 ```bash
