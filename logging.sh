@@ -1,7 +1,7 @@
 # logging.sh - simple logging helpers
 
-PID_FILE_PATH="${PROGRAM_PATH}/pids/${PROGRAM_NAME}.pid"
-LOG_FILE_PATH="${PROGRAM_PATH}/logs/${PROGRAM_NAME}.log"
+PID_FILE_PATH="${DATA_DIR}/pids/${PROGRAM_NAME}.pid"
+LOG_FILE_PATH="${DATA_DIR}/logs/${PROGRAM_NAME}.log"
 
 # Color codes are printed separately from the message so they never go
 # through printf format processing; data must be passed as arguments to a

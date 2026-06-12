@@ -3,7 +3,7 @@
 # ENCRYPTION_ENABLED governs only the file fallback: TRUE=encrypted vault, FALSE=plaintext file (0600).
 
 SECRETS_NAMESPACE="${PROGRAM_NAME}"
-SECRETS_DIR="${PROGRAM_PATH}/config"
+SECRETS_DIR="${DATA_DIR}"
 SECRETS_VAULT="${SECRETS_DIR}/${PROGRAM_NAME}.secrets.enc"
 SECRETS_PLAIN="${SECRETS_DIR}/${PROGRAM_NAME}.secrets"
 SECRETS_TMP="${SECRETS_DIR}/${PROGRAM_NAME}.secrets.tmp"
