@@ -48,6 +48,7 @@ This project is intended for **legitimate and authorized VPN access only**.
   - Pulse Secure
 - Duo 2FA support:
   - `push`, `phone`, `sms`, or 6-digit passcode
+  - `passcode` in the profile prompts for the one-time code at connect time
   - Empty 2FA field allows gateway auto-push
 - Correct handling of **AuthGroup** (realm) selection
 
@@ -185,8 +186,11 @@ readonly ENCRYPTION_ENABLED=TRUE
 
 ### Basic Commands
 ```bash
-./vpn-up.command start
-./vpn-up.command status
+./vpn-up.command start                  # interactive profile menu
+./vpn-up.command start "Frankfurt VPN"  # connect directly (scriptable)
+./vpn-up.command list                   # list configured profiles
+./vpn-up.command status                 # profile, gateway, uptime
+./vpn-up.command logs -f                # follow the connection log
 ./vpn-up.command stop
 ```
 
@@ -217,9 +221,11 @@ sudo visudo -cf /etc/sudoers.d/vpn-up   # validate
 
 ### Certificate pinning
 ```bash
-./vpn-up.command pin vpn.example.com
+./vpn-up.command pin vpn.example.com          # print the pin
+./vpn-up.command pin --save "Frankfurt VPN"   # write it into the profile
 ```
-Prints the gateway's `pin-sha256:...` value for `<serverCertificate>`.
+Prints the gateway's `pin-sha256:...` value for `<serverCertificate>`,
+or saves it into the profile directly with `--save`.
 If no pin is configured, the gateway's certificate **must** validate against
 the system trust store or the connection is refused (fail closed). Legacy
 SHA1 pins still work but print a deprecation warning — re-pin with the

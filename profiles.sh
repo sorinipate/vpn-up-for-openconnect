@@ -85,6 +85,24 @@ list_profile_names() {
   printf "%s\n" "${vpn_names[@]}"
 }
 
+profile_exists() {
+  local name_lit; name_lit="$(xpath_literal "$1")"
+  [ -n "$(xmlstarlet sel -t -m "//VPN[name=${name_lit}]" -v name "$PROFILES_FILE" 2>/dev/null)" ]
+}
+
+# Tabular overview of all profiles (no secrets shown).
+list_profiles() {
+  check_file_existence "$PROFILES_FILE" "Profiles"
+  xmlstarlet sel -t -m '//VPN' \
+      -v name -o $'\t' \
+      -v protocol -o $'\t' \
+      -v host -o $'\t' \
+      -v 'duo2FAMethod | duoMethod' -n "$PROFILES_FILE" \
+    | awk -F'\t' '
+        BEGIN { printf "%-25s %-11s %-35s %s\n", "NAME", "PROTOCOL", "HOST", "2FA" }
+        { printf "%-25s %-11s %-35s %s\n", $1, ($2==""?"-":$2), ($3==""?"-":$3), ($4==""?"-":$4) }'
+}
+
 # shellcheck disable=SC2034  # description vars are consumed by core.sh
 set_protocol_description() {
   case $PROTOCOL in

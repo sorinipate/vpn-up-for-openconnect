@@ -26,6 +26,41 @@ verify_gateway_cert() {
     </dev/null >/dev/null 2>&1
 }
 
+# Fetch a profile's gateway pin and write it into <serverCertificate>.
+pin_save() {
+  local profile="$1"
+  check_file_existence "$PROFILES_FILE" "Profiles"
+  if ! profile_exists "$profile"; then
+    print_danger "Unknown profile '%s'.\n" "$profile"
+    return 1
+  fi
+  local name_lit; name_lit="$(xpath_literal "$profile")"
+  local host; host="$(xmlstarlet sel -t -m "//VPN[name=${name_lit}]" -v host "${PROFILES_FILE}")"
+  if [ -z "$host" ]; then
+    print_danger "Profile '%s' has no <host> configured.\n" "$profile"
+    return 1
+  fi
+  local pin
+  if ! pin="$(fetch_server_pin "$host")"; then
+    print_danger "Could not retrieve certificate from %s\n" "$host"
+    return 1
+  fi
+  local tmp="${PROFILES_FILE}.tmp"
+  if [ -n "$(xmlstarlet sel -t -m "//VPN[name=${name_lit}]/serverCertificate" -o yes "${PROFILES_FILE}" 2>/dev/null)" ]; then
+    xmlstarlet ed -u "//VPN[name=${name_lit}]/serverCertificate" -v "$pin" "${PROFILES_FILE}" > "${tmp}"
+  else
+    xmlstarlet ed -s "//VPN[name=${name_lit}]" -t elem -n serverCertificate -v "$pin" "${PROFILES_FILE}" > "${tmp}"
+  fi
+  mv "${tmp}" "${PROFILES_FILE}"
+  chmod 600 "${PROFILES_FILE}" 2>/dev/null || true
+  print_success "Saved %s to profile '%s'.\n" "$pin" "$profile"
+  if verify_gateway_cert "$host"; then
+    print_primary "Certificate also validates against the system trust store.\n"
+  else
+    print_warning "Certificate does NOT chain-validate; verify this pin out-of-band with your VPN administrator.\n"
+  fi
+}
+
 print_pin_instructions() {
   local host="$1"
   print_warning "To pin this gateway's certificate, run:\n"
