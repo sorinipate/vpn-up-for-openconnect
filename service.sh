@@ -169,7 +169,7 @@ service_status() {
       [ -e "$f" ] || continue
       found=1
       local label; label="$(basename "$f" .plist)"
-      if launchctl list 2>/dev/null | grep -q "$label"; then
+      if launchctl list 2>/dev/null | grep -qF "$label"; then
         print_success "loaded   %s\n" "$f"
       else
         print_warning "unloaded %s\n" "$f"

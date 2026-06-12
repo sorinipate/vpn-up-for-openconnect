@@ -40,3 +40,46 @@ setup() {
     [ "$(_service_path_for "Work VPN")" = "$VPN_UP_SYSTEMD_DIR/vpn-up-Work_VPN.service" ]
   fi
 }
+
+# --- install/uninstall/status flows with stubbed service managers ---
+
+_setup_install_stubs() {
+  cat > "$PROFILES_FILE" <<'XML'
+<VPNs>
+  <VPN><name>Svc VPN</name><protocol>anyconnect</protocol><host>s.example.com</host><user>u</user><password></password><duo2FAMethod>push</duo2FAMethod></VPN>
+  <VPN><name>Passcode VPN</name><protocol>anyconnect</protocol><host>p.example.com</host><user>u</user><password></password><duo2FAMethod>passcode</duo2FAMethod></VPN>
+</VPNs>
+XML
+  source "$BATS_TEST_DIRNAME/../profiles.sh"
+  sudo() { return 0; }                 # passwordless sudo "present"
+  secrets_get() { echo "stored"; }     # password "stored"
+  launchctl() { echo "launchctl $*" >> "$BATS_TEST_TMPDIR/svc-calls"; return 0; }
+  systemctl() { echo "systemctl $*" >> "$BATS_TEST_TMPDIR/svc-calls"; return 0; }
+}
+
+@test "service_install writes the service file and loads it" {
+  _setup_install_stubs
+  service_install "Svc VPN"
+  [ -f "$(_service_path_for "Svc VPN")" ]
+  grep -q "Svc" "$(_service_path_for "Svc VPN")"
+  grep -qE "(launchctl load|systemctl --user enable)" "$BATS_TEST_TMPDIR/svc-calls"
+}
+
+@test "service_install refuses passcode-2FA profiles and unknown profiles" {
+  _setup_install_stubs
+  run service_install "Passcode VPN"
+  [ "$status" -ne 0 ]
+  run service_install "Ghost"
+  [ "$status" -ne 0 ]
+}
+
+@test "service_uninstall unloads and removes; status lists installed services" {
+  _setup_install_stubs
+  service_install "Svc VPN"
+  run service_status
+  [[ "$output" == *"Svc_VPN"* ]]
+  service_uninstall "Svc VPN"
+  [ ! -e "$(_service_path_for "Svc VPN")" ]
+  run service_uninstall "Svc VPN"   # idempotent
+  [ "$status" -eq 0 ]
+}
