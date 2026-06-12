@@ -59,14 +59,27 @@ VPN is running (PID: 88933)
 
 ## 🌟 Key Features
 
-- **No plaintext passwords** — secrets live in the macOS **Keychain**, Linux **Secret Service**, or an AES-256-CBC + PBKDF2 OpenSSL vault; legacy plaintext is migrated and scrubbed automatically
+### Connect
+- **Four SSL VPN protocols** via [OpenConnect](https://www.infradead.org/openconnect/): Cisco **AnyConnect** (and ocserv), Juniper **Network Connect**, Palo Alto **GlobalProtect**, and **Pulse Secure**
+- **Multiple VPN profiles** — pick from an interactive menu or connect by name with zero prompts (`vpn-up start "Work VPN"`), with full **AuthGroup/realm** support
+- **Duo 2FA** — `push`, `phone`, `sms`, or one-time passcodes prompted at connect time; empty method lets the gateway auto-push
+- **Background or foreground** execution, per your config
+
+### Secure
+- **No plaintext passwords** — secrets live in the macOS **Keychain**, Linux **Secret Service**, or an AES-256-CBC + PBKDF2 OpenSSL vault; legacy plaintext is migrated and scrubbed automatically, and secrets never appear on command lines or in child-process environments
 - **Fail-closed server identity** — `pin-sha256` certificate pinning with a one-command pin fetch, or strict system trust-store validation
-- **Scriptable CLI** — connect by profile name with zero prompts (`vpn-up start "Work VPN"`)
+- **The sudo password is never stored** — interactive prompt by default, or a sudoers rule scoped to the one `openconnect` binary
+- **Isolated user data** — config, profiles, secrets, and logs live in `~/.config/vpn-up` with `600`/`700` permissions, untouched by updates or reinstalls
+
+### Operate
+- **Profile-aware lifecycle** — `status` shows profile, gateway, and uptime; `stop` and `logs -f` target a specific connection
 - **Login service with auto-reconnect** — launchd (macOS) / systemd (Linux) supervision; reconnects when the tunnel drops
 - **Lifecycle hooks** — run your own scripts on connect/disconnect (mount shares, switch proxies)
-- **Duo 2FA** — `push`, `phone`, `sms`, or one-time passcodes prompted at connect time
-- **Guided profile management** — `add-profile` / `remove-profile` wizards handle XML, secrets, pins, and services in one step
 - **Desktop notifications** on connect/disconnect (Notification Center / `notify-send`)
+
+### Manage
+- **Guided setup** — a first-run wizard plus `add-profile` / `remove-profile`, which handle XML, secrets, pins, and services in one step
+- **`doctor`** diagnostics — environment, dependencies, secret backend, and config at a glance
 - **Bash/zsh tab completion** for commands and profile names
 - **Hardened & tested** — 71 tests on macOS + Ubuntu in CI, shellcheck-clean, secret scanning, modern Bash (≥ 4), no `eval`
 
