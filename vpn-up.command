@@ -46,6 +46,7 @@ unset _legacy_file
 . "${PROGRAM_PATH}/profiles.sh"
 . "${PROGRAM_PATH}/core.sh"
 . "${PROGRAM_PATH}/setup.sh"
+. "${PROGRAM_PATH}/service.sh"
 
 # Default colors if config not yet present
 PRIMARY="\x1b[36;1m"; SUCCESS="\x1b[32;1m"; WARNING="\x1b[35;1m"; DANGER="\x1b[31;1m"; RESET="\x1b[0m"
@@ -63,6 +64,9 @@ Commands:
   logs [-f] [profile]  Show the connection log (-f to follow)
   setup                Run setup wizard (regenerate config)
   add-profile          Add a VPN profile interactively (incl. secret + pin)
+  service install <p>  Connect at login + auto-reconnect (launchd/systemd)
+  service uninstall <p> Remove the login service for a profile
+  service status       List installed VPN services
   set-secret           Save a secret field for a profile (e.g., password)
   delete-secret        Delete a stored secret for a profile
   pin <host[:port]>    Print the pin-sha256 value for a gateway's certificate
@@ -88,6 +92,13 @@ case "${1:-}" in
   logs)       shift; show_logs "$@" ;;
   setup)      setup_wizard ;;
   add-profile) add_profile_wizard ;;
+  service)    shift; sub="${1:-}"
+              case "$sub" in
+                install)   service_install "${2:-}" ;;
+                uninstall) service_uninstall "${2:-}" ;;
+                status|"") service_status ;;
+                *)         echo "Usage: $0 service install|uninstall <profile> | service status"; exit 1 ;;
+              esac ;;
   set-secret) shift; profile="${1:-}"; field="${2:-}"; { [ -z "$profile" ] || [ -z "$field" ]; } && { echo "Usage: $0 set-secret <profile> <field>"; exit 1; }
               [ "$field" = "sudo_password" ] && { echo "Storing the sudo password is not supported (it would defeat sudo's protection). See the sudoers rule in the README." >&2; exit 1; }
               read -r -s -p "Enter value for ${profile}.${field}: " value; echo
