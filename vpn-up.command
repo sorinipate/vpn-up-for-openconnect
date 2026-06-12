@@ -23,6 +23,7 @@ mkdir -p "${PROGRAM_PATH}/config" "${PROGRAM_PATH}/logs" "${PROGRAM_PATH}/pids"
 . "${PROGRAM_PATH}/ui.sh"
 . "${PROGRAM_PATH}/dependencies.sh"
 . "${PROGRAM_PATH}/encryption.sh"
+. "${PROGRAM_PATH}/network.sh"
 . "${PROGRAM_PATH}/profiles.sh"
 . "${PROGRAM_PATH}/core.sh"
 . "${PROGRAM_PATH}/setup.sh"
@@ -42,11 +43,13 @@ Commands:
   setup          Run setup wizard (regenerate config)
   set-secret     Save a secret field for a profile (e.g., password)
   delete-secret  Delete a stored secret for a profile
+  pin            Print the pin-sha256 value for a gateway's certificate
   doctor         Diagnose environment and secret backend
 
 Examples:
   $PROGRAM_NAME start
   $PROGRAM_NAME set-secret WorkVPN password
+  $PROGRAM_NAME pin vpn.example.com
   $PROGRAM_NAME doctor
 EOF
 }
@@ -63,6 +66,18 @@ case "$1" in
               secrets_set "${profile}" "${field}" "${value}"; echo "Saved secret for ${profile}.${field}." ;;
   delete-secret) shift; profile="$1"; field="$2"; [ -z "$profile" -o -z "$field" ] && { echo "Usage: $0 delete-secret <profile> <field>"; exit 1; }
                  secrets_delete "${profile}" "${field}"; echo "Deleted secret for ${profile}.${field} (if existed)." ;;
+  pin)        shift; host="$1"; [ -z "$host" ] && { echo "Usage: $0 pin <host[:port]>"; exit 1; }
+              if pin_value="$(fetch_server_pin "$host")"; then
+                echo "$pin_value"
+                if verify_gateway_cert "$host"; then
+                  echo "(certificate also validates against the system trust store)"
+                else
+                  echo "WARNING: certificate does NOT validate against the system trust store." >&2
+                  echo "Only use this pin if you have verified it out-of-band (e.g., with your VPN administrator)." >&2
+                fi
+              else
+                echo "Could not retrieve certificate from $host" >&2; exit 1
+              fi ;;
   doctor)     doctor ;;
   *)          print_info ;;
 esac

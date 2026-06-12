@@ -193,6 +193,17 @@ sudo visudo -cf /etc/sudoers.d/vpn-up   # validate
 > scoped to the one binary — do not add broad commands like `kill` here.
 > Stopping the VPN will still ask for your sudo password; that's intentional.
 
+### Certificate pinning
+```bash
+./vpn-up.command pin vpn.example.com
+```
+Prints the gateway's `pin-sha256:...` value for `<serverCertificate>`.
+If no pin is configured, the gateway's certificate **must** validate against
+the system trust store or the connection is refused (fail closed). Legacy
+SHA1 pins still work but print a deprecation warning — re-pin with the
+command above. Verify any pin out-of-band with your VPN administrator
+before trusting it.
+
 ### Diagnostics
 ```bash
 ./vpn-up.command doctor
