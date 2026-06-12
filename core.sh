@@ -16,6 +16,28 @@ assert_safe_to_source() {
   fi
 }
 
+# Run user hook scripts for a lifecycle event (connected/disconnected) from
+# ${DATA_DIR}/hooks/<event>.d/, in name order. Hooks are executable code, so
+# each gets the same ownership/permission check as the config file; failures
+# are reported but never abort the VPN flow. Hooks receive VPN_EVENT,
+# VPN_NAME, and VPN_HOST in their environment (never the password).
+run_hooks() {
+  local event="$1" name="${2:-}" host="${3:-}"
+  local dir="${DATA_DIR}/hooks/${event}.d" h
+  [ -d "$dir" ] || return 0
+  for h in "$dir"/*; do
+    [ -f "$h" ] && [ -x "$h" ] || continue
+    if ! assert_safe_to_source "$h"; then
+      print_warning "Skipping hook %s (unsafe ownership/permissions).\n" "$h"
+      continue
+    fi
+    if ! VPN_EVENT="$event" VPN_NAME="$name" VPN_HOST="$host" "$h"; then
+      print_warning "Hook %s exited non-zero.\n" "$h"
+    fi
+  done
+  return 0
+}
+
 # Source the config (executable shell) after the safety checks. Safe to call
 # from any command; no-op when the config doesn't exist yet.
 load_config() {
@@ -96,6 +118,7 @@ start() {
       write_connection_state
       print_success "Connected to %s\n" "${VPN_NAME}"
       notify "VPN Up" "Connected to ${VPN_NAME}"
+      run_hooks connected "${VPN_NAME}" "${VPN_HOST}"
       print_current_ip_address
     else
       print_danger "Failed to connect! Last log lines from %s:\n" "${LOG_FILE_PATH}"
@@ -232,11 +255,15 @@ _stop_by_pid_file() {
     print_danger "Could not stop openconnect (PID: %s); VPN may still be up!\n" "$pid"
     return 1
   fi
-  local profile=""
-  [ -f "$statefile" ] && profile="$(awk -F= '$1=="profile"{print substr($0,9); exit}' "$statefile")"
+  local profile="" host=""
+  if [ -f "$statefile" ]; then
+    profile="$(awk -F= '$1=="profile"{print substr($0,9); exit}' "$statefile")"
+    host="$(awk -F= '$1=="host"{print substr($0,6); exit}' "$statefile")"
+  fi
   rm -f "$pidfile" "$statefile"
   print_success "VPN stopped.\n"
   notify "VPN Up" "Disconnected from ${profile:-VPN}"
+  run_hooks disconnected "$profile" "$host"
 }
 
 stop() {
@@ -326,6 +353,7 @@ run_openconnect() {
       if [ -n "$_pid" ]; then
         printf '%s\n' "$_pid" > "$PID_FILE_PATH"
         notify "VPN Up" "Connected to ${VPN_NAME}"
+        run_hooks connected "${VPN_NAME}" "${VPN_HOST}"
       fi
     ) &
     printf "%s\n" "$stdin_lines" \
@@ -333,6 +361,7 @@ run_openconnect() {
     # Foreground session over (disconnect or failure): clean our records.
     rm -f "$PID_FILE_PATH" "$STATE_FILE_PATH"
     notify "VPN Up" "Disconnected from ${VPN_NAME:-VPN}"
+    run_hooks disconnected "${VPN_NAME:-}" "${VPN_HOST:-}"
   fi
 
   # Drop the password from shell memory as soon as it has been piped.
