@@ -154,8 +154,8 @@ service_uninstall() {
   fi
   if [ "$(uname)" = "Darwin" ]; then
     launchctl unload -w "$target" 2>/dev/null || true
-  else
-    command -v systemctl >/dev/null 2>&1 && systemctl --user disable --now "$(basename "$target")" 2>/dev/null || true
+  elif command -v systemctl >/dev/null 2>&1; then
+    systemctl --user disable --now "$(basename "$target")" 2>/dev/null || true
   fi
   rm -f "$target"
   print_success "Removed service for '%s'.\n" "$profile"
