@@ -5,6 +5,23 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ---
 
+## [v3.1.0] — 2026-06-12
+### UI Update
+
+### Added
+- `SHOW_BANNER` configuration setting (default `TRUE`) to control the
+  start-up ASCII banner (PR #22).
+- Setup wizard prompt for the banner preference; `doctor` includes
+  `SHOW_BANNER` in its config preview (PR #22).
+- ASCII banner displayed at the top of the README (PR #23).
+
+### Changed
+- `QUIET` now governs only openconnect's output verbosity; it no longer
+  hides the banner. Existing configs without `SHOW_BANNER` default to
+  showing it (PR #22).
+
+---
+
 ## [v3.0.0] — 2026-06-12
 ### Security Hardening Release
 
