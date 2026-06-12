@@ -26,7 +26,7 @@ run_hooks() {
   local dir="${DATA_DIR}/hooks/${event}.d" h
   [ -d "$dir" ] || return 0
   for h in "$dir"/*; do
-    [ -f "$h" ] && [ -x "$h" ] || continue
+    { [ -f "$h" ] && [ -x "$h" ]; } || continue
     if ! assert_safe_to_source "$h"; then
       print_warning "Skipping hook %s (unsafe ownership/permissions).\n" "$h"
       continue
