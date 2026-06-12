@@ -165,17 +165,16 @@ run_openconnect() {
   mkdir -p "${PROGRAM_PATH}/logs" "${PROGRAM_PATH}/pids"
   chmod 700 "${PROGRAM_PATH}/logs" "${PROGRAM_PATH}/pids"
 
-  if [ -n "$VPN_DUO2FAMETHOD" ]; then
-    { printf "%s
-" "$VPN_PASSWD"; sleep 1; printf "%s
-" "$VPN_DUO2FAMETHOD"; } \
-      | sudo openconnect "${args[@]}" | sudo tee "$LOG_FILE_PATH" 2>&1
-  else
-    printf "%s
-" "$VPN_PASSWD" \
-      | sudo openconnect "${args[@]}" | sudo tee "$LOG_FILE_PATH" 2>&1
-  fi
+  # Feed password (and 2FA answer, if any) on stdin. Create the log file as
+  # the unprivileged user with 600 perms and capture openconnect's stderr too
+  # (previously `sudo tee ... 2>&1` redirected tee's stderr, not openconnect's,
+  # and left a root-owned log in the user's directory).
+  local stdin_lines="$VPN_PASSWD"
+  [ -n "$VPN_DUO2FAMETHOD" ] && stdin_lines+=$'\n'"$VPN_DUO2FAMETHOD"
+  ( umask 077; : > "$LOG_FILE_PATH" )
+  printf "%s\n" "$stdin_lines" \
+    | sudo openconnect "${args[@]}" 2>&1 | tee "$LOG_FILE_PATH"
 
   # Drop the password from shell memory as soon as it has been piped.
-  unset VPN_PASSWD
+  unset VPN_PASSWD stdin_lines
 }
