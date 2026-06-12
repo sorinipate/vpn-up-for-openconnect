@@ -1,5 +1,10 @@
 # logging.sh - simple logging helpers
 
+# Name shown in user-facing messages and hints. PROGRAM_NAME stays the
+# internal identifier (data file names, slugs, Keychain namespace) and must
+# never change; brew users invoke the command as plain `vpn-up`.
+DISPLAY_NAME="${DISPLAY_NAME:-${PROGRAM_NAME%.command}}"
+
 # Legacy single-connection paths; start() switches these to per-profile
 # paths via set_profile_paths once a profile is selected.
 PID_FILE_PATH="${DATA_DIR}/pids/${PROGRAM_NAME}.pid"

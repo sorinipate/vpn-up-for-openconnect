@@ -13,11 +13,27 @@ XML
   chmod 600 "$VPN_UP_HOME/vpn-up.command.profiles"
 }
 
-@test "no arguments prints usage" {
+@test "no arguments prints usage with the display name" {
   run "$CLI"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Usage:"* ]]
+  [[ "$output" == *"Usage: vpn-up <command>"* ]]
   [[ "$output" == *"start [profile]"* ]]
+}
+
+@test "start with no profiles, non-tty: seeds template and exits 1" {
+  rm -f "$VPN_UP_HOME/vpn-up.command.profiles"
+  # config present so the setup wizard doesn't interfere
+  cat > "$VPN_UP_HOME/vpn-up.command.config" <<'EOF'
+readonly BACKGROUND=TRUE
+readonly QUIET=TRUE
+readonly SHOW_BANNER=FALSE
+readonly NOTIFICATIONS=FALSE
+EOF
+  chmod 600 "$VPN_UP_HOME/vpn-up.command.config"
+  run "$CLI" start < /dev/null
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Created profile template"* ]]
+  [ -f "$VPN_UP_HOME/vpn-up.command.profiles" ]
 }
 
 @test "unknown command prints usage" {
