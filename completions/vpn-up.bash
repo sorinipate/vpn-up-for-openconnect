@@ -22,7 +22,7 @@ _vpn_up() {
   cmd="${COMP_WORDS[1]:-}"
 
   if [ "$COMP_CWORD" -eq 1 ]; then
-    mapfile -t COMPREPLY < <(compgen -W "start stop status restart list logs setup add-profile service set-secret delete-secret pin doctor" -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W "start stop status restart list logs setup add-profile remove-profile service set-secret delete-secret pin doctor" -- "$cur")
     return
   fi
 
@@ -34,7 +34,7 @@ _vpn_up() {
         _vpn_up_complete_profiles "$cur"
       fi
       ;;
-    start|restart|stop)
+    start|restart|stop|remove-profile)
       [ "$COMP_CWORD" -eq 2 ] && _vpn_up_complete_profiles "$cur"
       ;;
     set-secret|delete-secret)

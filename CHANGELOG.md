@@ -5,6 +5,26 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ---
 
+## [v3.5.0] — 2026-06-12
+### Lifecycle & Maintenance Update
+
+### Added
+- `remove-profile <name>` — removes the XML block, the stored secret, the
+  per-profile PID/state/log files, and any installed login service in one
+  confirmed step; refuses while the profile is connected.
+- Lifecycle hooks: executable scripts in `~/.config/vpn-up/hooks/connected.d/`
+  and `disconnected.d/` run on tunnel up/down with `VPN_EVENT`, `VPN_NAME`,
+  and `VPN_HOST` in the environment. Hooks must be user-owned and not
+  group/world-writable or they are skipped; failures never block the VPN.
+- Release automation: publishing a GitHub release now updates the Homebrew
+  tap formula (url + sha256) automatically.
+
+### Changed
+- CI runs the test suite on macOS as well as Ubuntu (added post-v3.4.0
+  along with portable stat helpers that fixed config validation on Linux).
+
+---
+
 ## [v3.4.0] — 2026-06-12
 ### Service & Notifications Update
 

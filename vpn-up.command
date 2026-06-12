@@ -64,6 +64,7 @@ Commands:
   logs [-f] [profile]  Show the connection log (-f to follow)
   setup                Run setup wizard (regenerate config)
   add-profile          Add a VPN profile interactively (incl. secret + pin)
+  remove-profile <p>   Remove a profile (XML, secret, logs, service)
   service install <p>  Connect at login + auto-reconnect (launchd/systemd)
   service uninstall <p> Remove the login service for a profile
   service status       List installed VPN services
@@ -92,6 +93,7 @@ case "${1:-}" in
   logs)       shift; show_logs "$@" ;;
   setup)      setup_wizard ;;
   add-profile) add_profile_wizard ;;
+  remove-profile) remove_profile "${2:-}" ;;
   service)    shift; sub="${1:-}"
               case "$sub" in
                 install)   service_install "${2:-}" ;;

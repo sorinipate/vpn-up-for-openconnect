@@ -123,6 +123,56 @@ add_profile_wizard() {
   fi
 }
 
+# Remove a profile and everything attached to it: XML block, stored secret,
+# per-profile pid/state/log files, and any installed login service.
+remove_profile() {
+  local name="$1"
+  [ -n "$name" ] || { echo "Usage: ${PROGRAM_NAME} remove-profile <profile>" >&2; return 1; }
+  if ! profile_exists "$name"; then
+    print_danger "Unknown profile '%s'.\n" "$name"
+    return 1
+  fi
+
+  local slug; slug="$(profile_slug "$name")"
+  local pidfile="${DATA_DIR}/pids/${PROGRAM_NAME}.${slug}.pid"
+  if [ -f "$pidfile" ] && is_openconnect_pid "$(cat "$pidfile")"; then
+    print_danger "Profile '%s' is currently connected; stop it first: %s stop '%s'\n" "$name" "${PROGRAM_NAME}" "$name"
+    return 1
+  fi
+
+  local _confirm=""
+  read -r -p "Remove profile '${name}', its stored secret, logs, and any login service? [y/N]: " _confirm
+  case "$_confirm" in y|Y|yes|YES) : ;; *) print_warning "Aborted.\n"; return 1 ;; esac
+
+  # login service (also unloads it)
+  if [ -f "$(_service_path_for "$name")" ]; then
+    service_uninstall "$name"
+  fi
+
+  # stored secret
+  secrets_delete "$name" "password"
+
+  # XML block
+  local name_lit; name_lit="$(xpath_literal "$name")"
+  local tmp="${PROFILES_FILE}.tmp"
+  if xmlstarlet ed -d "//VPN[name=${name_lit}]" "${PROFILES_FILE}" > "${tmp}"; then
+    mv "${tmp}" "${PROFILES_FILE}"
+    chmod 600 "${PROFILES_FILE}" 2>/dev/null || true
+  else
+    rm -f "${tmp}"
+    print_danger "Could not update %s; profile not removed from XML.\n" "${PROFILES_FILE}"
+    return 1
+  fi
+
+  # per-profile state and logs
+  rm -f "$pidfile" \
+        "${DATA_DIR}/pids/${PROGRAM_NAME}.${slug}.state" \
+        "${DATA_DIR}/logs/${PROGRAM_NAME}.${slug}.log" \
+        "${DATA_DIR}/logs/service.${slug}.log"
+
+  print_success "Removed profile '%s' (XML, secret, state, logs, service).\n" "$name"
+}
+
 setup_wizard() {
   printf "%b\n" "${PRIMARY}Running first-time setup...${RESET}"
 
