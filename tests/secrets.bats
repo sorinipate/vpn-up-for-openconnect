@@ -60,12 +60,11 @@ setup() {
 }
 
 @test "vault and plain files are created with 600 permissions" {
+  source "$BATS_TEST_DIRNAME/../logging.sh"
   secrets_set_openssl "$(secrets_key D password)" "v"
   secrets_set_file "$(secrets_key D password)" "v"
-  perms_enc="$(stat -f '%Lp' "$SECRETS_VAULT" 2>/dev/null || stat -c '%a' "$SECRETS_VAULT")"
-  perms_plain="$(stat -f '%Lp' "$SECRETS_PLAIN" 2>/dev/null || stat -c '%a' "$SECRETS_PLAIN")"
-  [ "$perms_enc" = "600" ]
-  [ "$perms_plain" = "600" ]
+  [ "$(file_mode "$SECRETS_VAULT")" = "600" ]
+  [ "$(file_mode "$SECRETS_PLAIN")" = "600" ]
 }
 
 @test "no plaintext temp files left behind" {

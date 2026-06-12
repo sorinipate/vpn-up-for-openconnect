@@ -4,8 +4,8 @@
 # owned by the current user and not writable by group/other.
 assert_safe_to_source() {
   local f="$1" owner perms
-  owner="$(stat -f '%u' "$f" 2>/dev/null || stat -c '%u' "$f" 2>/dev/null)"
-  perms="$(stat -f '%Lp' "$f" 2>/dev/null || stat -c '%a' "$f" 2>/dev/null)"
+  owner="$(file_owner_uid "$f")"
+  perms="$(file_mode "$f")"
   if [ "$owner" != "$(id -u)" ]; then
     print_danger "Refusing to load %s: not owned by the current user.\n" "$f"
     return 1
