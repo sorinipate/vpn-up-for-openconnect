@@ -17,7 +17,7 @@ This project is intended for **legitimate and authorized VPN access only**.
   - Linux **Secret Service**
   - OpenSSL-encrypted vault fallback (AES-256-CBC + PBKDF2)
 - Automatic migration of legacy plaintext passwords
-- Optional secure storage of sudo password (never stored in config)
+- The sudo password is never stored; passwordless operation via a scoped sudoers rule (see below)
 
 ### 🧠 Modern Architecture
 - Requires **Bash ≥ 4**
@@ -119,8 +119,14 @@ The setup wizard will:
 
 ## 📁 Configuration
 
+All user state (config, profiles, secrets vault, logs, PID files) lives in
+**`~/.config/vpn-up`** (override with `VPN_UP_HOME` or `XDG_CONFIG_HOME`),
+so updating or deleting the program directory never touches your data.
+Legacy files from the old in-repo `config/` directory are migrated
+automatically on first run.
+
 ### Main Config
-`config/vpn-up.command.config`
+`~/.config/vpn-up/vpn-up.command.config`
 
 ```bash
 readonly QUIET=TRUE
@@ -135,7 +141,8 @@ readonly ENCRYPTION_ENABLED=TRUE
 ---
 
 ### VPN Profiles
-`config/vpn-up.command.profiles`
+`~/.config/vpn-up/vpn-up.command.profiles`
+(template seeded from `config/vpn-up.command.profiles.default` on first run)
 
 ```xml
 <VPNs>
@@ -172,11 +179,37 @@ readonly ENCRYPTION_ENABLED=TRUE
 ```bash
 ./vpn-up.command set-secret "Frankfurt VPN" password
 ./vpn-up.command delete-secret "Frankfurt VPN" password
-
-# Optional sudo password (secure storage only)
-./vpn-up.command set-secret __GLOBAL__ sudo_password
-./vpn-up.command delete-secret __GLOBAL__ sudo_password
 ```
+
+### Passwordless sudo (optional)
+
+`openconnect` needs root. By default you'll get the normal `sudo` prompt.
+Never store your sudo password anywhere; if you want non-interactive runs,
+grant passwordless sudo for `openconnect` **only**:
+
+```bash
+# macOS (Homebrew):
+echo "$USER ALL=(root) NOPASSWD: /opt/homebrew/sbin/openconnect" | sudo tee /etc/sudoers.d/vpn-up
+# Linux:
+echo "$USER ALL=(root) NOPASSWD: /usr/sbin/openconnect" | sudo tee /etc/sudoers.d/vpn-up
+sudo chmod 440 /etc/sudoers.d/vpn-up
+sudo visudo -cf /etc/sudoers.d/vpn-up   # validate
+```
+
+> Verify the `openconnect` path with `command -v openconnect`. Keep the rule
+> scoped to the one binary — do not add broad commands like `kill` here.
+> Stopping the VPN will still ask for your sudo password; that's intentional.
+
+### Certificate pinning
+```bash
+./vpn-up.command pin vpn.example.com
+```
+Prints the gateway's `pin-sha256:...` value for `<serverCertificate>`.
+If no pin is configured, the gateway's certificate **must** validate against
+the system trust store or the connection is refused (fail closed). Legacy
+SHA1 pins still work but print a deprecation warning — re-pin with the
+command above. Verify any pin out-of-band with your VPN administrator
+before trusting it.
 
 ### Diagnostics
 ```bash
@@ -188,7 +221,8 @@ readonly ENCRYPTION_ENABLED=TRUE
 ## 🔄 Migration Notes
 
 - Plaintext `<password>` values in profiles are **automatically migrated** on first use
-- You may safely remove passwords from profile XML afterward
+- After migration the `<password>` tag is **blanked in the XML automatically** — plaintext never lingers on disk
+- The `<password>` field is deprecated; prefer `./vpn-up.command set-secret "<profile>" password`
 - Ensure correct `authGroup` is set to avoid login prompts
 
 ---

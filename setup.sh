@@ -27,7 +27,8 @@ readonly RESET="\x1b[0m"
 readonly SUDO=__SUDO__
 #        ├ TRUE
 #        └ FALSE
-# NOTE: SUDO password is NEVER stored in this file; it is saved securely via the secrets backend if you opt in.
+# NOTE: The sudo password is never stored anywhere. For passwordless operation,
+# add a scoped sudoers rule for openconnect (see README).
 
 # OPENCONNECT OPTIONS
 readonly BACKGROUND=__BACKGROUND__
@@ -62,19 +63,11 @@ setup_wizard() {
   read -r -p "Quiet output? (TRUE/FALSE) [TRUE]: " _in_quiet
   __WZ_QUIET="$(_bool_default "${_in_quiet}" "TRUE")"
 
-  # Optional: store sudo password securely for non-interactive runs
-  if [ "${__WZ_SUDO}" = TRUE ]; then
-    read -r -p "Store sudo password securely for non-interactive use? (TRUE/FALSE) [FALSE]: " _in_store
-    _STORE="$(_bool_default "${_in_store}" "FALSE")"
-    if [ "$_STORE" = TRUE ]; then
-      read -r -s -p "Enter sudo password (will be saved securely): " _p; echo
-      if [ -n "$_p" ]; then
-        secrets_set "__GLOBAL__" "sudo_password" "$_p"
-        print_success "Saved sudo password securely.\n"
-      else
-        print_warning "Empty password; nothing saved.\n"
-      fi
-    fi
+  # Clean up any sudo password stored by older versions; storing it defeats
+  # sudo's protection (any process running as this user could retrieve it).
+  if [ -n "$(secrets_get "__GLOBAL__" "sudo_password" 2>/dev/null)" ]; then
+    secrets_delete "__GLOBAL__" "sudo_password"
+    print_warning "Removed stored sudo password (no longer supported). For passwordless use, see the sudoers rule in the README.\n"
   fi
 
   save_configuration

@@ -1,14 +1,37 @@
 # core.sh - main flow (Bash >= 4; uses mapfile)
 
+# The config file is executable shell code: refuse to source it unless it is
+# owned by the current user and not writable by group/other.
+assert_safe_to_source() {
+  local f="$1" owner perms
+  owner="$(stat -f '%u' "$f" 2>/dev/null || stat -c '%u' "$f" 2>/dev/null)"
+  perms="$(stat -f '%Lp' "$f" 2>/dev/null || stat -c '%a' "$f" 2>/dev/null)"
+  if [ "$owner" != "$(id -u)" ]; then
+    print_danger "Refusing to load %s: not owned by the current user.\n" "$f"
+    return 1
+  fi
+  if [ $(( 8#$perms & 8#022 )) -ne 0 ]; then
+    print_danger "Refusing to load %s: writable by group/other (mode %s). Fix with: chmod 600 '%s'\n" "$f" "$perms" "$f"
+    return 1
+  fi
+}
+
 start() {
   # Ensure config exists or run wizard
   if [ ! -f "$CONFIGURATION_FILE" ]; then
     setup_wizard
   fi
+  assert_safe_to_source "$CONFIGURATION_FILE" || exit 1
   # shellcheck disable=SC1090
   source "$CONFIGURATION_FILE"
-  print_warning "Loaded configuration from $CONFIGURATION_FILE ...\n"
+  print_warning "Loaded configuration from %s ...\n" "$CONFIGURATION_FILE"
 
+  # Seed the profiles template on first run, then ask the user to fill it in.
+  if [ ! -f "$PROFILES_FILE" ] && [ -f "${PROGRAM_PATH}/config/${PROGRAM_NAME}.profiles.default" ]; then
+    ( umask 077; cp "${PROGRAM_PATH}/config/${PROGRAM_NAME}.profiles.default" "$PROFILES_FILE" )
+    print_warning "Created profile template at %s\nEdit it with your VPN details, then run start again.\n" "$PROFILES_FILE"
+    exit 1
+  fi
   check_file_existence "$PROFILES_FILE" "Profiles"
 
   # Show banner if interactive
@@ -51,22 +74,38 @@ start() {
     print_success "Connected to %s\n" "${VPN_NAME}"
     print_current_ip_address
   else
-    print_danger "Failed to connect!\n"
+    print_danger "Failed to connect! Last log lines from %s:\n" "${LOG_FILE_PATH}"
+    tail -n 15 "$LOG_FILE_PATH" 2>/dev/null || true
   fi
 }
 
 connect() {
   if [ -z "${VPN_HOST}" ]; then
-    print_danger "Variable 'VPN_HOST' is not declared! Update it in ${PROFILES_FILE} ...\n"
-    return
+    print_danger "Variable 'VPN_HOST' is not declared! Update it in %s ...\n" "${PROFILES_FILE}"
+    return 1
   fi
   if [ -z "${PROTOCOL}" ]; then
-    print_danger "Variable 'PROTOCOL' is not declared! Update it in ${PROFILES_FILE} ...\n"
-    return
+    print_danger "Variable 'PROTOCOL' is not declared! Update it in %s ...\n" "${PROFILES_FILE}"
+    return 1
   fi
 
   set_protocol_description
   set_2fa_method_description
+
+  # Fail closed on server identity: either a pin is configured, or the
+  # gateway's certificate must validate against the system trust store.
+  if [ -n "$SERVER_CERTIFICATE" ]; then
+    case "$SERVER_CERTIFICATE" in
+      pin-sha256:*) : ;;
+      *) print_warning "serverCertificate uses a legacy (SHA1) pin; SHA1 is deprecated. Run '%s pin %s' to get a pin-sha256 value.\n" "${PROGRAM_NAME}" "${VPN_HOST}" ;;
+    esac
+  else
+    if ! verify_gateway_cert "${VPN_HOST}"; then
+      print_danger "The certificate of %s does NOT validate against the system trust store, and no pin is configured. Refusing to connect.\n" "${VPN_HOST}"
+      print_pin_instructions "${VPN_HOST}"
+      return 1
+    fi
+  fi
 
   print_primary "Starting the %s on %s using %s ...\n" "${VPN_NAME}" "${VPN_HOST}" "${PROTOCOL_DESCRIPTION}"
   if [ -z "$VPN_DUO2FAMETHOD" ]; then
@@ -87,28 +126,46 @@ status() {
 }
 
 stop() {
-  if is_vpn_running; then
-    kill "$(cat "$PID_FILE_PATH")"
-    rm -f "$PID_FILE_PATH"
-    print_success "VPN stopped.\n"
-  else
+  if [ ! -f "$PID_FILE_PATH" ]; then
     print_warning "VPN is not running.\n"
+    return 0
   fi
+  local pid; pid="$(cat "$PID_FILE_PATH")"
+  if ! is_openconnect_pid "$pid"; then
+    print_warning "Stale PID file (no openconnect process with PID %s); cleaning up.\n" "$pid"
+    rm -f "$PID_FILE_PATH"
+    return 0
+  fi
+  # openconnect runs as root, so killing it needs sudo too.
+  if ! sudo kill "$pid"; then
+    print_danger "Failed to signal openconnect (PID: %s).\n" "$pid"
+    return 1
+  fi
+  local _i
+  for _i in {1..20}; do
+    is_openconnect_pid "$pid" || break
+    sleep 0.5
+  done
+  if is_openconnect_pid "$pid"; then
+    print_warning "openconnect did not exit gracefully; sending SIGKILL ...\n"
+    sudo kill -9 "$pid" 2>/dev/null || true
+    sleep 1
+  fi
+  if is_openconnect_pid "$pid"; then
+    print_danger "Could not stop openconnect (PID: %s); VPN may still be up!\n" "$pid"
+    return 1
+  fi
+  rm -f "$PID_FILE_PATH"
+  print_success "VPN stopped.\n"
 }
 
 run_openconnect() {
-  local background_flag=""
-  local quiet_flag=""
-  local server_cert_flag=""
-  [ -n "$SERVER_CERTIFICATE" ] && server_cert_flag="--servercert=$SERVER_CERTIFICATE"
-
-  # Warm sudo timestamp if configured and secret is available
-  if [ "${SUDO:-TRUE}" = TRUE ]; then
-    _SUDO_PASS="$(secrets_get "__GLOBAL__" "sudo_password")"
-    if [ -n "$_SUDO_PASS" ]; then
-      printf "%s
-" "$_SUDO_PASS" | sudo -S -v 2>/dev/null || true
-    fi
+  # Validate sudo up-front on the TTY so the prompt doesn't collide with the
+  # password pipe below. For passwordless use, configure a scoped sudoers rule
+  # (see README) instead of storing the sudo password anywhere.
+  if ! sudo -v; then
+    print_danger "sudo authentication failed; cannot start openconnect.\n"
+    return 1
   fi
 
   # Build argv array (no eval)
@@ -116,25 +173,36 @@ run_openconnect() {
   args+=(--protocol="$PROTOCOL")
   args+=(--user="$VPN_USER")
   args+=(--passwd-on-stdin)
-  [ "$QUIET" = TRUE ] && args+=(-q)
-  [ "$BACKGROUND" = TRUE ] && args+=(--background)
-  [ -n "$SERVER_CERTIFICATE" ] && args+=("$server_cert_flag")
+  [ "${QUIET:-FALSE}" = TRUE ] && args+=(-q)
+  [ "${BACKGROUND:-FALSE}" = TRUE ] && args+=(--background)
+  [ -n "$SERVER_CERTIFICATE" ] && args+=(--servercert="$SERVER_CERTIFICATE")
   [ -n "$VPN_GROUP" ] && args+=(--authgroup "$VPN_GROUP")
   args+=("$VPN_HOST")
   args+=(--pid-file "$PID_FILE_PATH")
 
   # Ensure dirs
-  mkdir -p "${PROGRAM_PATH}/logs" "${PROGRAM_PATH}/pids"
-  chmod 700 "${PROGRAM_PATH}/logs" "${PROGRAM_PATH}/pids"
+  ( umask 077; mkdir -p "${DATA_DIR}/logs" "${DATA_DIR}/pids" )
+  chmod 700 "${DATA_DIR}/logs" "${DATA_DIR}/pids"
 
-  if [ -n "$VPN_DUO2FAMETHOD" ]; then
-    { printf "%s
-" "$VPN_PASSWD"; sleep 1; printf "%s
-" "$VPN_DUO2FAMETHOD"; } \
-      | sudo openconnect "${args[@]}" | sudo tee "$LOG_FILE_PATH" 2>&1
+  # Feed password (and 2FA answer, if any) on stdin. Create the log file as
+  # the unprivileged user with 600 perms and capture openconnect's stderr too
+  # (previously `sudo tee ... 2>&1` redirected tee's stderr, not openconnect's,
+  # and left a root-owned log in the user's directory).
+  local stdin_lines="$VPN_PASSWD"
+  [ -n "$VPN_DUO2FAMETHOD" ] && stdin_lines+=$'\n'"$VPN_DUO2FAMETHOD"
+  ( umask 077; : > "$LOG_FILE_PATH" )
+  if [ "${BACKGROUND:-FALSE}" = TRUE ]; then
+    # The daemonized child keeps stdout open, so piping through tee would
+    # hang the shell forever after openconnect backgrounds itself; write
+    # straight to the log instead.
+    # shellcheck disable=SC2024  # intentional: log is opened (and owned) by the user; the root daemon inherits the fd
+    printf "%s\n" "$stdin_lines" \
+      | sudo openconnect "${args[@]}" >> "$LOG_FILE_PATH" 2>&1
   else
-    printf "%s
-" "$VPN_PASSWD" \
-      | sudo openconnect "${args[@]}" | sudo tee "$LOG_FILE_PATH" 2>&1
+    printf "%s\n" "$stdin_lines" \
+      | sudo openconnect "${args[@]}" 2>&1 | tee -a "$LOG_FILE_PATH"
   fi
+
+  # Drop the password from shell memory as soon as it has been piped.
+  unset VPN_PASSWD stdin_lines
 }

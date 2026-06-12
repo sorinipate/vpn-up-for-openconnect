@@ -2,3 +2,4 @@
 /logs/*
 .DS_Store
 config/vpn-up.command.profiles
+config/vpn-up.command.config
