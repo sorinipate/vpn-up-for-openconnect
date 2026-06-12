@@ -102,13 +102,12 @@ run_openconnect() {
   local server_cert_flag=""
   [ -n "$SERVER_CERTIFICATE" ] && server_cert_flag="--servercert=$SERVER_CERTIFICATE"
 
-  # Warm sudo timestamp if configured and secret is available
-  if [ "${SUDO:-TRUE}" = TRUE ]; then
-    _SUDO_PASS="$(secrets_get "__GLOBAL__" "sudo_password")"
-    if [ -n "$_SUDO_PASS" ]; then
-      printf "%s
-" "$_SUDO_PASS" | sudo -S -v 2>/dev/null || true
-    fi
+  # Validate sudo up-front on the TTY so the prompt doesn't collide with the
+  # password pipe below. For passwordless use, configure a scoped sudoers rule
+  # (see README) instead of storing the sudo password anywhere.
+  if ! sudo -v; then
+    print_danger "sudo authentication failed; cannot start openconnect.\n"
+    return 1
   fi
 
   # Build argv array (no eval)
