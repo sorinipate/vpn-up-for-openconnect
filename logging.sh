@@ -1,11 +1,13 @@
 # logging.sh - simple logging helpers
 
 PID_FILE_PATH="${DATA_DIR}/pids/${PROGRAM_NAME}.pid"
+# shellcheck disable=SC2034  # used by core.sh
 LOG_FILE_PATH="${DATA_DIR}/logs/${PROGRAM_NAME}.log"
 
 # Color codes are printed separately from the message so they never go
 # through printf format processing; data must be passed as arguments to a
 # literal format string (e.g. print_warning "Loaded %s\n" "$file").
+# shellcheck disable=SC2059  # fmt passthrough is the point; callers pass literal formats
 _print_color() { local color="$1" fmt="$2"; shift 2; printf "%b" "$color"; printf -- "$fmt" "$@"; printf "%b" "${RESET:-\x1b[0m}"; }
 print_primary() { _print_color "${PRIMARY:-\x1b[36;1m}" "$@"; }
 print_success() { _print_color "${SUCCESS:-\x1b[32;1m}" "$@"; }

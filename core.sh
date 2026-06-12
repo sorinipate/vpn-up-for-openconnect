@@ -140,8 +140,8 @@ stop() {
     print_danger "Failed to signal openconnect (PID: %s).\n" "$pid"
     return 1
   fi
-  local i
-  for i in {1..20}; do
+  local _i
+  for _i in {1..20}; do
     is_openconnect_pid "$pid" || break
     sleep 0.5
   done

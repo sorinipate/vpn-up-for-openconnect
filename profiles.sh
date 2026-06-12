@@ -15,7 +15,10 @@ xpath_literal() {
 load_profile_fields() {
   local selection="$1"
   local name_lit; name_lit="$(xpath_literal "$selection")"
-  # Extract fields using xmlstarlet; accept legacy/new tag variants
+  # Extract fields using xmlstarlet; accept legacy/new tag variants.
+  # `read -d ''` exits non-zero at EOF even after populating every field,
+  # so don't let that status leak to callers.
+  # shellcheck disable=SC2034  # fields are consumed by core.sh
   IFS=$'\n' read -r -d '' \
     VPN_NAME \
     PROTOCOL \
@@ -35,7 +38,7 @@ load_profile_fields() {
         -v "password" -o $'\n' \
         -v "duo2FAMethod | duoMethod" -o $'\n' \
         -v "serverCertificate" -n "${PROFILES_FILE}"
-    )
+    ) || true
 
   # Intentionally NOT exported: these are read only by functions in this
   # shell, and exporting would copy the password into the environment of
@@ -60,7 +63,7 @@ scrub_profile_password() {
 
 migrate_or_fetch_password() {
   # prefer stored secret; migrate plaintext if found
-  local s="$(secrets_get "${VPN_NAME}" "password")"
+  local s; s="$(secrets_get "${VPN_NAME}" "password")"
   if [ -z "$s" ] && [ -n "$VPN_PASSWD" ]; then
     print_warning "Migrating plaintext password for '%s' to secure storage...\n" "${VPN_NAME}"
     secrets_set "${VPN_NAME}" "password" "${VPN_PASSWD}"
@@ -80,6 +83,7 @@ list_profile_names() {
   printf "%s\n" "${vpn_names[@]}"
 }
 
+# shellcheck disable=SC2034  # description vars are consumed by core.sh
 set_protocol_description() {
   case $PROTOCOL in
     anyconnect) PROTOCOL_DESCRIPTION="Cisco AnyConnect" ;;
@@ -90,6 +94,7 @@ set_protocol_description() {
   esac
 }
 
+# shellcheck disable=SC2034  # description vars are consumed by core.sh
 set_2fa_method_description() {
   case $VPN_DUO2FAMETHOD in
     push)  VPN_DUO2FAMETHOD_DESCRIPTION="PUSH" ;;
