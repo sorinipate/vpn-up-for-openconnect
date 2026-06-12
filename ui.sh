@@ -21,6 +21,6 @@ RESET="${RESET:-\x1b[0m}"
 show_banner() {
   # Only show when interactive and not quiet
   [ -t 1 ] || return
-  [ "${QUIET}" = TRUE ] && return
+  [ "${QUIET:-FALSE}" = TRUE ] && return
   printf "%b\n" "${PRIMARY}${ASCII_ART}${RESET}"
 }

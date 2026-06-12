@@ -62,7 +62,7 @@ migrate_or_fetch_password() {
   # prefer stored secret; migrate plaintext if found
   local s="$(secrets_get "${VPN_NAME}" "password")"
   if [ -z "$s" ] && [ -n "$VPN_PASSWD" ]; then
-    print_warning "Migrating plaintext password for '${VPN_NAME}' to secure storage...\n"
+    print_warning "Migrating plaintext password for '%s' to secure storage...\n" "${VPN_NAME}"
     secrets_set "${VPN_NAME}" "password" "${VPN_PASSWD}"
     s="${VPN_PASSWD}"
     scrub_profile_password "${VPN_NAME}"
