@@ -52,7 +52,7 @@ doctor() {
   echo
   echo "Config preview:"
   if [ -f "$CONFIGURATION_FILE" ]; then
-    grep -E '^(readonly (SUDO|BACKGROUND|QUIET|SHOW_BANNER|ENCRYPTION_ENABLED))' "$CONFIGURATION_FILE" || true
+    grep -E '^(readonly (SUDO|BACKGROUND|QUIET|SHOW_BANNER|NOTIFICATIONS|ENCRYPTION_ENABLED))' "$CONFIGURATION_FILE" || true
   else
     echo "  (no config yet; run ./vpn-up.command setup)"
   fi

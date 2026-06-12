@@ -16,15 +16,22 @@ assert_safe_to_source() {
   fi
 }
 
+# Source the config (executable shell) after the safety checks. Safe to call
+# from any command; no-op when the config doesn't exist yet.
+load_config() {
+  [ -f "$CONFIGURATION_FILE" ] || return 0
+  assert_safe_to_source "$CONFIGURATION_FILE" || exit 1
+  # shellcheck disable=SC1090
+  source "$CONFIGURATION_FILE"
+}
+
 start() {
   local requested="${1:-}"
   # Ensure config exists or run wizard
   if [ ! -f "$CONFIGURATION_FILE" ]; then
     setup_wizard
   fi
-  assert_safe_to_source "$CONFIGURATION_FILE" || exit 1
-  # shellcheck disable=SC1090
-  source "$CONFIGURATION_FILE"
+  load_config
   print_warning "Loaded configuration from %s ...\n" "$CONFIGURATION_FILE"
 
   # Seed the profiles template on first run, then ask the user to fill it in.
@@ -59,7 +66,7 @@ start() {
       exit 1
     fi
     load_profile_fields "$requested"
-    migrate_or_fetch_password
+    migrate_or_fetch_password || exit 1
     connect
   else
     # Interactive profile selection (modern Bash mapfile)
@@ -72,7 +79,7 @@ start() {
       fi
       if printf "%s\n" "${vpn_names[@]}" | grep -qx -- "$option"; then
         load_profile_fields "$option"
-        migrate_or_fetch_password
+        migrate_or_fetch_password || exit 1
         connect
         break
       else
@@ -81,13 +88,20 @@ start() {
     done
   fi
 
-  if is_vpn_running; then
-    write_connection_state
-    print_success "Connected to %s\n" "${VPN_NAME}"
-    print_current_ip_address
-  else
-    print_danger "Failed to connect! Last log lines from %s:\n" "${LOG_FILE_PATH}"
-    tail -n 15 "$LOG_FILE_PATH" 2>/dev/null || true
+  # In foreground/service mode run_openconnect blocks for the whole session
+  # and cleans up after itself; the post-connect check only makes sense when
+  # openconnect daemonized.
+  if [ -z "${VPN_UP_SERVICE:-}" ] && [ "${BACKGROUND:-FALSE}" = TRUE ]; then
+    if is_vpn_running; then
+      write_connection_state
+      print_success "Connected to %s\n" "${VPN_NAME}"
+      notify "VPN Up" "Connected to ${VPN_NAME}"
+      print_current_ip_address
+    else
+      print_danger "Failed to connect! Last log lines from %s:\n" "${LOG_FILE_PATH}"
+      tail -n 15 "$LOG_FILE_PATH" 2>/dev/null || true
+      notify "VPN Up" "Failed to connect to ${VPN_NAME:-VPN}"
+    fi
   fi
 }
 
@@ -117,6 +131,10 @@ connect() {
   # Duo passcodes are one-time values; never read them from the XML —
   # prompt at connect time instead.
   if [ "$VPN_DUO2FAMETHOD" = "passcode" ]; then
+    if [ -n "${VPN_UP_SERVICE:-}" ]; then
+      print_danger "Profile '%s' uses a Duo passcode, which needs interactive input; it cannot run as a service. Use push/phone/sms instead.\n" "${VPN_NAME}"
+      return 1
+    fi
     read -r -p "Enter Duo passcode for ${VPN_NAME}: " VPN_DUO2FAMETHOD
     if [ -z "$VPN_DUO2FAMETHOD" ]; then
       print_danger "No passcode entered; aborting.\n"
@@ -214,12 +232,16 @@ _stop_by_pid_file() {
     print_danger "Could not stop openconnect (PID: %s); VPN may still be up!\n" "$pid"
     return 1
   fi
+  local profile=""
+  [ -f "$statefile" ] && profile="$(awk -F= '$1=="profile"{print substr($0,9); exit}' "$statefile")"
   rm -f "$pidfile" "$statefile"
   print_success "VPN stopped.\n"
+  notify "VPN Up" "Disconnected from ${profile:-VPN}"
 }
 
 stop() {
   local requested="${1:-}" f
+  load_config
   local files=()
   if [ -n "$requested" ]; then
     f="${DATA_DIR}/pids/${PROGRAM_NAME}.$(profile_slug "$requested").pid"
@@ -248,10 +270,21 @@ run_openconnect() {
   # Validate sudo up-front on the TTY so the prompt doesn't collide with the
   # password pipe below. For passwordless use, configure a scoped sudoers rule
   # (see README) instead of storing the sudo password anywhere.
-  if ! sudo -v; then
+  if [ -n "${VPN_UP_SERVICE:-}" ]; then
+    # Service mode (launchd/systemd): no TTY, so sudo must not prompt.
+    if ! sudo -n -v 2>/dev/null; then
+      print_danger "Service mode requires a passwordless sudoers rule for openconnect (see README).\n"
+      return 1
+    fi
+  elif ! sudo -v; then
     print_danger "sudo authentication failed; cannot start openconnect.\n"
     return 1
   fi
+
+  # Under launchd/systemd the service manager must supervise openconnect
+  # itself, so force foreground; KeepAlive/Restart provides auto-reconnect.
+  local effective_background="${BACKGROUND:-FALSE}"
+  [ -n "${VPN_UP_SERVICE:-}" ] && effective_background=FALSE
 
   # Build argv array (no eval)
   local args=()
@@ -259,7 +292,7 @@ run_openconnect() {
   args+=(--user="$VPN_USER")
   args+=(--passwd-on-stdin)
   [ "${QUIET:-FALSE}" = TRUE ] && args+=(-q)
-  [ "${BACKGROUND:-FALSE}" = TRUE ] && args+=(--background)
+  [ "$effective_background" = TRUE ] && args+=(--background)
   [ -n "$SERVER_CERTIFICATE" ] && args+=(--servercert="$SERVER_CERTIFICATE")
   [ -n "$VPN_GROUP" ] && args+=(--authgroup "$VPN_GROUP")
   args+=("$VPN_HOST")
@@ -276,7 +309,7 @@ run_openconnect() {
   local stdin_lines="$VPN_PASSWD"
   [ -n "$VPN_DUO2FAMETHOD" ] && stdin_lines+=$'\n'"$VPN_DUO2FAMETHOD"
   ( umask 077; : > "$LOG_FILE_PATH" )
-  if [ "${BACKGROUND:-FALSE}" = TRUE ]; then
+  if [ "$effective_background" = TRUE ]; then
     # The daemonized child keeps stdout open, so piping through tee would
     # hang the shell forever after openconnect backgrounds itself; write
     # straight to the log instead.
@@ -284,8 +317,22 @@ run_openconnect() {
     printf "%s\n" "$stdin_lines" \
       | sudo openconnect "${args[@]}" >> "$LOG_FILE_PATH" 2>&1
   else
+    # Foreground: openconnect only writes --pid-file when backgrounding, so
+    # record the PID ourselves (after the tunnel has had time to come up) so
+    # status/stop work during a foreground/service session.
+    write_connection_state
+    ( sleep 3
+      _pid="$(pgrep -n -x openconnect 2>/dev/null || true)"
+      if [ -n "$_pid" ]; then
+        printf '%s\n' "$_pid" > "$PID_FILE_PATH"
+        notify "VPN Up" "Connected to ${VPN_NAME}"
+      fi
+    ) &
     printf "%s\n" "$stdin_lines" \
       | sudo openconnect "${args[@]}" 2>&1 | tee -a "$LOG_FILE_PATH"
+    # Foreground session over (disconnect or failure): clean our records.
+    rm -f "$PID_FILE_PATH" "$STATE_FILE_PATH"
+    notify "VPN Up" "Disconnected from ${VPN_NAME:-VPN}"
   fi
 
   # Drop the password from shell memory as soon as it has been piped.
