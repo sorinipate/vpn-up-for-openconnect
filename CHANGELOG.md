@@ -12,6 +12,15 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
   `CONTRIBUTING.md` with the PR/CI workflow and development setup.
 
 ### Changed
+- First run of `start` with no profiles now offers the `add-profile` wizard
+  interactively instead of dead-ending into "edit the XML template by hand"
+  (scripts and service mode still get the template-seeding behavior).
+- Setup wizard: removed the "Use sudo?" question — the `SUDO` config value
+  has been dead since v3.0.0 (nothing reads it); all wizard prompts now use
+  the `[Y/n]` style (y/n/true/false all accepted, as before).
+- User-facing messages and usage text now say `vpn-up` (matching the
+  Homebrew command) instead of the internal `vpn-up.command` name; data file
+  names and the Keychain namespace are unchanged.
 - README restructured: badges, table of contents, scannable feature list,
   quick start, usage examples, and a roadmap section.
 

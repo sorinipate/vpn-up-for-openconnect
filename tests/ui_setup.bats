@@ -59,10 +59,9 @@ EOF
 # --- save_configuration ---
 
 @test "save_configuration writes all wizard values with 600 perms" {
-  __WZ_SUDO=TRUE __WZ_BACKGROUND=FALSE __WZ_QUIET=TRUE __WZ_SHOW_BANNER=FALSE __WZ_NOTIFICATIONS=TRUE
+  __WZ_BACKGROUND=FALSE __WZ_QUIET=TRUE __WZ_SHOW_BANNER=FALSE __WZ_NOTIFICATIONS=TRUE
   save_configuration
   [ "$(file_mode "$CONFIGURATION_FILE")" = "600" ]
-  grep -q '^readonly SUDO=TRUE$' "$CONFIGURATION_FILE"
   grep -q '^readonly BACKGROUND=FALSE$' "$CONFIGURATION_FILE"
   grep -q '^readonly QUIET=TRUE$' "$CONFIGURATION_FILE"
   grep -q '^readonly SHOW_BANNER=FALSE$' "$CONFIGURATION_FILE"

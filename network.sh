@@ -64,7 +64,7 @@ pin_save() {
 print_pin_instructions() {
   local host="$1"
   print_warning "To pin this gateway's certificate, run:\n"
-  print_warning "  %s pin %s\n" "${PROGRAM_NAME}" "${host}"
+  print_warning "  %s pin %s\n" "${DISPLAY_NAME}" "${host}"
   print_warning "then put the printed pin-sha256:... value in <serverCertificate> for this profile.\n"
   print_warning "Only do this if you have verified the certificate is the gateway's real one.\n"
 }
