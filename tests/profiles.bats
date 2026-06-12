@@ -111,3 +111,16 @@ XML
   [[ "${lines[2]}" == "Other VPN"* ]]
   [ "${#lines[@]}" -eq 3 ]
 }
+
+@test "set_protocol_description maps known protocols and flags unknown" {
+  PROTOCOL=anyconnect; set_protocol_description; [ "$PROTOCOL_DESCRIPTION" = "Cisco AnyConnect" ]
+  PROTOCOL=gp;         set_protocol_description; [ "$PROTOCOL_DESCRIPTION" = "Palo Alto GlobalProtect" ]
+  PROTOCOL=bogus;      set_protocol_description; [ "$PROTOCOL_DESCRIPTION" = "Unknown" ]
+}
+
+@test "set_2fa_method_description classifies push/passcode/custom/none" {
+  VPN_DUO2FAMETHOD=push;    set_2fa_method_description; [ "$VPN_DUO2FAMETHOD_DESCRIPTION" = "PUSH" ]
+  VPN_DUO2FAMETHOD=123456;  set_2fa_method_description; [ "$VPN_DUO2FAMETHOD_DESCRIPTION" = "PASSCODE" ]
+  VPN_DUO2FAMETHOD=weird;   set_2fa_method_description; [ "$VPN_DUO2FAMETHOD_DESCRIPTION" = "CUSTOM" ]
+  VPN_DUO2FAMETHOD="";      set_2fa_method_description; [ "$VPN_DUO2FAMETHOD_DESCRIPTION" = "NONE" ]
+}
