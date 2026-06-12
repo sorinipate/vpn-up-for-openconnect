@@ -65,3 +65,19 @@ XML
   [ "${lines[1]}" = "Other VPN" ]
   [ "${lines[2]}" = "Quit" ]
 }
+
+@test "profile_exists: true for real profiles (incl. quotes), false otherwise" {
+  profile_exists "Test's VPN"
+  profile_exists "Other VPN"
+  run profile_exists "Ghost VPN"
+  [ "$status" -ne 0 ]
+}
+
+@test "list_profiles prints a header and one row per profile" {
+  check_file_existence() { :; }
+  run list_profiles
+  [[ "${lines[0]}" == NAME* ]]
+  [[ "${lines[1]}" == "Test's VPN"* ]]
+  [[ "${lines[2]}" == "Other VPN"* ]]
+  [ "${#lines[@]}" -eq 3 ]
+}

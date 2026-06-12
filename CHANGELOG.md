@@ -5,6 +5,26 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ---
 
+## [v3.2.0] — 2026-06-12
+### Scriptability & CLI Update
+
+### Added
+- `start [profile]` / `restart [profile]` — connect directly by profile name,
+  no interactive menu; with a stored secret the only interaction left is 2FA.
+- `list` — tabular overview of configured profiles (name, protocol, host,
+  2FA method; no secrets shown).
+- `logs [-f]` — show the connection log, or follow it live.
+- `pin --save <profile>` — fetch the gateway's `pin-sha256` and write it into
+  the profile's `<serverCertificate>` directly.
+- Richer `status`: connected profile, gateway, connect time, and uptime
+  (recorded in a state file at connect, removed on stop).
+
+### Changed
+- A `duo2FAMethod` of `passcode` now prompts for the one-time code at connect
+  time instead of reading a stale value from the XML.
+
+---
+
 ## [v3.1.0] — 2026-06-12
 ### UI Update
 
