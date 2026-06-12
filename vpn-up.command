@@ -8,6 +8,9 @@ if [[ -z "${BASH_VERSINFO[*]}" || "${BASH_VERSINFO[0]}" -lt 4 ]]; then
   exit 1
 fi
 
+# Treat unset variables as errors (typos in variable names fail fast).
+set -u
+
 PROGRAM_NAME=$(basename "$0")
 PROGRAM_PATH=$(cd "$(dirname "$0")" && pwd)
 
@@ -54,19 +57,19 @@ Examples:
 EOF
 }
 
-case "$1" in
+case "${1:-}" in
   start)      check_dependencies; start ;;
   stop)       stop ;;
   status)     status ;;
   restart)    "$0" stop; "$0" start ;;
   setup)      setup_wizard ;;
-  set-secret) shift; profile="$1"; field="$2"; { [ -z "$profile" ] || [ -z "$field" ]; } && { echo "Usage: $0 set-secret <profile> <field>"; exit 1; }
+  set-secret) shift; profile="${1:-}"; field="${2:-}"; { [ -z "$profile" ] || [ -z "$field" ]; } && { echo "Usage: $0 set-secret <profile> <field>"; exit 1; }
               [ "$field" = "sudo_password" ] && { echo "Storing the sudo password is not supported (it would defeat sudo's protection). See the sudoers rule in the README." >&2; exit 1; }
               read -r -s -p "Enter value for ${profile}.${field}: " value; echo
               secrets_set "${profile}" "${field}" "${value}"; echo "Saved secret for ${profile}.${field}." ;;
-  delete-secret) shift; profile="$1"; field="$2"; [ -z "$profile" -o -z "$field" ] && { echo "Usage: $0 delete-secret <profile> <field>"; exit 1; }
+  delete-secret) shift; profile="${1:-}"; field="${2:-}"; { [ -z "$profile" ] || [ -z "$field" ]; } && { echo "Usage: $0 delete-secret <profile> <field>"; exit 1; }
                  secrets_delete "${profile}" "${field}"; echo "Deleted secret for ${profile}.${field} (if existed)." ;;
-  pin)        shift; host="$1"; [ -z "$host" ] && { echo "Usage: $0 pin <host[:port]>"; exit 1; }
+  pin)        shift; host="${1:-}"; [ -z "$host" ] && { echo "Usage: $0 pin <host[:port]>"; exit 1; }
               if pin_value="$(fetch_server_pin "$host")"; then
                 echo "$pin_value"
                 if verify_gateway_cert "$host"; then

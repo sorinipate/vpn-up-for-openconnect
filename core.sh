@@ -7,7 +7,7 @@ start() {
   fi
   # shellcheck disable=SC1090
   source "$CONFIGURATION_FILE"
-  print_warning "Loaded configuration from $CONFIGURATION_FILE ...\n"
+  print_warning "Loaded configuration from %s ...\n" "$CONFIGURATION_FILE"
 
   check_file_existence "$PROFILES_FILE" "Profiles"
 
@@ -57,12 +57,12 @@ start() {
 
 connect() {
   if [ -z "${VPN_HOST}" ]; then
-    print_danger "Variable 'VPN_HOST' is not declared! Update it in ${PROFILES_FILE} ...\n"
-    return
+    print_danger "Variable 'VPN_HOST' is not declared! Update it in %s ...\n" "${PROFILES_FILE}"
+    return 1
   fi
   if [ -z "${PROTOCOL}" ]; then
-    print_danger "Variable 'PROTOCOL' is not declared! Update it in ${PROFILES_FILE} ...\n"
-    return
+    print_danger "Variable 'PROTOCOL' is not declared! Update it in %s ...\n" "${PROFILES_FILE}"
+    return 1
   fi
 
   set_protocol_description
@@ -136,11 +136,6 @@ stop() {
 }
 
 run_openconnect() {
-  local background_flag=""
-  local quiet_flag=""
-  local server_cert_flag=""
-  [ -n "$SERVER_CERTIFICATE" ] && server_cert_flag="--servercert=$SERVER_CERTIFICATE"
-
   # Validate sudo up-front on the TTY so the prompt doesn't collide with the
   # password pipe below. For passwordless use, configure a scoped sudoers rule
   # (see README) instead of storing the sudo password anywhere.
@@ -154,9 +149,9 @@ run_openconnect() {
   args+=(--protocol="$PROTOCOL")
   args+=(--user="$VPN_USER")
   args+=(--passwd-on-stdin)
-  [ "$QUIET" = TRUE ] && args+=(-q)
-  [ "$BACKGROUND" = TRUE ] && args+=(--background)
-  [ -n "$SERVER_CERTIFICATE" ] && args+=("$server_cert_flag")
+  [ "${QUIET:-FALSE}" = TRUE ] && args+=(-q)
+  [ "${BACKGROUND:-FALSE}" = TRUE ] && args+=(--background)
+  [ -n "$SERVER_CERTIFICATE" ] && args+=(--servercert="$SERVER_CERTIFICATE")
   [ -n "$VPN_GROUP" ] && args+=(--authgroup "$VPN_GROUP")
   args+=("$VPN_HOST")
   args+=(--pid-file "$PID_FILE_PATH")
