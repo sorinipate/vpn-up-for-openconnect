@@ -87,13 +87,37 @@ status() {
 }
 
 stop() {
-  if is_vpn_running; then
-    kill "$(cat "$PID_FILE_PATH")"
-    rm -f "$PID_FILE_PATH"
-    print_success "VPN stopped.\n"
-  else
+  if [ ! -f "$PID_FILE_PATH" ]; then
     print_warning "VPN is not running.\n"
+    return 0
   fi
+  local pid; pid="$(cat "$PID_FILE_PATH")"
+  if ! is_openconnect_pid "$pid"; then
+    print_warning "Stale PID file (no openconnect process with PID %s); cleaning up.\n" "$pid"
+    rm -f "$PID_FILE_PATH"
+    return 0
+  fi
+  # openconnect runs as root, so killing it needs sudo too.
+  if ! sudo kill "$pid"; then
+    print_danger "Failed to signal openconnect (PID: %s).\n" "$pid"
+    return 1
+  fi
+  local i
+  for i in {1..20}; do
+    is_openconnect_pid "$pid" || break
+    sleep 0.5
+  done
+  if is_openconnect_pid "$pid"; then
+    print_warning "openconnect did not exit gracefully; sending SIGKILL ...\n"
+    sudo kill -9 "$pid" 2>/dev/null || true
+    sleep 1
+  fi
+  if is_openconnect_pid "$pid"; then
+    print_danger "Could not stop openconnect (PID: %s); VPN may still be up!\n" "$pid"
+    return 1
+  fi
+  rm -f "$PID_FILE_PATH"
+  print_success "VPN stopped.\n"
 }
 
 run_openconnect() {
