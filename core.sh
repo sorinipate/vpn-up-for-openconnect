@@ -17,6 +17,7 @@ assert_safe_to_source() {
 }
 
 start() {
+  local requested="${1:-}"
   # Ensure config exists or run wizard
   if [ ! -f "$CONFIGURATION_FILE" ]; then
     setup_wizard
@@ -52,31 +53,52 @@ start() {
   print_warning "Process ID (PID) stored in %s ...\n" "${PID_FILE_PATH}"
   print_warning "Logs file (LOG) stored in %s ...\n" "${LOG_FILE_PATH}"
 
-  # Select a profile (modern Bash mapfile)
-  mapfile -t vpn_names < <(list_profile_names)
-  PS3=$'Choose VPN: '
-  select option in "${vpn_names[@]}"; do
-    if [ "$option" = "Quit" ]; then
-      print_warning "You chose to close the app!\n"
-      exit 0
+  if [ -n "$requested" ]; then
+    # Non-interactive: profile named on the command line
+    if ! profile_exists "$requested"; then
+      print_danger "Unknown profile '%s'. Available profiles:\n" "$requested"
+      list_profiles
+      exit 1
     fi
-    if printf "%s\n" "${vpn_names[@]}" | grep -qx -- "$option"; then
-      load_profile_fields "$option"
-      migrate_or_fetch_password
-      connect
-      break
-    else
-      print_danger "Invalid option! Please choose one of the options above...\n"
-    fi
-  done
+    load_profile_fields "$requested"
+    migrate_or_fetch_password
+    connect
+  else
+    # Interactive profile selection (modern Bash mapfile)
+    mapfile -t vpn_names < <(list_profile_names)
+    PS3=$'Choose VPN: '
+    select option in "${vpn_names[@]}"; do
+      if [ "$option" = "Quit" ]; then
+        print_warning "You chose to close the app!\n"
+        exit 0
+      fi
+      if printf "%s\n" "${vpn_names[@]}" | grep -qx -- "$option"; then
+        load_profile_fields "$option"
+        migrate_or_fetch_password
+        connect
+        break
+      else
+        print_danger "Invalid option! Please choose one of the options above...\n"
+      fi
+    done
+  fi
 
   if is_vpn_running; then
+    write_connection_state
     print_success "Connected to %s\n" "${VPN_NAME}"
     print_current_ip_address
   else
     print_danger "Failed to connect! Last log lines from %s:\n" "${LOG_FILE_PATH}"
     tail -n 15 "$LOG_FILE_PATH" 2>/dev/null || true
   fi
+}
+
+# Record which profile is connected so `status` can report it.
+write_connection_state() {
+  ( umask 077
+    printf 'profile=%s\nhost=%s\nconnected_at=%s\n' \
+      "${VPN_NAME}" "${VPN_HOST}" "$(date '+%Y-%m-%d %H:%M:%S')" > "$STATE_FILE_PATH"
+  )
 }
 
 connect() {
@@ -87,6 +109,16 @@ connect() {
   if [ -z "${PROTOCOL}" ]; then
     print_danger "Variable 'PROTOCOL' is not declared! Update it in %s ...\n" "${PROFILES_FILE}"
     return 1
+  fi
+
+  # Duo passcodes are one-time values; never read them from the XML —
+  # prompt at connect time instead.
+  if [ "$VPN_DUO2FAMETHOD" = "passcode" ]; then
+    read -r -p "Enter Duo passcode for ${VPN_NAME}: " VPN_DUO2FAMETHOD
+    if [ -z "$VPN_DUO2FAMETHOD" ]; then
+      print_danger "No passcode entered; aborting.\n"
+      return 1
+    fi
   fi
 
   set_protocol_description
@@ -119,7 +151,18 @@ connect() {
 
 status() {
   if is_vpn_running; then
-    print_success "VPN is running (PID: %s)\n" "$(cat "$PID_FILE_PATH")"
+    local pid; pid="$(cat "$PID_FILE_PATH")"
+    print_success "VPN is running (PID: %s)\n" "$pid"
+    if [ -f "$STATE_FILE_PATH" ]; then
+      local profile host connected_at
+      profile="$(awk -F= '$1=="profile"{print substr($0,9); exit}' "$STATE_FILE_PATH")"
+      host="$(awk -F= '$1=="host"{print substr($0,6); exit}' "$STATE_FILE_PATH")"
+      connected_at="$(awk -F= '$1=="connected_at"{print substr($0,14); exit}' "$STATE_FILE_PATH")"
+      print_primary "  Profile : %s\n" "${profile:-unknown}"
+      print_primary "  Gateway : %s\n" "${host:-unknown}"
+      print_primary "  Since   : %s\n" "${connected_at:-unknown}"
+    fi
+    print_primary "  Uptime  : %s\n" "$(ps -p "$pid" -o etime= 2>/dev/null | tr -d ' ' || echo unknown)"
   else
     print_warning "VPN is not running.\n"
   fi
@@ -133,7 +176,7 @@ stop() {
   local pid; pid="$(cat "$PID_FILE_PATH")"
   if ! is_openconnect_pid "$pid"; then
     print_warning "Stale PID file (no openconnect process with PID %s); cleaning up.\n" "$pid"
-    rm -f "$PID_FILE_PATH"
+    rm -f "$PID_FILE_PATH" "$STATE_FILE_PATH"
     return 0
   fi
   # openconnect runs as root, so killing it needs sudo too.
@@ -155,7 +198,7 @@ stop() {
     print_danger "Could not stop openconnect (PID: %s); VPN may still be up!\n" "$pid"
     return 1
   fi
-  rm -f "$PID_FILE_PATH"
+  rm -f "$PID_FILE_PATH" "$STATE_FILE_PATH"
   print_success "VPN stopped.\n"
 }
 

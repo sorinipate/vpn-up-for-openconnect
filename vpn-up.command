@@ -55,29 +55,35 @@ cat <<EOF
 Usage: $PROGRAM_NAME <command>
 
 Commands:
-  start          Start VPN (interactive profile selection)
-  stop           Stop VPN
-  status         Show VPN status
-  restart        Restart VPN (stop+start)
-  setup          Run setup wizard (regenerate config)
-  set-secret     Save a secret field for a profile (e.g., password)
-  delete-secret  Delete a stored secret for a profile
-  pin            Print the pin-sha256 value for a gateway's certificate
-  doctor         Diagnose environment and secret backend
+  start [profile]      Start VPN (interactive menu, or directly by profile name)
+  stop                 Stop VPN
+  status               Show VPN status (profile, gateway, uptime)
+  restart [profile]    Restart VPN (stop+start)
+  list                 List configured VPN profiles
+  logs [-f]            Show the connection log (-f to follow)
+  setup                Run setup wizard (regenerate config)
+  set-secret           Save a secret field for a profile (e.g., password)
+  delete-secret        Delete a stored secret for a profile
+  pin <host[:port]>    Print the pin-sha256 value for a gateway's certificate
+  pin --save <profile> Fetch the pin and write it into the profile
+  doctor               Diagnose environment and secret backend
 
 Examples:
-  $PROGRAM_NAME start
-  $PROGRAM_NAME set-secret WorkVPN password
+  $PROGRAM_NAME start "Work VPN"
+  $PROGRAM_NAME set-secret "Work VPN" password
   $PROGRAM_NAME pin vpn.example.com
-  $PROGRAM_NAME doctor
+  $PROGRAM_NAME pin --save "Work VPN"
+  $PROGRAM_NAME logs -f
 EOF
 }
 
 case "${1:-}" in
-  start)      check_dependencies; start ;;
+  start)      check_dependencies; start "${2:-}" ;;
   stop)       stop ;;
   status)     status ;;
-  restart)    "$0" stop; "$0" start ;;
+  restart)    "$0" stop; "$0" start "${2:-}" ;;
+  list)       list_profiles ;;
+  logs)       show_logs "${2:-}" ;;
   setup)      setup_wizard ;;
   set-secret) shift; profile="${1:-}"; field="${2:-}"; { [ -z "$profile" ] || [ -z "$field" ]; } && { echo "Usage: $0 set-secret <profile> <field>"; exit 1; }
               [ "$field" = "sudo_password" ] && { echo "Storing the sudo password is not supported (it would defeat sudo's protection). See the sudoers rule in the README." >&2; exit 1; }
@@ -85,7 +91,12 @@ case "${1:-}" in
               secrets_set "${profile}" "${field}" "${value}"; echo "Saved secret for ${profile}.${field}." ;;
   delete-secret) shift; profile="${1:-}"; field="${2:-}"; { [ -z "$profile" ] || [ -z "$field" ]; } && { echo "Usage: $0 delete-secret <profile> <field>"; exit 1; }
                  secrets_delete "${profile}" "${field}"; echo "Deleted secret for ${profile}.${field} (if existed)." ;;
-  pin)        shift; host="${1:-}"; [ -z "$host" ] && { echo "Usage: $0 pin <host[:port]>"; exit 1; }
+  pin)        shift
+              if [ "${1:-}" = "--save" ]; then
+                profile="${2:-}"; [ -z "$profile" ] && { echo "Usage: $0 pin --save <profile>"; exit 1; }
+                pin_save "$profile"; exit $?
+              fi
+              host="${1:-}"; [ -z "$host" ] && { echo "Usage: $0 pin <host[:port]> | pin --save <profile>"; exit 1; }
               if pin_value="$(fetch_server_pin "$host")"; then
                 echo "$pin_value"
                 if verify_gateway_cert "$host"; then
