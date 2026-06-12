@@ -17,7 +17,7 @@ This project is intended for **legitimate and authorized VPN access only**.
   - Linux **Secret Service**
   - OpenSSL-encrypted vault fallback (AES-256-CBC + PBKDF2)
 - Automatic migration of legacy plaintext passwords
-- Optional secure storage of sudo password (never stored in config)
+- The sudo password is never stored; passwordless operation via a scoped sudoers rule (see below)
 
 ### 🧠 Modern Architecture
 - Requires **Bash ≥ 4**
@@ -172,11 +172,26 @@ readonly ENCRYPTION_ENABLED=TRUE
 ```bash
 ./vpn-up.command set-secret "Frankfurt VPN" password
 ./vpn-up.command delete-secret "Frankfurt VPN" password
-
-# Optional sudo password (secure storage only)
-./vpn-up.command set-secret __GLOBAL__ sudo_password
-./vpn-up.command delete-secret __GLOBAL__ sudo_password
 ```
+
+### Passwordless sudo (optional)
+
+`openconnect` needs root. By default you'll get the normal `sudo` prompt.
+Never store your sudo password anywhere; if you want non-interactive runs,
+grant passwordless sudo for `openconnect` **only**:
+
+```bash
+# macOS (Homebrew):
+echo "$USER ALL=(root) NOPASSWD: /opt/homebrew/sbin/openconnect" | sudo tee /etc/sudoers.d/vpn-up
+# Linux:
+echo "$USER ALL=(root) NOPASSWD: /usr/sbin/openconnect" | sudo tee /etc/sudoers.d/vpn-up
+sudo chmod 440 /etc/sudoers.d/vpn-up
+sudo visudo -cf /etc/sudoers.d/vpn-up   # validate
+```
+
+> Verify the `openconnect` path with `command -v openconnect`. Keep the rule
+> scoped to the one binary — do not add broad commands like `kill` here.
+> Stopping the VPN will still ask for your sudo password; that's intentional.
 
 ### Diagnostics
 ```bash

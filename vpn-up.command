@@ -41,13 +41,12 @@ Commands:
   restart        Restart VPN (stop+start)
   setup          Run setup wizard (regenerate config)
   set-secret     Save a secret field for a profile (e.g., password)
-  delete-secret  Delete a stored secret for a profile (e.g., sudo password)
+  delete-secret  Delete a stored secret for a profile
   doctor         Diagnose environment and secret backend
 
 Examples:
   $PROGRAM_NAME start
   $PROGRAM_NAME set-secret WorkVPN password
-  $PROGRAM_NAME set-secret __GLOBAL__ sudo_password
   $PROGRAM_NAME doctor
 EOF
 }
@@ -58,7 +57,8 @@ case "$1" in
   status)     status ;;
   restart)    "$0" stop; "$0" start ;;
   setup)      setup_wizard ;;
-  set-secret) shift; profile="$1"; field="$2"; [ -z "$profile" -o -z "$field" ] && { echo "Usage: $0 set-secret <profile> <field>"; exit 1; }
+  set-secret) shift; profile="$1"; field="$2"; { [ -z "$profile" ] || [ -z "$field" ]; } && { echo "Usage: $0 set-secret <profile> <field>"; exit 1; }
+              [ "$field" = "sudo_password" ] && { echo "Storing the sudo password is not supported (it would defeat sudo's protection). See the sudoers rule in the README." >&2; exit 1; }
               read -r -s -p "Enter value for ${profile}.${field}: " value; echo
               secrets_set "${profile}" "${field}" "${value}"; echo "Saved secret for ${profile}.${field}." ;;
   delete-secret) shift; profile="$1"; field="$2"; [ -z "$profile" -o -z "$field" ] && { echo "Usage: $0 delete-secret <profile> <field>"; exit 1; }
