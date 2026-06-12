@@ -3,6 +3,20 @@
 PID_FILE_PATH="${DATA_DIR}/pids/${PROGRAM_NAME}.pid"
 # shellcheck disable=SC2034  # used by core.sh
 LOG_FILE_PATH="${DATA_DIR}/logs/${PROGRAM_NAME}.log"
+# shellcheck disable=SC2034  # used by core.sh
+STATE_FILE_PATH="${DATA_DIR}/pids/${PROGRAM_NAME}.state"
+
+show_logs() {
+  if [ ! -f "$LOG_FILE_PATH" ]; then
+    print_warning "No log file yet at %s\n" "$LOG_FILE_PATH"
+    return 0
+  fi
+  if [ "${1:-}" = "-f" ]; then
+    tail -f "$LOG_FILE_PATH"
+  else
+    tail -n 50 "$LOG_FILE_PATH"
+  fi
+}
 
 # Color codes are printed separately from the message so they never go
 # through printf format processing; data must be passed as arguments to a
