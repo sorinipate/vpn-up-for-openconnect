@@ -189,10 +189,25 @@ readonly ENCRYPTION_ENABLED=TRUE
 ./vpn-up.command start                  # interactive profile menu
 ./vpn-up.command start "Frankfurt VPN"  # connect directly (scriptable)
 ./vpn-up.command list                   # list configured profiles
+./vpn-up.command add-profile            # guided profile creation (+ secret, + pin)
 ./vpn-up.command status                 # profile, gateway, uptime
 ./vpn-up.command logs -f                # follow the connection log
-./vpn-up.command stop
+./vpn-up.command stop                   # stop the VPN (or: stop "Frankfurt VPN")
 ```
+
+Each profile keeps its own log and PID/state files under `~/.config/vpn-up`,
+so `status`, `stop`, and `logs` are profile-aware.
+
+### Shell completion
+```bash
+# bash (~/.bashrc)
+source /path/to/vpn-up-for-openconnect/completions/vpn-up.bash
+
+# zsh (~/.zshrc)
+autoload -U +X bashcompinit && bashcompinit
+source /path/to/vpn-up-for-openconnect/completions/vpn-up.bash
+```
+Completes commands and profile names (spaces handled).
 
 ### Secrets Management
 ```bash

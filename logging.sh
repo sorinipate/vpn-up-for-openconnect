@@ -1,20 +1,60 @@
 # logging.sh - simple logging helpers
 
+# Legacy single-connection paths; start() switches these to per-profile
+# paths via set_profile_paths once a profile is selected.
 PID_FILE_PATH="${DATA_DIR}/pids/${PROGRAM_NAME}.pid"
 # shellcheck disable=SC2034  # used by core.sh
 LOG_FILE_PATH="${DATA_DIR}/logs/${PROGRAM_NAME}.log"
 # shellcheck disable=SC2034  # used by core.sh
 STATE_FILE_PATH="${DATA_DIR}/pids/${PROGRAM_NAME}.state"
 
+# Filesystem-safe slug for a profile name (spaces etc. become '_').
+profile_slug() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
+
+# Point the PID/LOG/STATE globals at a specific profile's files.
+# shellcheck disable=SC2034  # globals are consumed by core.sh
+set_profile_paths() {
+  local slug; slug="$(profile_slug "$1")"
+  PID_FILE_PATH="${DATA_DIR}/pids/${PROGRAM_NAME}.${slug}.pid"
+  STATE_FILE_PATH="${DATA_DIR}/pids/${PROGRAM_NAME}.${slug}.state"
+  LOG_FILE_PATH="${DATA_DIR}/logs/${PROGRAM_NAME}.${slug}.log"
+}
+
+# True if any PID file (legacy or per-profile) points at a live openconnect.
+any_vpn_running() {
+  local f
+  for f in "${DATA_DIR}/pids/"*.pid; do
+    [ -e "$f" ] || continue
+    is_openconnect_pid "$(cat "$f")" && return 0
+  done
+  return 1
+}
+
 show_logs() {
-  if [ ! -f "$LOG_FILE_PATH" ]; then
-    print_warning "No log file yet at %s\n" "$LOG_FILE_PATH"
+  local follow="" profile="" a file
+  for a in "$@"; do
+    case "$a" in
+      -f) follow=1 ;;
+      "") : ;;
+      *)  profile="$a" ;;
+    esac
+  done
+  if [ -n "$profile" ]; then
+    file="${DATA_DIR}/logs/${PROGRAM_NAME}.$(profile_slug "$profile").log"
+  else
+    # most recently modified log, falling back to the legacy path
+    # shellcheck disable=SC2012  # filenames are program-generated slugs (no newlines)
+    file="$(ls -t "${DATA_DIR}/logs/"*.log 2>/dev/null | head -1)"
+    [ -n "$file" ] || file="$LOG_FILE_PATH"
+  fi
+  if [ ! -f "$file" ]; then
+    print_warning "No log file yet at %s\n" "$file"
     return 0
   fi
-  if [ "${1:-}" = "-f" ]; then
-    tail -f "$LOG_FILE_PATH"
+  if [ -n "$follow" ]; then
+    tail -f "$file"
   else
-    tail -n 50 "$LOG_FILE_PATH"
+    tail -n 50 "$file"
   fi
 }
 
