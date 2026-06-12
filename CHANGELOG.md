@@ -5,6 +5,27 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ---
 
+## [v3.3.0] — 2026-06-12
+### Profiles & Completion Update
+
+### Added
+- `add-profile` — guided profile creation: validates inputs, appends a
+  well-formed `<VPN>` block, and optionally stores the password in the
+  secrets backend and saves the gateway's certificate pin in one flow.
+- Bash/zsh tab completion (`completions/vpn-up.bash`) for commands and
+  profile names, including names with spaces.
+- Per-profile PID, state, and log files — `status` reports every running
+  connection, `stop [profile]` and `logs [-f] [profile]` target a specific
+  one, and `logs` with no argument shows the most recent log.
+
+### Changed
+- Stale PID/state files are cleaned up automatically during `status`.
+- One-connection-at-a-time policy is kept: `start` refuses while any VPN is
+  running (the per-profile files make the bookkeeping accurate, not the
+  tunnels concurrent).
+
+---
+
 ## [v3.2.0] — 2026-06-12
 ### Scriptability & CLI Update
 

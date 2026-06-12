@@ -73,6 +73,36 @@ XML
   [ "$status" -ne 0 ]
 }
 
+@test "profile_names_raw lists bare names without Quit" {
+  run profile_names_raw
+  [ "${lines[0]}" = "Test's VPN" ]
+  [ "${lines[1]}" = "Other VPN" ]
+  [ "${#lines[@]}" -eq 2 ]
+}
+
+@test "append_profile adds a well-formed selectable profile" {
+  print_success() { :; }
+  _bool_default() { echo FALSE; }
+  source "$BATS_TEST_DIRNAME/../setup.sh"
+  append_profile "Berlin VPN" gp "berlin.example.com:8443" Staff sorin push
+  xmlstarlet val -q "$PROFILES_FILE"
+  profile_exists "Berlin VPN"
+  load_profile_fields "Berlin VPN"
+  [ "$PROTOCOL" = "gp" ]
+  [ "$VPN_HOST" = "berlin.example.com:8443" ]
+  [ "$VPN_GROUP" = "Staff" ]
+  [ "$VPN_USER" = "sorin" ]
+  [ "$VPN_PASSWD" = "" ]
+  [ "$VPN_DUO2FAMETHOD" = "push" ]
+}
+
+@test "profile_slug produces filesystem-safe names" {
+  source "$BATS_TEST_DIRNAME/../logging.sh"
+  [ "$(profile_slug "Frankfurt VPN")" = "Frankfurt_VPN" ]
+  [ "$(profile_slug "a/b:c d")" = "a_b_c_d" ]
+  [ "$(profile_slug "safe-name_1.2")" = "safe-name_1.2" ]
+}
+
 @test "list_profiles prints a header and one row per profile" {
   check_file_existence() { :; }
   run list_profiles
