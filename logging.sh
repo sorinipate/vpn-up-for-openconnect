@@ -18,12 +18,17 @@ check_file_existence() {
 
 is_network_available() { ping -c 1 1.1.1.1 >/dev/null 2>&1; }
 
+# True only if the PID is numeric AND the process is actually openconnect —
+# guards against PID reuse and corrupted PID files.
+is_openconnect_pid() {
+  local pid="$1"
+  [ -n "$pid" ] || return 1
+  case "$pid" in *[!0-9]*) return 1 ;; esac
+  ps -p "$pid" -o comm= 2>/dev/null | grep -q 'openconnect'
+}
+
 is_vpn_running() {
-  if [ -f "$PID_FILE_PATH" ] && ps -p "$(cat "$PID_FILE_PATH")" >/dev/null 2>&1; then
-    return 0
-  else
-    return 1
-  fi
+  [ -f "$PID_FILE_PATH" ] && is_openconnect_pid "$(cat "$PID_FILE_PATH")"
 }
 
 print_current_ip_address() {
