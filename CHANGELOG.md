@@ -5,6 +5,18 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ---
 
+## [Unreleased]
+
+### Added
+- `LICENSE` file (MIT — previously only claimed in the README) and
+  `CONTRIBUTING.md` with the PR/CI workflow and development setup.
+
+### Changed
+- README restructured: badges, table of contents, scannable feature list,
+  quick start, usage examples, and a roadmap section.
+
+---
+
 ## [v3.5.1] — 2026-06-13
 ### Review & Coverage Update
 
