@@ -16,11 +16,20 @@ jobs:
         run: shellcheck --shell=bash --external-sources vpn-up.command *.sh
 
   tests:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
       - name: Install dependencies
-        run: sudo apt-get update && sudo apt-get install -y bats xmlstarlet openssl
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y bats xmlstarlet openssl
+          else
+            brew install bats-core xmlstarlet bash
+          fi
       - name: Run bats tests
         run: bats tests/
 
