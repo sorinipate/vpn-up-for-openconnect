@@ -136,4 +136,7 @@ run_openconnect() {
 " "$VPN_PASSWD" \
       | sudo openconnect "${args[@]}" | sudo tee "$LOG_FILE_PATH" 2>&1
   fi
+
+  # Drop the password from shell memory as soon as it has been piped.
+  unset VPN_PASSWD
 }

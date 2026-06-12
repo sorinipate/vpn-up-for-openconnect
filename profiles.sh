@@ -1,7 +1,20 @@
 # profiles.sh - load and validate VPN profiles (robust tag support)
 
+# Render arbitrary text as an XPath string literal (single quotes need
+# concat() since XPath 1.0 has no escaping).
+xpath_literal() {
+  local s="$1"
+  if [[ "$s" != *\'* ]]; then
+    printf "'%s'" "$s"
+    return
+  fi
+  local rep="', \"'\", '"
+  printf "concat('%s')" "${s//\'/${rep}}"
+}
+
 load_profile_fields() {
   local selection="$1"
+  local name_lit; name_lit="$(xpath_literal "$selection")"
   # Extract fields using xmlstarlet; accept legacy/new tag variants
   IFS=$'\n' read -r -d '' \
     VPN_NAME \
@@ -13,7 +26,7 @@ load_profile_fields() {
     VPN_DUO2FAMETHOD \
     SERVER_CERTIFICATE < <(
       xmlstarlet sel -t \
-        -m "//VPN[name='${selection}']" \
+        -m "//VPN[name=${name_lit}]" \
         -v "name" -o $'\n' \
         -v "protocol" -o $'\n' \
         -v "host" -o $'\n' \
@@ -24,7 +37,25 @@ load_profile_fields() {
         -v "serverCertificate" -n "${PROFILES_FILE}"
     )
 
-  export VPN_NAME PROTOCOL VPN_HOST VPN_GROUP VPN_USER VPN_PASSWD VPN_DUO2FAMETHOD SERVER_CERTIFICATE
+  # Intentionally NOT exported: these are read only by functions in this
+  # shell, and exporting would copy the password into the environment of
+  # every child process (curl, ping, awk, ...).
+}
+
+# Blank the <password> element for a profile so plaintext doesn't linger in
+# the XML after migration to the secrets backend.
+scrub_profile_password() {
+  local name="$1"
+  local name_lit; name_lit="$(xpath_literal "$name")"
+  local tmp="${PROFILES_FILE}.tmp"
+  if xmlstarlet ed -u "//VPN[name=${name_lit}]/password" -v '' "${PROFILES_FILE}" > "${tmp}" 2>/dev/null; then
+    mv "${tmp}" "${PROFILES_FILE}"
+    chmod 600 "${PROFILES_FILE}" 2>/dev/null || true
+    print_warning "Removed plaintext password for '%s' from %s ...\n" "${name}" "${PROFILES_FILE}"
+  else
+    rm -f "${tmp}"
+    print_danger "Could not remove plaintext password from %s; please blank the <password> tag manually.\n" "${PROFILES_FILE}"
+  fi
 }
 
 migrate_or_fetch_password() {
@@ -34,13 +65,13 @@ migrate_or_fetch_password() {
     print_warning "Migrating plaintext password for '${VPN_NAME}' to secure storage...\n"
     secrets_set "${VPN_NAME}" "password" "${VPN_PASSWD}"
     s="${VPN_PASSWD}"
+    scrub_profile_password "${VPN_NAME}"
   fi
   if [ -z "$s" ]; then
     read -r -s -p "Enter password for ${VPN_USER}@${VPN_HOST}: " s; echo
     secrets_set "${VPN_NAME}" "password" "${s}"
   fi
   VPN_PASSWD="$s"
-  export VPN_PASSWD
 }
 
 list_profile_names() {

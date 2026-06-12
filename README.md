@@ -203,7 +203,8 @@ sudo visudo -cf /etc/sudoers.d/vpn-up   # validate
 ## 🔄 Migration Notes
 
 - Plaintext `<password>` values in profiles are **automatically migrated** on first use
-- You may safely remove passwords from profile XML afterward
+- After migration the `<password>` tag is **blanked in the XML automatically** — plaintext never lingers on disk
+- The `<password>` field is deprecated; prefer `./vpn-up.command set-secret "<profile>" password`
 - Ensure correct `authGroup` is set to avoid login prompts
 
 ---
