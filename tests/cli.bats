@@ -21,6 +21,11 @@ XML
 }
 
 @test "start with no profiles, non-tty: seeds template and exits 1" {
+  # check_dependencies needs an openconnect binary; CI runners don't have one
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  printf '#!/bin/sh\nexit 0\n' > "$BATS_TEST_TMPDIR/bin/openconnect"
+  chmod 755 "$BATS_TEST_TMPDIR/bin/openconnect"
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
   rm -f "$VPN_UP_HOME/vpn-up.command.profiles"
   # config present so the setup wizard doesn't interfere
   cat > "$VPN_UP_HOME/vpn-up.command.config" <<'EOF'
