@@ -82,7 +82,18 @@ This project is intended for **legitimate and authorized VPN access only**.
 
 ## 🛠 Installation
 
-### macOS (Apple Silicon / Intel)
+### Homebrew (macOS / Linux — recommended)
+
+```bash
+brew tap sorinipate/vpn-up
+brew install vpn-up
+```
+
+Installs the `vpn-up` command with all dependencies (modern Bash,
+openconnect, xmlstarlet) and bash completion. Your data stays in
+`~/.config/vpn-up` either way.
+
+### Manual — macOS (Apple Silicon / Intel)
 
 macOS ships with Bash 3.2. Install modern Bash:
 
@@ -103,7 +114,7 @@ Or hard-wire the shebang in `vpn-up.command`:
 
 ---
 
-### Linux
+### Manual — Linux
 
 ```bash
 # Debian / Ubuntu
