@@ -202,6 +202,7 @@ readonly ENCRYPTION_ENABLED=TRUE
 ./vpn-up.command start "Frankfurt VPN"  # connect directly (scriptable)
 ./vpn-up.command list                   # list configured profiles
 ./vpn-up.command add-profile            # guided profile creation (+ secret, + pin)
+./vpn-up.command remove-profile "Old VPN"  # remove profile + secret + logs + service
 ./vpn-up.command status                 # profile, gateway, uptime
 ./vpn-up.command logs -f                # follow the connection log
 ./vpn-up.command stop                   # stop the VPN (or: stop "Frankfurt VPN")
@@ -226,6 +227,25 @@ if the tunnel drops (30s throttle). Requirements:
 
 Desktop notifications fire on connect/disconnect (macOS Notification Center /
 `notify-send`); disable with `NOTIFICATIONS=FALSE` in the config.
+
+### Hooks
+
+Drop executable scripts into `~/.config/vpn-up/hooks/connected.d/` or
+`~/.config/vpn-up/hooks/disconnected.d/` and they run (in name order) when a
+tunnel comes up or goes down — mount shares, switch proxies, ping monitoring.
+Hooks receive `VPN_EVENT`, `VPN_NAME`, and `VPN_HOST` in their environment
+(never the password). Because hooks are executable code, a hook is **skipped
+unless it is owned by you and not group/world-writable** — same rule as the
+config file. Hook failures are reported but never block the VPN.
+
+```bash
+mkdir -p ~/.config/vpn-up/hooks/connected.d
+cat > ~/.config/vpn-up/hooks/connected.d/10-hello <<'EOF'
+#!/bin/sh
+echo "$(date): $VPN_NAME up ($VPN_HOST)" >> "$HOME/vpn-history.log"
+EOF
+chmod 700 ~/.config/vpn-up/hooks/connected.d/10-hello
+```
 
 ### Shell completion
 ```bash
