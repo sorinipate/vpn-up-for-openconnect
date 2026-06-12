@@ -85,6 +85,12 @@ list_profile_names() {
   printf "%s\n" "${vpn_names[@]}"
 }
 
+# Bare profile names, one per line (machine-readable; used by completion).
+profile_names_raw() {
+  [ -f "$PROFILES_FILE" ] || return 0
+  xmlstarlet sel -t -m '//VPN' -v name -n "$PROFILES_FILE" 2>/dev/null
+}
+
 profile_exists() {
   local name_lit; name_lit="$(xpath_literal "$1")"
   [ -n "$(xmlstarlet sel -t -m "//VPN[name=${name_lit}]" -v name "$PROFILES_FILE" 2>/dev/null)" ]
