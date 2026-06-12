@@ -68,6 +68,21 @@ connect() {
   set_protocol_description
   set_2fa_method_description
 
+  # Fail closed on server identity: either a pin is configured, or the
+  # gateway's certificate must validate against the system trust store.
+  if [ -n "$SERVER_CERTIFICATE" ]; then
+    case "$SERVER_CERTIFICATE" in
+      pin-sha256:*) : ;;
+      *) print_warning "serverCertificate uses a legacy (SHA1) pin; SHA1 is deprecated. Run '%s pin %s' to get a pin-sha256 value.\n" "${PROGRAM_NAME}" "${VPN_HOST}" ;;
+    esac
+  else
+    if ! verify_gateway_cert "${VPN_HOST}"; then
+      print_danger "The certificate of %s does NOT validate against the system trust store, and no pin is configured. Refusing to connect.\n" "${VPN_HOST}"
+      print_pin_instructions "${VPN_HOST}"
+      return 1
+    fi
+  fi
+
   print_primary "Starting the %s on %s using %s ...\n" "${VPN_NAME}" "${VPN_HOST}" "${PROTOCOL_DESCRIPTION}"
   if [ -z "$VPN_DUO2FAMETHOD" ]; then
     print_warning "Connecting without 2FA (%s) ...\n" "${VPN_DUO2FAMETHOD_DESCRIPTION}"
