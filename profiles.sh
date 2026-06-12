@@ -12,33 +12,35 @@ xpath_literal() {
   printf "concat('%s')" "${s//\'/${rep}}"
 }
 
+# shellcheck disable=SC2034  # fields are consumed by core.sh
 load_profile_fields() {
   local selection="$1"
   local name_lit; name_lit="$(xpath_literal "$selection")"
   # Extract fields using xmlstarlet; accept legacy/new tag variants.
-  # `read -d ''` exits non-zero at EOF even after populating every field,
-  # so don't let that status leak to callers.
-  # shellcheck disable=SC2034  # fields are consumed by core.sh
-  IFS=$'\n' read -r -d '' \
-    VPN_NAME \
-    PROTOCOL \
-    VPN_HOST \
-    VPN_GROUP \
-    VPN_USER \
-    VPN_PASSWD \
-    VPN_DUO2FAMETHOD \
-    SERVER_CERTIFICATE < <(
-      xmlstarlet sel -t \
-        -m "//VPN[name=${name_lit}]" \
-        -v "name" -o $'\n' \
-        -v "protocol" -o $'\n' \
-        -v "host" -o $'\n' \
-        -v "group | authGroup" -o $'\n' \
-        -v "username | user" -o $'\n' \
-        -v "password" -o $'\n' \
-        -v "duo2FAMethod | duoMethod" -o $'\n' \
-        -v "serverCertificate" -n "${PROFILES_FILE}"
-    ) || true
+  # mapfile (not `read` with IFS) because read collapses consecutive
+  # newlines — an empty field (e.g. a blanked <password>) would shift
+  # every following field up one position.
+  local fields=()
+  mapfile -t fields < <(
+    xmlstarlet sel -t \
+      -m "//VPN[name=${name_lit}]" \
+      -v "name" -n \
+      -v "protocol" -n \
+      -v "host" -n \
+      -v "group | authGroup" -n \
+      -v "username | user" -n \
+      -v "password" -n \
+      -v "duo2FAMethod | duoMethod" -n \
+      -v "serverCertificate" -n "${PROFILES_FILE}"
+  )
+  VPN_NAME="${fields[0]:-}"
+  PROTOCOL="${fields[1]:-}"
+  VPN_HOST="${fields[2]:-}"
+  VPN_GROUP="${fields[3]:-}"
+  VPN_USER="${fields[4]:-}"
+  VPN_PASSWD="${fields[5]:-}"
+  VPN_DUO2FAMETHOD="${fields[6]:-}"
+  SERVER_CERTIFICATE="${fields[7]:-}"
 
   # Intentionally NOT exported: these are read only by functions in this
   # shell, and exporting would copy the password into the environment of

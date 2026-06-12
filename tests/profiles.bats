@@ -35,6 +35,22 @@ XML
   [ "$SERVER_CERTIFICATE" = "pin-sha256:abc" ]
 }
 
+@test "load_profile_fields: empty fields do not shift later fields" {
+  # Regression: `read` with IFS collapsed consecutive newlines, so an empty
+  # <password> shifted the Duo method into VPN_PASSWD (and it then got
+  # migrated into the keychain as the "password").
+  cat > "$PROFILES_FILE" <<'XML'
+<VPNs>
+  <VPN><name>Blanked</name><protocol>anyconnect</protocol><host>h.example.com</host><authGroup/><user>u1</user><password></password><duo2FAMethod>push</duo2FAMethod><serverCertificate>pin-sha256:abc</serverCertificate></VPN>
+</VPNs>
+XML
+  load_profile_fields "Blanked"
+  [ "$VPN_GROUP" = "" ]
+  [ "$VPN_PASSWD" = "" ]
+  [ "$VPN_DUO2FAMETHOD" = "push" ]
+  [ "$SERVER_CERTIFICATE" = "pin-sha256:abc" ]
+}
+
 @test "scrub_profile_password: blanks only the targeted profile" {
   scrub_profile_password "Test's VPN"
   run xmlstarlet sel -t -m "//VPN[name='Other VPN']" -v password "$PROFILES_FILE"
