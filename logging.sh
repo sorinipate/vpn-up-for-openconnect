@@ -11,6 +11,12 @@ STATE_FILE_PATH="${DATA_DIR}/pids/${PROGRAM_NAME}.state"
 # Filesystem-safe slug for a profile name (spaces etc. become '_').
 profile_slug() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
 
+# Portable stat wrappers. GNU form (-c) first: BSD stat fails on -c so the
+# fallback fires, whereas GNU stat treats -f as "filesystem info" and would
+# SUCCEED with garbage if tried first.
+file_owner_uid() { stat -c '%u' "$1" 2>/dev/null || stat -f '%u' "$1" 2>/dev/null; }
+file_mode()      { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null; }
+
 # Point the PID/LOG/STATE globals at a specific profile's files.
 # shellcheck disable=SC2034  # globals are consumed by core.sh
 set_profile_paths() {
