@@ -1,0 +1,52 @@
+name: Update Homebrew tap
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  bump-formula:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Compute release tarball sha256
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          curl -sL "https://github.com/${{ github.repository }}/archive/refs/tags/${TAG}.tar.gz" -o release.tar.gz
+          echo "TAG=${TAG}" >> "$GITHUB_ENV"
+          echo "SHA256=$(sha256sum release.tar.gz | cut -d' ' -f1)" >> "$GITHUB_ENV"
+
+      - name: Update formula in sorinipate/homebrew-vpn-up
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          API="https://api.github.com/repos/sorinipate/homebrew-vpn-up/contents/Formula/vpn-up.rb"
+          AUTH="Authorization: token ${TAP_TOKEN}"
+
+          # fetch current formula + blob sha
+          curl -sf -H "$AUTH" "$API" > current.json
+          FILE_SHA=$(python3 -c 'import json; print(json.load(open("current.json"))["sha"])')
+          python3 -c 'import json,base64; open("vpn-up.rb","w").write(base64.b64decode(json.load(open("current.json"))["content"]).decode())'
+
+          # patch url tag and sha256
+          python3 - <<PY
+          import re
+          src = open("vpn-up.rb").read()
+          src = re.sub(r'refs/tags/v[0-9][^"]*\.tar\.gz', 'refs/tags/${TAG}.tar.gz', src)
+          src = re.sub(r'sha256 "[0-9a-f]{64}"', 'sha256 "${SHA256}"', src)
+          open("vpn-up.rb","w").write(src)
+          PY
+          echo "--- updated formula ---"; grep -E 'url|sha256' vpn-up.rb
+
+          # commit back
+          python3 - <<PY > payload.json
+          import json,base64
+          body = {
+            "message": "vpn-up ${TAG}",
+            "content": base64.b64encode(open("vpn-up.rb","rb").read()).decode(),
+            "sha": "${FILE_SHA}",
+          }
+          print(json.dumps(body))
+          PY
+          curl -sf -X PUT -H "$AUTH" -H "Accept: application/vnd.github+json" "$API" -d @payload.json > /dev/null
+          echo "Tap updated to ${TAG}"
