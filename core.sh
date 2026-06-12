@@ -74,7 +74,8 @@ start() {
     print_success "Connected to %s\n" "${VPN_NAME}"
     print_current_ip_address
   else
-    print_danger "Failed to connect!\n"
+    print_danger "Failed to connect! Last log lines from %s:\n" "${LOG_FILE_PATH}"
+    tail -n 15 "$LOG_FILE_PATH" 2>/dev/null || true
   fi
 }
 
@@ -190,8 +191,17 @@ run_openconnect() {
   local stdin_lines="$VPN_PASSWD"
   [ -n "$VPN_DUO2FAMETHOD" ] && stdin_lines+=$'\n'"$VPN_DUO2FAMETHOD"
   ( umask 077; : > "$LOG_FILE_PATH" )
-  printf "%s\n" "$stdin_lines" \
-    | sudo openconnect "${args[@]}" 2>&1 | tee "$LOG_FILE_PATH"
+  if [ "${BACKGROUND:-FALSE}" = TRUE ]; then
+    # The daemonized child keeps stdout open, so piping through tee would
+    # hang the shell forever after openconnect backgrounds itself; write
+    # straight to the log instead.
+    # shellcheck disable=SC2024  # intentional: log is opened (and owned) by the user; the root daemon inherits the fd
+    printf "%s\n" "$stdin_lines" \
+      | sudo openconnect "${args[@]}" >> "$LOG_FILE_PATH" 2>&1
+  else
+    printf "%s\n" "$stdin_lines" \
+      | sudo openconnect "${args[@]}" 2>&1 | tee -a "$LOG_FILE_PATH"
+  fi
 
   # Drop the password from shell memory as soon as it has been piped.
   unset VPN_PASSWD stdin_lines
