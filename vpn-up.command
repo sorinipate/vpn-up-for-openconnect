@@ -14,12 +14,28 @@ set -u
 PROGRAM_NAME=$(basename "$0")
 PROGRAM_PATH=$(cd "$(dirname "$0")" && pwd)
 
-# Exports
-export PROGRAM_NAME PROGRAM_PATH
-export CONFIGURATION_FILE="${PROGRAM_PATH}/config/${PROGRAM_NAME}.config"
-export PROFILES_FILE="${PROGRAM_PATH}/config/${PROGRAM_NAME}.profiles"
+# User state (config, profiles, secrets, logs, pids) lives OUTSIDE the
+# program directory so reinstalling/cleaning the repo never touches it.
+DATA_DIR="${VPN_UP_HOME:-${XDG_CONFIG_HOME:-$HOME/.config}/vpn-up}"
 
-mkdir -p "${PROGRAM_PATH}/config" "${PROGRAM_PATH}/logs" "${PROGRAM_PATH}/pids"
+# Exports
+export PROGRAM_NAME PROGRAM_PATH DATA_DIR
+export CONFIGURATION_FILE="${DATA_DIR}/${PROGRAM_NAME}.config"
+export PROFILES_FILE="${DATA_DIR}/${PROGRAM_NAME}.profiles"
+
+( umask 077; mkdir -p "${DATA_DIR}/logs" "${DATA_DIR}/pids" )
+chmod 700 "${DATA_DIR}" "${DATA_DIR}/logs" "${DATA_DIR}/pids" 2>/dev/null || true
+
+# One-time migration of legacy state from the old in-repo config/ directory.
+for _legacy_file in "${PROGRAM_NAME}.config" "${PROGRAM_NAME}.profiles" \
+                    "${PROGRAM_NAME}.secrets.enc" "${PROGRAM_NAME}.secrets"; do
+  if [ -f "${PROGRAM_PATH}/config/${_legacy_file}" ] && [ ! -e "${DATA_DIR}/${_legacy_file}" ]; then
+    mv "${PROGRAM_PATH}/config/${_legacy_file}" "${DATA_DIR}/${_legacy_file}"
+    chmod 600 "${DATA_DIR}/${_legacy_file}" 2>/dev/null || true
+    echo "Migrated ${_legacy_file} to ${DATA_DIR}/" >&2
+  fi
+done
+unset _legacy_file
 
 # Source modules
 . "${PROGRAM_PATH}/logging.sh"

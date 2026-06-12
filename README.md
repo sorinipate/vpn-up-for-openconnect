@@ -119,8 +119,14 @@ The setup wizard will:
 
 ## 📁 Configuration
 
+All user state (config, profiles, secrets vault, logs, PID files) lives in
+**`~/.config/vpn-up`** (override with `VPN_UP_HOME` or `XDG_CONFIG_HOME`),
+so updating or deleting the program directory never touches your data.
+Legacy files from the old in-repo `config/` directory are migrated
+automatically on first run.
+
 ### Main Config
-`config/vpn-up.command.config`
+`~/.config/vpn-up/vpn-up.command.config`
 
 ```bash
 readonly QUIET=TRUE
@@ -135,7 +141,8 @@ readonly ENCRYPTION_ENABLED=TRUE
 ---
 
 ### VPN Profiles
-`config/vpn-up.command.profiles`
+`~/.config/vpn-up/vpn-up.command.profiles`
+(template seeded from `config/vpn-up.command.profiles.default` on first run)
 
 ```xml
 <VPNs>

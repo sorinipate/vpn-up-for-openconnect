@@ -26,6 +26,12 @@ start() {
   source "$CONFIGURATION_FILE"
   print_warning "Loaded configuration from %s ...\n" "$CONFIGURATION_FILE"
 
+  # Seed the profiles template on first run, then ask the user to fill it in.
+  if [ ! -f "$PROFILES_FILE" ] && [ -f "${PROGRAM_PATH}/config/${PROGRAM_NAME}.profiles.default" ]; then
+    ( umask 077; cp "${PROGRAM_PATH}/config/${PROGRAM_NAME}.profiles.default" "$PROFILES_FILE" )
+    print_warning "Created profile template at %s\nEdit it with your VPN details, then run start again.\n" "$PROFILES_FILE"
+    exit 1
+  fi
   check_file_existence "$PROFILES_FILE" "Profiles"
 
   # Show banner if interactive
@@ -174,8 +180,8 @@ run_openconnect() {
   args+=(--pid-file "$PID_FILE_PATH")
 
   # Ensure dirs
-  mkdir -p "${PROGRAM_PATH}/logs" "${PROGRAM_PATH}/pids"
-  chmod 700 "${PROGRAM_PATH}/logs" "${PROGRAM_PATH}/pids"
+  ( umask 077; mkdir -p "${DATA_DIR}/logs" "${DATA_DIR}/pids" )
+  chmod 700 "${DATA_DIR}/logs" "${DATA_DIR}/pids"
 
   # Feed password (and 2FA answer, if any) on stdin. Create the log file as
   # the unprivileged user with 600 perms and capture openconnect's stderr too
