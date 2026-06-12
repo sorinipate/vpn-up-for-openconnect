@@ -57,6 +57,67 @@ CFG
   print_success "Saved configuration to %s\n" "${CONFIGURATION_FILE}"
 }
 
+# Append a <VPN> block to the profiles file (password stays empty — secrets
+# belong in the secrets backend, set separately).
+append_profile() {
+  local name="$1" proto="$2" host="$3" group="$4" user="$5" duo="$6"
+  local tmp="${PROFILES_FILE}.tmp"
+  xmlstarlet ed \
+    -s '/VPNs' -t elem -n VPN -v '' \
+    -s '/VPNs/VPN[last()]' -t elem -n name -v "$name" \
+    -s '/VPNs/VPN[last()]' -t elem -n protocol -v "$proto" \
+    -s '/VPNs/VPN[last()]' -t elem -n host -v "$host" \
+    -s '/VPNs/VPN[last()]' -t elem -n authGroup -v "$group" \
+    -s '/VPNs/VPN[last()]' -t elem -n user -v "$user" \
+    -s '/VPNs/VPN[last()]' -t elem -n password -v '' \
+    -s '/VPNs/VPN[last()]' -t elem -n duo2FAMethod -v "$duo" \
+    -s '/VPNs/VPN[last()]' -t elem -n serverCertificate -v '' \
+    "${PROFILES_FILE}" > "${tmp}" && mv "${tmp}" "${PROFILES_FILE}" && chmod 600 "${PROFILES_FILE}"
+}
+
+add_profile_wizard() {
+  if [ ! -f "$PROFILES_FILE" ]; then
+    ( umask 077; printf '<VPNs>\n</VPNs>\n' > "$PROFILES_FILE" )
+  fi
+
+  local name proto host group user duo
+  read -r -p "Profile name: " name
+  [ -n "$name" ] || { print_danger "Profile name is required.\n"; return 1; }
+  if profile_exists "$name"; then
+    print_danger "Profile '%s' already exists.\n" "$name"
+    return 1
+  fi
+
+  read -r -p "Protocol (anyconnect/nc/gp/pulse) [anyconnect]: " proto
+  proto="${proto:-anyconnect}"
+  case "$proto" in
+    anyconnect|nc|gp|pulse) : ;;
+    *) print_danger "Unknown protocol '%s'.\n" "$proto"; return 1 ;;
+  esac
+
+  read -r -p "Gateway host[:port]: " host
+  [ -n "$host" ] || { print_danger "Gateway host is required.\n"; return 1; }
+  read -r -p "Auth group (optional): " group
+  read -r -p "Username: " user
+  read -r -p "Duo 2FA method (push/phone/sms/passcode; empty = gateway default): " duo
+
+  append_profile "$name" "$proto" "$host" "$group" "$user" "$duo" \
+    || { print_danger "Failed to update %s\n" "$PROFILES_FILE"; return 1; }
+  print_success "Added profile '%s' to %s\n" "$name" "$PROFILES_FILE"
+
+  read -r -p "Store the VPN password now? (TRUE/FALSE) [TRUE]: " _in_pw
+  if [ "$(_bool_default "${_in_pw}" "TRUE")" = TRUE ]; then
+    local _p
+    read -r -s -p "Enter password for ${user}@${host}: " _p; echo
+    [ -n "$_p" ] && secrets_set "$name" "password" "$_p" && print_success "Password stored securely.\n"
+  fi
+
+  read -r -p "Fetch and save the gateway certificate pin now? (TRUE/FALSE) [TRUE]: " _in_pin
+  if [ "$(_bool_default "${_in_pin}" "TRUE")" = TRUE ]; then
+    pin_save "$name" || print_warning "Pin not saved; you can retry later with: %s pin --save '%s'\n" "${PROGRAM_NAME}" "$name"
+  fi
+}
+
 setup_wizard() {
   printf "%b\n" "${PRIMARY}Running first-time setup...${RESET}"
 

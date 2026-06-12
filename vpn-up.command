@@ -56,12 +56,13 @@ Usage: $PROGRAM_NAME <command>
 
 Commands:
   start [profile]      Start VPN (interactive menu, or directly by profile name)
-  stop                 Stop VPN
+  stop [profile]       Stop VPN (all running, or one profile)
   status               Show VPN status (profile, gateway, uptime)
   restart [profile]    Restart VPN (stop+start)
   list                 List configured VPN profiles
-  logs [-f]            Show the connection log (-f to follow)
+  logs [-f] [profile]  Show the connection log (-f to follow)
   setup                Run setup wizard (regenerate config)
+  add-profile          Add a VPN profile interactively (incl. secret + pin)
   set-secret           Save a secret field for a profile (e.g., password)
   delete-secret        Delete a stored secret for a profile
   pin <host[:port]>    Print the pin-sha256 value for a gateway's certificate
@@ -79,12 +80,14 @@ EOF
 
 case "${1:-}" in
   start)      check_dependencies; start "${2:-}" ;;
-  stop)       stop ;;
+  stop)       stop "${2:-}" ;;
   status)     status ;;
-  restart)    "$0" stop; "$0" start "${2:-}" ;;
+  restart)    "$0" stop "${2:-}"; "$0" start "${2:-}" ;;
   list)       list_profiles ;;
-  logs)       show_logs "${2:-}" ;;
+  list-names) profile_names_raw ;;
+  logs)       shift; show_logs "$@" ;;
   setup)      setup_wizard ;;
+  add-profile) add_profile_wizard ;;
   set-secret) shift; profile="${1:-}"; field="${2:-}"; { [ -z "$profile" ] || [ -z "$field" ]; } && { echo "Usage: $0 set-secret <profile> <field>"; exit 1; }
               [ "$field" = "sudo_password" ] && { echo "Storing the sudo password is not supported (it would defeat sudo's protection). See the sudoers rule in the README." >&2; exit 1; }
               read -r -s -p "Enter value for ${profile}.${field}: " value; echo
