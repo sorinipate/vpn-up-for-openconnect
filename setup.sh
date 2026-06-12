@@ -39,12 +39,18 @@ readonly QUIET=__QUIET__
 #        ├ TRUE          Less output
 #        └ FALSE         Detailed output
 
+# UI
+readonly SHOW_BANNER=__SHOW_BANNER__
+#        ├ TRUE          Show the ASCII banner on start (interactive only)
+#        └ FALSE         Never show the banner
+
 # ENCRYPTION
 readonly ENCRYPTION_ENABLED=TRUE  # Toggle affects only file fallback; keychain/keyring are preferred.
 CFG
   sed -i.bak "s/__SUDO__/${__WZ_SUDO}/" "${tmp}"
   sed -i.bak "s/__BACKGROUND__/${__WZ_BACKGROUND}/" "${tmp}"
   sed -i.bak "s/__QUIET__/${__WZ_QUIET}/" "${tmp}"
+  sed -i.bak "s/__SHOW_BANNER__/${__WZ_SHOW_BANNER}/" "${tmp}"
   rm -f "${tmp}.bak"
   mv "${tmp}" "${CONFIGURATION_FILE}"
   chmod 600 "${CONFIGURATION_FILE}"
@@ -62,6 +68,9 @@ setup_wizard() {
 
   read -r -p "Quiet output? (TRUE/FALSE) [TRUE]: " _in_quiet
   __WZ_QUIET="$(_bool_default "${_in_quiet}" "TRUE")"
+
+  read -r -p "Show ASCII banner on start? (TRUE/FALSE) [TRUE]: " _in_banner
+  __WZ_SHOW_BANNER="$(_bool_default "${_in_banner}" "TRUE")"
 
   # Clean up any sudo password stored by older versions; storing it defeats
   # sudo's protection (any process running as this user could retrieve it).

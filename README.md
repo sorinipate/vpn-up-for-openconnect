@@ -129,8 +129,9 @@ automatically on first run.
 `~/.config/vpn-up/vpn-up.command.config`
 
 ```bash
-readonly QUIET=TRUE
+readonly QUIET=TRUE          # openconnect output verbosity
 readonly BACKGROUND=TRUE
+readonly SHOW_BANNER=TRUE    # ASCII banner on start (independent of QUIET)
 readonly ENCRYPTION_ENABLED=TRUE
 ```
 
