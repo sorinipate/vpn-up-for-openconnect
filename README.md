@@ -1,5 +1,19 @@
 # VPN Up for OpenConnect
 
+```text
+    ╔═════════════════════════════════════════════════════════════════╗
+    ║                                                                 ║
+    ║ ██╗   ██╗  ██████╗    ███╗   ██╗           ██╗   ██╗   ██████╗  ║
+    ║ ██║   ██║  ██╔══██╗   ████╗  ██║           ██║   ██║   ██╔══██╗ ║
+    ║ ██║   ██║  ██████╔╝   ██╔██╗ ██║  ███████  ██║   ██║   ██████╔╝ ║
+    ║ ╚██╗ ██╔╝  ██╔═══╝    ██║╚██╗██║           ██║   ██║   ██╔═══╝  ║
+    ║  ╚████╔╝   ██║        ██║ ╚████║           ╚██████╔╝   ██║      ║
+    ║   ╚═══╝    ╚═╝        ╚═╝  ╚═══╝            ╚═════╝    ╚═╝      ║
+    ║                                                                 ║
+    ║                   F O R   O P E N C O N N E C T                 ║
+    ╚═════════════════════════════════════════════════════════════════╝
+```
+
 ## Secure Command-Line Client for Cisco AnyConnect (macOS & Linux)
 
 **VPN Up for OpenConnect** is a modern, secure, and user-friendly Bash-based wrapper around `openconnect`, designed to simplify VPN connections while following best practices for security and maintainability.
