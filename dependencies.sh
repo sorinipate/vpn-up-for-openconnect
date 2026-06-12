@@ -27,6 +27,7 @@ doctor() {
   echo "- Bash       : ${BASH_VERSION:-unknown}"
   echo "- Program    : ${PROGRAM_NAME}"
   echo "- Path       : ${PROGRAM_PATH}"
+  echo "- Data dir   : ${DATA_DIR}"
   echo "- Config     : ${CONFIGURATION_FILE}"
   echo "- Profiles   : ${PROFILES_FILE}"
   echo "- PID/LOG    : ${PID_FILE_PATH} / ${LOG_FILE_PATH}"
