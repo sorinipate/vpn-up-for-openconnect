@@ -1,10 +1,27 @@
 # core.sh - main flow (Bash >= 4; uses mapfile)
 
+# The config file is executable shell code: refuse to source it unless it is
+# owned by the current user and not writable by group/other.
+assert_safe_to_source() {
+  local f="$1" owner perms
+  owner="$(stat -f '%u' "$f" 2>/dev/null || stat -c '%u' "$f" 2>/dev/null)"
+  perms="$(stat -f '%Lp' "$f" 2>/dev/null || stat -c '%a' "$f" 2>/dev/null)"
+  if [ "$owner" != "$(id -u)" ]; then
+    print_danger "Refusing to load %s: not owned by the current user.\n" "$f"
+    return 1
+  fi
+  if [ $(( 8#$perms & 8#022 )) -ne 0 ]; then
+    print_danger "Refusing to load %s: writable by group/other (mode %s). Fix with: chmod 600 '%s'\n" "$f" "$perms" "$f"
+    return 1
+  fi
+}
+
 start() {
   # Ensure config exists or run wizard
   if [ ! -f "$CONFIGURATION_FILE" ]; then
     setup_wizard
   fi
+  assert_safe_to_source "$CONFIGURATION_FILE" || exit 1
   # shellcheck disable=SC1090
   source "$CONFIGURATION_FILE"
   print_warning "Loaded configuration from %s ...\n" "$CONFIGURATION_FILE"
