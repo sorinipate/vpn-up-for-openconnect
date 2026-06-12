@@ -100,7 +100,7 @@ _service_preflight() {
     print_warning "No passwordless sudo detected. Service mode requires a sudoers rule for openconnect (see README); the service will fail until it exists.\n"
   fi
   if [ -z "$(secrets_get "$profile" "password" 2>/dev/null)" ]; then
-    print_warning "No stored password for '%s'. Store one first: %s set-secret '%s' password\n" "$profile" "${PROGRAM_NAME}" "$profile"
+    print_warning "No stored password for '%s'. Store one first: %s set-secret '%s' password\n" "$profile" "${DISPLAY_NAME}" "$profile"
   fi
   local duo
   duo="$(xmlstarlet sel -t -m "//VPN[name=$(xpath_literal "$profile")]" -v 'duo2FAMethod | duoMethod' "$PROFILES_FILE" 2>/dev/null)"
@@ -113,7 +113,7 @@ _service_preflight() {
 
 service_install() {
   local profile="$1"
-  [ -n "$profile" ] || { echo "Usage: ${PROGRAM_NAME} service install <profile>" >&2; return 1; }
+  [ -n "$profile" ] || { echo "Usage: ${DISPLAY_NAME} service install <profile>" >&2; return 1; }
   _service_preflight "$profile" || return 1
   local target; target="$(_service_path_for "$profile")"
   if [ "$(uname)" = "Darwin" ]; then
@@ -122,7 +122,7 @@ service_install() {
     launchctl unload "$target" 2>/dev/null || true
     if launchctl load -w "$target"; then
       print_success "Installed and loaded launch agent: %s\n" "$target"
-      print_warning "The VPN will now connect at login and auto-reconnect if it drops. Remove with: %s service uninstall '%s'\n" "${PROGRAM_NAME}" "$profile"
+      print_warning "The VPN will now connect at login and auto-reconnect if it drops. Remove with: %s service uninstall '%s'\n" "${DISPLAY_NAME}" "$profile"
     else
       print_danger "Wrote %s but could not load it; load manually with: launchctl load -w '%s'\n" "$target" "$target"
       return 1
@@ -146,7 +146,7 @@ service_install() {
 
 service_uninstall() {
   local profile="$1"
-  [ -n "$profile" ] || { echo "Usage: ${PROGRAM_NAME} service uninstall <profile>" >&2; return 1; }
+  [ -n "$profile" ] || { echo "Usage: ${DISPLAY_NAME} service uninstall <profile>" >&2; return 1; }
   local target; target="$(_service_path_for "$profile")"
   if [ ! -f "$target" ]; then
     print_warning "No service installed for '%s' (%s).\n" "$profile" "$target"
@@ -159,7 +159,7 @@ service_uninstall() {
   fi
   rm -f "$target"
   print_success "Removed service for '%s'.\n" "$profile"
-  print_warning "If the VPN is still connected, stop it with: %s stop '%s'\n" "${PROGRAM_NAME}" "$profile"
+  print_warning "If the VPN is still connected, stop it with: %s stop '%s'\n" "${DISPLAY_NAME}" "$profile"
 }
 
 service_status() {

@@ -53,7 +53,7 @@ PRIMARY="\x1b[36;1m"; SUCCESS="\x1b[32;1m"; WARNING="\x1b[35;1m"; DANGER="\x1b[3
 
 print_info() {
 cat <<EOF
-Usage: $PROGRAM_NAME <command>
+Usage: ${DISPLAY_NAME} <command>
 
 Commands:
   start [profile]      Start VPN (interactive menu, or directly by profile name)
@@ -75,11 +75,11 @@ Commands:
   doctor               Diagnose environment and secret backend
 
 Examples:
-  $PROGRAM_NAME start "Work VPN"
-  $PROGRAM_NAME set-secret "Work VPN" password
-  $PROGRAM_NAME pin vpn.example.com
-  $PROGRAM_NAME pin --save "Work VPN"
-  $PROGRAM_NAME logs -f
+  ${DISPLAY_NAME} start "Work VPN"
+  ${DISPLAY_NAME} set-secret "Work VPN" password
+  ${DISPLAY_NAME} pin vpn.example.com
+  ${DISPLAY_NAME} pin --save "Work VPN"
+  ${DISPLAY_NAME} logs -f
 EOF
 }
 

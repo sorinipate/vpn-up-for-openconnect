@@ -74,7 +74,7 @@ migrate_or_fetch_password() {
   fi
   if [ -z "$s" ]; then
     if [ -n "${VPN_UP_SERVICE:-}" ]; then
-      print_danger "No stored password for '%s' and service mode cannot prompt. Store one first: %s set-secret '%s' password\n" "${VPN_NAME}" "${PROGRAM_NAME}" "${VPN_NAME}"
+      print_danger "No stored password for '%s' and service mode cannot prompt. Store one first: %s set-secret '%s' password\n" "${VPN_NAME}" "${DISPLAY_NAME}" "${VPN_NAME}"
       return 1
     fi
     read -r -s -p "Enter password for ${VPN_USER}@${VPN_HOST}: " s; echo
