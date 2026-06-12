@@ -73,3 +73,32 @@ setup() {
   [ ! -e "$SECRETS_TMP" ]
   [ ! -e "${SECRETS_TMP}.sorted" ]
 }
+
+@test "secrets_key namespaces profile and field" {
+  [ "$(secrets_key "Work VPN" password)" = "${PROGRAM_NAME}:profile=Work VPN:field=password" ]
+}
+
+@test "_security_quote escapes quotes and backslashes for security -i" {
+  [ "$(_security_quote 'plain')" = '"plain"' ]
+  [ "$(_security_quote 'a"b')" = '"a\"b"' ]
+  [ "$(_security_quote 'a\b')" = '"a\\b"' ]
+}
+
+@test "secrets_backend honors platform tools and ENCRYPTION_ENABLED" {
+  # no keyring tools, encryption on -> openssl vault
+  uname() { echo Linux; }
+  command() { return 1; }
+  ENCRYPTION_ENABLED=TRUE
+  [ "$(secrets_backend)" = "openssl" ]
+  # explicit plaintext opt-out -> file
+  ENCRYPTION_ENABLED=FALSE
+  [ "$(secrets_backend)" = "file" ]
+  # Darwin with security available -> keychain regardless
+  uname() { echo Darwin; }
+  command() { [ "$2" = "security" ]; }
+  [ "$(secrets_backend)" = "keychain" ]
+  # Linux with secret-tool -> secret-tool
+  uname() { echo Linux; }
+  command() { [ "$2" = "secret-tool" ]; }
+  [ "$(secrets_backend)" = "secret-tool" ]
+}

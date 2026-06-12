@@ -50,3 +50,10 @@ XML
   run pin_save "No Host"
   [ "$status" -ne 0 ]
 }
+
+@test "_host_only and _port_only split host:port with a 443 default" {
+  [ "$(_host_only "vpn.example.com")" = "vpn.example.com" ]
+  [ "$(_port_only "vpn.example.com")" = "443" ]
+  [ "$(_host_only "vpn.example.com:8443")" = "vpn.example.com" ]
+  [ "$(_port_only "vpn.example.com:8443")" = "8443" ]
+}
