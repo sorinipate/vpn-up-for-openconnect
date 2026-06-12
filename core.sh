@@ -10,6 +10,10 @@ assert_safe_to_source() {
     print_danger "Refusing to load %s: not owned by the current user.\n" "$f"
     return 1
   fi
+  if [ -z "$perms" ]; then
+    print_danger "Refusing to load %s: could not determine file permissions.\n" "$f"
+    return 1
+  fi
   if [ $(( 8#$perms & 8#022 )) -ne 0 ]; then
     print_danger "Refusing to load %s: writable by group/other (mode %s). Fix with: chmod 600 '%s'\n" "$f" "$perms" "$f"
     return 1
@@ -123,6 +127,9 @@ start() {
     else
       print_danger "Failed to connect! Last log lines from %s:\n" "${LOG_FILE_PATH}"
       tail -n 15 "$LOG_FILE_PATH" 2>/dev/null || true
+      if grep -q "Login failed" "$LOG_FILE_PATH" 2>/dev/null; then
+        print_warning "If the stored password is wrong, reset it with: %s delete-secret '%s' password\n" "${PROGRAM_NAME}" "${VPN_NAME}"
+      fi
       notify "VPN Up" "Failed to connect to ${VPN_NAME:-VPN}"
     fi
   fi

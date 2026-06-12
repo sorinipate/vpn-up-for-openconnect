@@ -5,6 +5,28 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ---
 
+## [v3.5.1] — 2026-06-13
+### Review & Coverage Update
+
+### Fixed
+- Homebrew installs: the `vpn-up` wrapper now resolves through the stable
+  `opt` path, so login services installed from a brew copy survive
+  `brew upgrade` (previously the LaunchAgent pointed at a versioned Cellar
+  path). Tap formula change; reinstall or upgrade picks it up.
+- `service status` matched launchd labels as a regex; now an exact match.
+- Config validation fails closed if file permissions cannot be determined.
+- After a `Login failed` connection attempt, the error now points at
+  `delete-secret` so a mistyped stored password isn't silently reused.
+
+### Added
+- Test coverage across the whole application: CLI dispatch, status/stop scan
+  logic, config safety checks, log selection, notifications/banner gating,
+  setup templating, secrets backend selection, service install/uninstall,
+  and helper parsing — 71 bats tests total (up from 29), run on macOS and
+  Ubuntu in CI.
+
+---
+
 ## [v3.5.0] — 2026-06-12
 ### Lifecycle & Maintenance Update
 
