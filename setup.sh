@@ -23,12 +23,8 @@ readonly WARNING="\x1b[35;1m"
 readonly DANGER="\x1b[31;1m"
 readonly RESET="\x1b[0m"
 
-# CORE
-readonly SUDO=__SUDO__
-#        ├ TRUE
-#        └ FALSE
-# NOTE: The sudo password is never stored anywhere. For passwordless operation,
-# add a scoped sudoers rule for openconnect (see README).
+# NOTE: openconnect runs via sudo; the sudo password is never stored anywhere.
+# For passwordless operation, add a scoped sudoers rule (see README).
 
 # OPENCONNECT OPTIONS
 readonly BACKGROUND=__BACKGROUND__
@@ -51,7 +47,6 @@ readonly NOTIFICATIONS=__NOTIFICATIONS__
 # ENCRYPTION
 readonly ENCRYPTION_ENABLED=TRUE  # Toggle affects only file fallback; keychain/keyring are preferred.
 CFG
-  sed -i.bak "s/__SUDO__/${__WZ_SUDO}/" "${tmp}"
   sed -i.bak "s/__BACKGROUND__/${__WZ_BACKGROUND}/" "${tmp}"
   sed -i.bak "s/__QUIET__/${__WZ_QUIET}/" "${tmp}"
   sed -i.bak "s/__SHOW_BANNER__/${__WZ_SHOW_BANNER}/" "${tmp}"
@@ -110,16 +105,16 @@ add_profile_wizard() {
     || { print_danger "Failed to update %s\n" "$PROFILES_FILE"; return 1; }
   print_success "Added profile '%s' to %s\n" "$name" "$PROFILES_FILE"
 
-  read -r -p "Store the VPN password now? (TRUE/FALSE) [TRUE]: " _in_pw
+  read -r -p "Store the VPN password now? [Y/n]: " _in_pw
   if [ "$(_bool_default "${_in_pw}" "TRUE")" = TRUE ]; then
     local _p
     read -r -s -p "Enter password for ${user}@${host}: " _p; echo
     [ -n "$_p" ] && secrets_set "$name" "password" "$_p" && print_success "Password stored securely.\n"
   fi
 
-  read -r -p "Fetch and save the gateway certificate pin now? (TRUE/FALSE) [TRUE]: " _in_pin
+  read -r -p "Fetch and save the gateway certificate pin now? [Y/n]: " _in_pin
   if [ "$(_bool_default "${_in_pin}" "TRUE")" = TRUE ]; then
-    pin_save "$name" || print_warning "Pin not saved; you can retry later with: %s pin --save '%s'\n" "${PROGRAM_NAME}" "$name"
+    pin_save "$name" || print_warning "Pin not saved; you can retry later with: %s pin --save '%s'\n" "${DISPLAY_NAME}" "$name"
   fi
 }
 
@@ -127,7 +122,7 @@ add_profile_wizard() {
 # per-profile pid/state/log files, and any installed login service.
 remove_profile() {
   local name="$1"
-  [ -n "$name" ] || { echo "Usage: ${PROGRAM_NAME} remove-profile <profile>" >&2; return 1; }
+  [ -n "$name" ] || { echo "Usage: ${DISPLAY_NAME} remove-profile <profile>" >&2; return 1; }
   if ! profile_exists "$name"; then
     print_danger "Unknown profile '%s'.\n" "$name"
     return 1
@@ -136,7 +131,7 @@ remove_profile() {
   local slug; slug="$(profile_slug "$name")"
   local pidfile="${DATA_DIR}/pids/${PROGRAM_NAME}.${slug}.pid"
   if [ -f "$pidfile" ] && is_openconnect_pid "$(cat "$pidfile")"; then
-    print_danger "Profile '%s' is currently connected; stop it first: %s stop '%s'\n" "$name" "${PROGRAM_NAME}" "$name"
+    print_danger "Profile '%s' is currently connected; stop it first: %s stop '%s'\n" "$name" "${DISPLAY_NAME}" "$name"
     return 1
   fi
 
@@ -176,19 +171,16 @@ remove_profile() {
 setup_wizard() {
   printf "%b\n" "${PRIMARY}Running first-time setup...${RESET}"
 
-  read -r -p "Use sudo for privileged operations? (TRUE/FALSE) [TRUE]: " _in_sudo
-  __WZ_SUDO="$(_bool_default "${_in_sudo}" "TRUE")"
-
-  read -r -p "Run in background after connect? (TRUE/FALSE) [TRUE]: " _in_bg
+  read -r -p "Run in background after connect? [Y/n]: " _in_bg
   __WZ_BACKGROUND="$(_bool_default "${_in_bg}" "TRUE")"
 
-  read -r -p "Quiet output? (TRUE/FALSE) [TRUE]: " _in_quiet
+  read -r -p "Quiet openconnect output? [Y/n]: " _in_quiet
   __WZ_QUIET="$(_bool_default "${_in_quiet}" "TRUE")"
 
-  read -r -p "Show ASCII banner on start? (TRUE/FALSE) [TRUE]: " _in_banner
+  read -r -p "Show ASCII banner on start? [Y/n]: " _in_banner
   __WZ_SHOW_BANNER="$(_bool_default "${_in_banner}" "TRUE")"
 
-  read -r -p "Desktop notifications on connect/disconnect? (TRUE/FALSE) [TRUE]: " _in_notif
+  read -r -p "Desktop notifications on connect/disconnect? [Y/n]: " _in_notif
   __WZ_NOTIFICATIONS="$(_bool_default "${_in_notif}" "TRUE")"
 
   # Clean up any sudo password stored by older versions; storing it defeats

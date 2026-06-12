@@ -60,11 +60,27 @@ start() {
   load_config
   print_warning "Loaded configuration from %s ...\n" "$CONFIGURATION_FILE"
 
-  # Seed the profiles template on first run, then ask the user to fill it in.
-  if [ ! -f "$PROFILES_FILE" ] && [ -f "${PROGRAM_PATH}/config/${PROGRAM_NAME}.profiles.default" ]; then
-    ( umask 077; cp "${PROGRAM_PATH}/config/${PROGRAM_NAME}.profiles.default" "$PROFILES_FILE" )
-    print_warning "Created profile template at %s\nEdit it with your VPN details, then run start again.\n" "$PROFILES_FILE"
-    exit 1
+  # First run with no profiles: offer the guided wizard when interactive;
+  # fall back to seeding the XML template for scripts/services.
+  if [ ! -f "$PROFILES_FILE" ] || [ -z "$(profile_names_raw)" ]; then
+    if [ -t 0 ] && [ -z "${VPN_UP_SERVICE:-}" ]; then
+      print_warning "No VPN profiles yet.\n"
+      local _add=""
+      read -r -p "Add your first profile now? [Y/n]: " _add
+      case "$_add" in
+        n|N|no|NO)
+          print_warning "You can add one later with: %s add-profile\n" "${DISPLAY_NAME}"
+          exit 1 ;;
+        *)
+          add_profile_wizard || exit 1 ;;
+      esac
+    else
+      if [ ! -f "$PROFILES_FILE" ] && [ -f "${PROGRAM_PATH}/config/${PROGRAM_NAME}.profiles.default" ]; then
+        ( umask 077; cp "${PROGRAM_PATH}/config/${PROGRAM_NAME}.profiles.default" "$PROFILES_FILE" )
+        print_warning "Created profile template at %s\nEdit it with your VPN details (or run '%s add-profile'), then run start again.\n" "$PROFILES_FILE" "${DISPLAY_NAME}"
+      fi
+      exit 1
+    fi
   fi
   check_file_existence "$PROFILES_FILE" "Profiles"
 
@@ -78,11 +94,11 @@ start() {
   fi
 
   if any_vpn_running; then
-    print_warning "Already connected to a VPN! Run '%s status' or '%s stop' first.\n" "${PROGRAM_NAME}" "${PROGRAM_NAME}"
+    print_warning "Already connected to a VPN! Run '%s status' or '%s stop' first.\n" "${DISPLAY_NAME}" "${DISPLAY_NAME}"
     exit 1
   fi
 
-  print_primary "Starting ${PROGRAM_NAME} ...\n"
+  print_primary "Starting ${DISPLAY_NAME} ...\n"
 
   if [ -n "$requested" ]; then
     # Non-interactive: profile named on the command line
@@ -128,7 +144,7 @@ start() {
       print_danger "Failed to connect! Last log lines from %s:\n" "${LOG_FILE_PATH}"
       tail -n 15 "$LOG_FILE_PATH" 2>/dev/null || true
       if grep -q "Login failed" "$LOG_FILE_PATH" 2>/dev/null; then
-        print_warning "If the stored password is wrong, reset it with: %s delete-secret '%s' password\n" "${PROGRAM_NAME}" "${VPN_NAME}"
+        print_warning "If the stored password is wrong, reset it with: %s delete-secret '%s' password\n" "${DISPLAY_NAME}" "${VPN_NAME}"
       fi
       notify "VPN Up" "Failed to connect to ${VPN_NAME:-VPN}"
     fi
@@ -180,7 +196,7 @@ connect() {
   if [ -n "$SERVER_CERTIFICATE" ]; then
     case "$SERVER_CERTIFICATE" in
       pin-sha256:*) : ;;
-      *) print_warning "serverCertificate uses a legacy (SHA1) pin; SHA1 is deprecated. Run '%s pin %s' to get a pin-sha256 value.\n" "${PROGRAM_NAME}" "${VPN_HOST}" ;;
+      *) print_warning "serverCertificate uses a legacy (SHA1) pin; SHA1 is deprecated. Run '%s pin %s' to get a pin-sha256 value.\n" "${DISPLAY_NAME}" "${VPN_HOST}" ;;
     esac
   else
     if ! verify_gateway_cert "${VPN_HOST}"; then
