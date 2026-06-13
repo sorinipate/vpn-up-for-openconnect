@@ -36,4 +36,7 @@ bats tests/
 
 ## Releases (maintainer)
 
-Publishing a GitHub release automatically updates the Homebrew tap formula — no manual steps.
+See [RELEASING.md](RELEASING.md) for the full process — versioning, the
+`vX.Y.Z — Theme` title convention, the release-notes body template, and the
+step-by-step checklist. Publishing a GitHub release automatically updates the
+Homebrew tap formula.
