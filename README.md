@@ -37,9 +37,40 @@ VPN is running (PID: 88933)
 
 ---
 
+**VPN Up** is a secure, scriptable command-line VPN manager for [OpenConnect](https://www.infradead.org/openconnect/). It connects macOS and Linux machines to **Cisco AnyConnect**, Palo Alto **GlobalProtect**, **Pulse Secure**, **Juniper Network Connect**, and **ocserv** gateways straight from the terminal — with named profiles, Duo 2FA, certificate pinning, secure secret storage, auto-reconnect, and shell completion.
+
+It's built for developers, consultants, DevOps engineers, and remote workers who'd rather drive their VPN from the command line than a vendor GUI.
+
+## ❓ Why use VPN Up?
+
+- Connect to Cisco AnyConnect-compatible VPNs without the official GUI client
+- Manage multiple OpenConnect VPN profiles and connect by name (`vpn-up start "Work VPN"`)
+- Use **Duo 2FA** from the command line — push, phone, SMS, or one-time passcode
+- Store VPN secrets in the macOS **Keychain**, Linux **Secret Service**, or an encrypted OpenSSL vault — never in plaintext config files
+- Run VPN connections as **launchd/systemd login services** with auto-reconnect
+- Script VPN startup into your development, automation, and remote-support workflows
+
+## 👤 Who is this for?
+
+VPN Up is useful if you:
+
+- Use OpenConnect instead of vendor VPN clients
+- Connect to Cisco AnyConnect, GlobalProtect, Pulse Secure, Juniper, or ocserv VPNs
+- Want a terminal-first VPN workflow on macOS or Linux
+- Juggle multiple client VPN profiles on one machine
+- Need Duo 2FA support from the command line
+- Want secure password storage without plaintext config files
+- Want VPN auto-reconnect at login via launchd or systemd
+
+---
+
 ## 📑 Table of Contents
 
+- [Why use VPN Up?](#-why-use-vpn-up)
+- [Who is this for?](#-who-is-this-for)
 - [Key Features](#-key-features)
+- [VPN Up vs. raw OpenConnect](#-vpn-up-vs-raw-openconnect)
+- [Common use cases](#-common-use-cases)
 - [Prerequisites & Installation](#-prerequisites--installation)
 - [Quick Start](#-quick-start)
 - [Usage](#-usage)
@@ -82,6 +113,37 @@ VPN is running (PID: 88933)
 - **`doctor`** diagnostics — environment, dependencies, secret backend, and config at a glance
 - **Bash/zsh tab completion** for commands and profile names
 - **Hardened & tested** — 71 tests on macOS + Ubuntu in CI, shellcheck-clean, secret scanning, modern Bash (≥ 4), no `eval`
+
+---
+
+## ⚖️ VPN Up vs. raw OpenConnect
+
+VPN Up is not a replacement for OpenConnect — it's a safer, more convenient wrapper around it for people who want profile management, secure secrets, 2FA prompts, certificate pinning, logs, completion, and service management instead of long ad-hoc command lines.
+
+| Feature | Raw `openconnect` | VPN Up |
+|---|:---:|:---:|
+| Multiple named profiles | manual | ✅ |
+| Secure secret storage (Keychain/keyring/vault) | — | ✅ |
+| Duo 2FA prompts (push/phone/sms/passcode) | manual | ✅ |
+| Certificate-pinning helper | manual | ✅ |
+| Auto-reconnect login service (launchd/systemd) | manual | ✅ |
+| Profile-aware `status` / `logs` / `stop` | — | ✅ |
+| Shell completion | — | ✅ |
+| Connect/disconnect hooks & notifications | — | ✅ |
+
+It works as a command-line alternative to vendor clients such as the Cisco AnyConnect Secure Mobility Client, GlobalProtect, Pulse Secure, or Juniper Network Connect whenever your gateway speaks an OpenConnect-compatible protocol.
+
+---
+
+## 💡 Common use cases
+
+- Connect to a Cisco AnyConnect VPN from the macOS or Linux terminal
+- Use OpenConnect with Duo Push authentication
+- Manage multiple client VPN profiles on one machine
+- Start a VPN automatically at login on macOS (launchd) or Linux (systemd)
+- Run OpenConnect with certificate pinning for a known gateway
+- Store VPN credentials securely outside plaintext files
+- Script VPN startup before running developer tools or remote-support tasks
 
 ---
 
