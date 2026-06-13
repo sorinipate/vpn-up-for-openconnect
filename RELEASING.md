@@ -19,27 +19,35 @@ the title and notes you set here are what users and search engines see.
 ## Title convention
 
 ```
-vX.Y.Z — <Theme>
+vX.Y.Z — <keyword-forward summary of the release>
 ```
 
 - **`vX.Y.Z`** — the tag, with the `v` prefix.
 - **`—`** — an em dash (not a hyphen), with a space on each side.
-- **`<Theme>`** — 2–4 words in Title Case naming the headline of the release.
-  Keep it identical to the CHANGELOG subtitle for that version so the tag, the
-  CHANGELOG, and the GitHub release all read the same.
+- **`<summary>`** — a short, human-readable phrase that leads with the terms
+  people actually search for: the product category (`OpenConnect VPN CLI`) and
+  the headline capability of the release (`Duo 2FA`, `GlobalProtect`,
+  `systemd auto-reconnect`, `profile management`, …). Aim for roughly 6–10
+  words — long enough to carry the keywords, short enough to read as a title,
+  not a sentence.
 
-The **title stays short and human** — do not stuff keywords into it. Search
-terms belong in the release **body** (see the template below), where they read
-naturally.
+Why keyword-forward: the release title is its own indexed surface (the
+`/releases/tag/vX.Y.Z` page) and shows up in previews and search results, so
+the search terms earn their place there — not only in the body. Keep it honest
+and readable; don't pad it into a keyword list.
 
-**Examples** (and how they map to the CHANGELOG `### <subtitle>`):
+The CHANGELOG keeps its own short thematic subtitle (`### <Theme> Update`); the
+release **title** is the keyword-forward version of that same theme. They don't
+have to be character-identical, but they should describe the same release.
 
-| Release title | CHANGELOG subtitle |
-|---|---|
-| `v3.6.0 — First-Run Usability & Docs` | First-Run Usability & Docs Update |
-| `v3.5.0 — Lifecycle & Maintenance` | Lifecycle & Maintenance Update |
-| `v3.4.0 — Service & Notifications` | Service & Notifications Update |
-| `v3.0.0 — Security Hardening` | Security Hardening Release |
+**Examples:**
+
+| Version | Release title | CHANGELOG subtitle |
+|---|---|---|
+| v3.7.0 | `v3.7.0 — OpenConnect VPN CLI improvements for Duo 2FA and profile management` | Duo 2FA & Profiles Update |
+| v3.8.0 | `v3.8.0 — Better GlobalProtect support and systemd auto-reconnect` | GlobalProtect & Auto-Reconnect Update |
+| v3.9.0 | `v3.9.0 — Secure VPN profile management for macOS and Linux` | Profile Management Update |
+| v4.0.0 | `v4.0.0 — Security hardening for OpenConnect on macOS and Linux` | Security Hardening Release |
 
 ## Release-notes body template
 
