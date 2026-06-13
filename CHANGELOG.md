@@ -5,7 +5,8 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ---
 
-## [Unreleased]
+## [v3.6.0] — 2026-06-13
+### First-Run Usability & Docs Update
 
 ### Added
 - `LICENSE` file (MIT — previously only claimed in the README) and
