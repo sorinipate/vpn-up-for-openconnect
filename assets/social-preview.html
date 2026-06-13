@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<!-- Source for the GitHub social preview image (1280x640).
+     Recreates the ui.sh terminal banner (ANSI 36;1 = bright cyan).
+     Render with: assets/render-social-preview.sh -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --cyan: #34e2e2;
+    --bg0: #090d16;
+    --bg1: #0d1117;
+    --win: #0d1117;
+    --border: #2a3140;
+    --muted: #7d8590;
+    --fg: #e6edf3;
+    --green: #3fb950;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 1280px; height: 640px; overflow: hidden;
+    font-family: 'SF Mono','Menlo','Monaco','Consolas','Liberation Mono',monospace;
+    background:
+      radial-gradient(1200px 700px at 18% -10%, rgba(52,226,226,0.10), transparent 60%),
+      radial-gradient(900px 600px at 110% 120%, rgba(52,226,226,0.06), transparent 55%),
+      linear-gradient(160deg, var(--bg0), var(--bg1));
+  }
+  .page { width: 1280px; height: 640px; display: flex; align-items: center; justify-content: center; }
+  .term {
+    width: 1136px; height: 540px;
+    background: linear-gradient(180deg, #11161f, #0c1019);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    box-shadow: 0 30px 80px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.04);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .bar {
+    height: 46px; flex: 0 0 46px;
+    display: flex; align-items: center; gap: 9px;
+    padding: 0 18px;
+    background: linear-gradient(180deg, #1a2030, #141926);
+    border-bottom: 1px solid var(--border);
+  }
+  .dot { width: 13px; height: 13px; border-radius: 50%; }
+  .red { background: #ff5f56; } .yellow { background: #ffbd2e; } .green { background: #27c93f; }
+  .title { margin-left: 14px; color: var(--muted); font-size: 14px; letter-spacing: .3px; }
+  .body {
+    flex: 1; display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    padding: 12px 0 26px;
+  }
+  pre.banner {
+    color: var(--cyan);
+    font-size: 16.5px; line-height: 1.16;
+    text-shadow: 0 0 18px rgba(52,226,226,0.45);
+    white-space: pre; font-weight: 700;
+  }
+  .tag-main {
+    margin-top: 26px;
+    color: var(--fg); font-size: 25px; font-weight: 700; letter-spacing: .4px;
+  }
+  .tag-sub {
+    margin-top: 11px;
+    color: var(--muted); font-size: 18px; letter-spacing: .5px;
+  }
+  .tag-sub b { color: var(--cyan); font-weight: 600; }
+  .prompt {
+    margin-top: 22px; font-size: 16px; color: var(--muted);
+  }
+  .prompt .c { color: var(--cyan); }
+  .prompt .cmd { color: var(--fg); }
+  .prompt .ok { color: var(--green); }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="term">
+    <div class="bar">
+      <span class="dot red"></span><span class="dot yellow"></span><span class="dot green"></span>
+      <span class="title">vpn-up — bash — 80×24</span>
+    </div>
+    <div class="body">
+<pre class="banner">    ╔═════════════════════════════════════════════════════════════════╗
+    ║                                                                 ║
+    ║ ██╗   ██╗  ██████╗    ███╗   ██╗           ██╗   ██╗   ██████╗  ║
+    ║ ██║   ██║  ██╔══██╗   ████╗  ██║           ██║   ██║   ██╔══██╗ ║
+    ║ ██║   ██║  ██████╔╝   ██╔██╗ ██║  ███████  ██║   ██║   ██████╔╝ ║
+    ║ ╚██╗ ██╔╝  ██╔═══╝    ██║╚██╗██║           ██║   ██║   ██╔═══╝  ║
+    ║  ╚████╔╝   ██║        ██║ ╚████║           ╚██████╔╝   ██║      ║
+    ║   ╚═══╝    ╚═╝        ╚═╝  ╚═══╝            ╚═════╝    ╚═╝      ║
+    ║                                                                 ║
+    ║                   F O R   O P E N C O N N E C T                 ║
+    ╚═════════════════════════════════════════════════════════════════╝</pre>
+      <div class="tag-main">Secure OpenConnect VPN CLI</div>
+      <div class="tag-sub">Cisco AnyConnect <b>·</b> GlobalProtect <b>·</b> Duo 2FA <b>·</b> macOS &amp; Linux</div>
+      <div class="prompt"><span class="c">$</span> <span class="cmd">vpn-up start "Frankfurt VPN"</span>&nbsp;&nbsp;<span class="ok">✔ Connected</span></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>
