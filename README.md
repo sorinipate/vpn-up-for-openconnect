@@ -84,7 +84,7 @@ VPN Up is useful if you:
   - [Diagnostics](#diagnostics)
 - [Configuration](#-configuration)
 - [Roadmap](#-roadmap)
-- [Related article](#-related-article)
+- [Related articles](#-related-articles)
 - [Contributing & License](#-contributing--license)
 
 ---
@@ -364,11 +364,12 @@ Supported tag aliases: `username`/`user`, `group`/`authGroup`, `duoMethod`/`duo2
 
 ---
 
-## 📰 Related article
+## 📰 Related articles
 
-Background and design notes on Architegrity:
+Background and design notes:
 
-[A Safer OpenConnect Workflow for Cisco AnyConnect VPNs on macOS and Linux](https://architegrity.com/blog/safer-openconnect-workflow-cisco-anyconnect-macos-linux)
+- [A Safer OpenConnect Workflow for Cisco AnyConnect VPNs on macOS and Linux](https://architegrity.com/blog/safer-openconnect-workflow-cisco-anyconnect-macos-linux) — Architegrity
+- [A Safer OpenConnect Workflow for Cisco AnyConnect VPNs on macOS and Linux](https://dev.to/sorinipate/a-safer-openconnect-workflow-for-cisco-anyconnect-vpns-on-macos-and-linux-5g7o) — Dev.to
 
 ---
 
