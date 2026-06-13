@@ -84,6 +84,7 @@ VPN Up is useful if you:
   - [Diagnostics](#diagnostics)
 - [Configuration](#-configuration)
 - [Roadmap](#-roadmap)
+- [Related article](#-related-article)
 - [Contributing & License](#-contributing--license)
 
 ---
@@ -360,6 +361,14 @@ Supported tag aliases: `username`/`user`, `group`/`authGroup`, `duoMethod`/`duo2
 **Explicitly out of scope:** Windows support, GUI.
 
 **Known behavior:** some AnyConnect gateways emit an initial `Unexpected 404 result from server` — this is benign if the connection proceeds successfully.
+
+---
+
+## 📰 Related article
+
+Background and design notes on Architegrity:
+
+[A Safer OpenConnect Workflow for Cisco AnyConnect VPNs on macOS and Linux](https://architegrity.com/blog/safer-openconnect-workflow-cisco-anyconnect-macos-linux)
 
 ---
 
