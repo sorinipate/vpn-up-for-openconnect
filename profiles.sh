@@ -31,7 +31,8 @@ load_profile_fields() {
       -v "username | user" -n \
       -v "password" -n \
       -v "duo2FAMethod | duoMethod" -n \
-      -v "serverCertificate" -n "${PROFILES_FILE}"
+      -v "serverCertificate" -n \
+      -v "authMode | authmode" -n "${PROFILES_FILE}"
   )
   VPN_NAME="${fields[0]:-}"
   PROTOCOL="${fields[1]:-}"
@@ -41,6 +42,9 @@ load_profile_fields() {
   VPN_PASSWD="${fields[5]:-}"
   VPN_DUO2FAMETHOD="${fields[6]:-}"
   SERVER_CERTIFICATE="${fields[7]:-}"
+  # Authentication mode: 'sso' (browser-based SAML/SSO) or 'password' (default).
+  VPN_AUTH_MODE="$(printf '%s' "${fields[8]:-password}" | tr '[:upper:]' '[:lower:]')"
+  if [ -z "$VPN_AUTH_MODE" ]; then VPN_AUTH_MODE=password; fi
 
   # Intentionally NOT exported: these are read only by functions in this
   # shell, and exporting would copy the password into the environment of
@@ -107,10 +111,11 @@ list_profiles() {
       -v name -o $'\t' \
       -v protocol -o $'\t' \
       -v host -o $'\t' \
-      -v 'duo2FAMethod | duoMethod' -n "$PROFILES_FILE" \
+      -v 'duo2FAMethod | duoMethod' -o $'\t' \
+      -v 'authMode | authmode' -n "$PROFILES_FILE" \
     | awk -F'\t' '
-        BEGIN { printf "%-25s %-11s %-35s %s\n", "NAME", "PROTOCOL", "HOST", "2FA" }
-        { printf "%-25s %-11s %-35s %s\n", $1, ($2==""?"-":$2), ($3==""?"-":$3), ($4==""?"-":$4) }'
+        BEGIN { printf "%-25s %-11s %-35s %-9s %s\n", "NAME", "PROTOCOL", "HOST", "2FA", "AUTH" }
+        { printf "%-25s %-11s %-35s %-9s %s\n", $1, ($2==""?"-":$2), ($3==""?"-":$3), ($4==""?"-":$4), ($5==""?"password":$5) }'
 }
 
 # shellcheck disable=SC2034  # description vars are consumed by core.sh

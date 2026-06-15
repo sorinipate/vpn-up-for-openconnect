@@ -108,7 +108,9 @@ start() {
       exit 1
     fi
     load_profile_fields "$requested"
-    migrate_or_fetch_password || exit 1
+    if [ "${VPN_AUTH_MODE:-password}" != sso ]; then
+      migrate_or_fetch_password || exit 1
+    fi
     connect
   else
     # Interactive profile selection (modern Bash mapfile)
@@ -121,7 +123,9 @@ start() {
       fi
       if printf "%s\n" "${vpn_names[@]}" | grep -qx -- "$option"; then
         load_profile_fields "$option"
-        migrate_or_fetch_password || exit 1
+        if [ "${VPN_AUTH_MODE:-password}" != sso ]; then
+          migrate_or_fetch_password || exit 1
+        fi
         connect
         break
       else
@@ -174,9 +178,24 @@ connect() {
   print_warning "Process ID (PID) stored in %s ...\n" "${PID_FILE_PATH}"
   print_warning "Logs file (LOG) stored in %s ...\n" "${LOG_FILE_PATH}"
 
+  # SSO / external-browser auth (Okta, Azure AD, Ping + embedded Duo): the
+  # whole login happens in a browser, so there is no password or Duo answer to
+  # pipe. It needs an interactive desktop session and openconnect >= 9.0.
+  if [ "${VPN_AUTH_MODE:-password}" = sso ]; then
+    if [ -n "${VPN_UP_SERVICE:-}" ]; then
+      print_danger "Profile '%s' uses SSO (interactive browser); it cannot run as a service.\n" "${VPN_NAME}"
+      return 1
+    fi
+    if [ "$PROTOCOL" = nc ]; then
+      print_danger "SSO (external browser) is not supported for the 'nc' protocol.\n"
+      return 1
+    fi
+    require_openconnect_sso || return 1
+  fi
+
   # Duo passcodes are one-time values; never read them from the XML —
-  # prompt at connect time instead.
-  if [ "$VPN_DUO2FAMETHOD" = "passcode" ]; then
+  # prompt at connect time instead. (Skipped for SSO: the browser handles MFA.)
+  if [ "${VPN_AUTH_MODE:-password}" != sso ] && [ "$VPN_DUO2FAMETHOD" = "passcode" ]; then
     if [ -n "${VPN_UP_SERVICE:-}" ]; then
       print_danger "Profile '%s' uses a Duo passcode, which needs interactive input; it cannot run as a service. Use push/phone/sms instead.\n" "${VPN_NAME}"
       return 1
@@ -207,7 +226,9 @@ connect() {
   fi
 
   print_primary "Starting the %s on %s using %s ...\n" "${VPN_NAME}" "${VPN_HOST}" "${PROTOCOL_DESCRIPTION}"
-  if [ -z "$VPN_DUO2FAMETHOD" ]; then
+  if [ "${VPN_AUTH_MODE:-password}" = sso ]; then
+    print_primary "Connecting via SSO (external browser) — complete the login in the window that opens ...\n"
+  elif [ -z "$VPN_DUO2FAMETHOD" ]; then
     print_warning "Connecting without 2FA (%s) ...\n" "${VPN_DUO2FAMETHOD_DESCRIPTION}"
   else
     print_primary "Connecting with Two-Factor Authentication (2FA) from Duo (%s) ...\n" "${VPN_DUO2FAMETHOD_DESCRIPTION}"
@@ -316,6 +337,18 @@ stop() {
   return "$rc"
 }
 
+# Resolve the command openconnect runs (with the SSO login URL as its argument)
+# to open the external browser. openconnect itself catches the returned token on
+# a localhost listener, so any URL opener works. Honor an explicit override,
+# then the bundled helper, then the platform default. NOTE: openconnect runs as
+# root via sudo, so on Linux a root-spawned opener may not reach the user's GUI
+# session — set VPN_UP_EXTERNAL_BROWSER to a session-aware wrapper if so.
+resolve_external_browser() {
+  if [ -n "${VPN_UP_EXTERNAL_BROWSER:-}" ]; then printf '%s' "$VPN_UP_EXTERNAL_BROWSER"; return; fi
+  if command -v openconnect-external-browser >/dev/null 2>&1; then printf 'openconnect-external-browser'; return; fi
+  [ "$(uname)" = Darwin ] && printf 'open' || printf 'xdg-open'
+}
+
 run_openconnect() {
   # Validate sudo up-front on the TTY so the prompt doesn't collide with the
   # password pipe below. For passwordless use, configure a scoped sudoers rule
@@ -333,14 +366,21 @@ run_openconnect() {
 
   # Under launchd/systemd the service manager must supervise openconnect
   # itself, so force foreground; KeepAlive/Restart provides auto-reconnect.
+  # SSO is interactive and always runs foreground too (BACKGROUND is ignored).
   local effective_background="${BACKGROUND:-FALSE}"
   [ -n "${VPN_UP_SERVICE:-}" ] && effective_background=FALSE
+  [ "${VPN_AUTH_MODE:-password}" = sso ] && effective_background=FALSE
 
   # Build argv array (no eval)
   local args=()
   args+=(--protocol="$PROTOCOL")
   args+=(--user="$VPN_USER")
-  args+=(--passwd-on-stdin)
+  if [ "${VPN_AUTH_MODE:-password}" = sso ]; then
+    # SSO: authenticate in a browser; no password is piped on stdin.
+    args+=(--external-browser="$(resolve_external_browser)")
+  else
+    args+=(--passwd-on-stdin)
+  fi
   [ "${QUIET:-FALSE}" = TRUE ] && args+=(-q)
   [ "$effective_background" = TRUE ] && args+=(--background)
   [ -n "$SERVER_CERTIFICATE" ] && args+=(--servercert="$SERVER_CERTIFICATE")
@@ -359,7 +399,24 @@ run_openconnect() {
   local stdin_lines="$VPN_PASSWD"
   [ -n "$VPN_DUO2FAMETHOD" ] && stdin_lines+=$'\n'"$VPN_DUO2FAMETHOD"
   ( umask 077; : > "$LOG_FILE_PATH" )
-  if [ "$effective_background" = TRUE ]; then
+  if [ "${VPN_AUTH_MODE:-password}" = sso ]; then
+    # SSO: openconnect opens a browser and needs the controlling TTY, so pipe
+    # NOTHING on stdin. Always foreground; capture the PID the same way as the
+    # foreground password path so status/stop work during the session.
+    write_connection_state
+    ( sleep 3
+      _pid="$(pgrep -n -x openconnect 2>/dev/null || true)"
+      if [ -n "$_pid" ]; then
+        printf '%s\n' "$_pid" > "$PID_FILE_PATH"
+        notify "VPN Up" "Connected to ${VPN_NAME}"
+        run_hooks connected "${VPN_NAME}" "${VPN_HOST}"
+      fi
+    ) &
+    sudo openconnect "${args[@]}" 2>&1 | tee -a "$LOG_FILE_PATH"
+    rm -f "$PID_FILE_PATH" "$STATE_FILE_PATH"
+    notify "VPN Up" "Disconnected from ${VPN_NAME:-VPN}"
+    run_hooks disconnected "${VPN_NAME:-}" "${VPN_HOST:-}"
+  elif [ "$effective_background" = TRUE ]; then
     # The daemonized child keeps stdout open, so piping through tee would
     # hang the shell forever after openconnect backgrounds itself; write
     # straight to the log instead.

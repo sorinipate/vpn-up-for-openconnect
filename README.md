@@ -75,6 +75,7 @@ VPN Up is useful if you:
 - [Quick Start](#-quick-start)
 - [Usage](#-usage)
   - [Commands](#commands)
+  - [SSO / external-browser login](#sso--external-browser-login)
   - [Run as a login service](#run-as-a-login-service-auto-reconnect)
   - [Hooks](#hooks)
   - [Shell completion](#shell-completion)
@@ -95,6 +96,7 @@ VPN Up is useful if you:
 - **Four SSL VPN protocols** via [OpenConnect](https://www.infradead.org/openconnect/): Cisco **AnyConnect** (and ocserv), Juniper **Network Connect**, Palo Alto **GlobalProtect**, and **Pulse Secure**
 - **Multiple VPN profiles** — pick from an interactive menu or connect by name with zero prompts (`vpn-up start "Work VPN"`), with full **AuthGroup/realm** support
 - **Duo 2FA** — `push`, `phone`, `sms`, or one-time passcodes prompted at connect time; empty method lets the gateway auto-push
+- **SSO / external-browser login** — for gateways that force a browser-based SAML/SSO flow (Okta, Azure AD, Ping Identity, often with an embedded Duo iframe), via OpenConnect's `--external-browser` (needs openconnect ≥ 9.0)
 - **Background or foreground** execution, per your config
 
 ### Secure
@@ -228,6 +230,44 @@ vpn-up stop                        # stop the VPN (or: stop "Frankfurt VPN")
 
 Each profile keeps its own log and PID/state files under `~/.config/vpn-up`, so `status`, `stop`, and `logs` are profile-aware.
 
+### SSO / external-browser login
+
+Some gateways don't accept a username/password on the command line at all — they force a real browser window for a SAML/SSO login (Okta, Azure AD, Ping Identity), often wrapping an embedded **Duo** iframe. `vpn-up` supports this via OpenConnect's external-browser mode.
+
+Mark a profile as SSO — either answer **yes** to the "Use SSO / browser-based login?" prompt in `vpn-up add-profile`, or set `<authMode>sso</authMode>` in the profile XML:
+
+```xml
+<VPN>
+  <name>Work SSO</name>
+  <protocol>anyconnect</protocol>   <!-- anyconnect or gp; not nc -->
+  <host>vpn.example.com</host>
+  <authMode>sso</authMode>
+</VPN>
+```
+
+Then connect normally:
+
+```bash
+vpn-up start "Work SSO"
+```
+
+OpenConnect opens your browser to the identity provider; you complete the login (including Duo) there, and the tunnel comes up. Notes:
+
+- **Requires openconnect ≥ 9.0** (when `--external-browser` landed). `vpn-up doctor` reports your version and whether SSO is available.
+- **Runs in the foreground** — `BACKGROUND` is ignored, and an SSO profile **cannot run as a login service** (`service install` refuses it) because it needs an interactive desktop session. No password is stored or piped for SSO profiles.
+- **Linux + sudo caveat:** openconnect runs as root, so a root-spawned browser may not reach your desktop session. If the browser doesn't appear, point `vpn-up` at a session-aware opener:
+
+  ```bash
+  # ~/bin/vpn-up-browser  (chmod +x)
+  #!/bin/sh
+  exec sudo -u "$SUDO_USER" xdg-open "$@"
+  ```
+  ```bash
+  export VPN_UP_EXTERNAL_BROWSER="$HOME/bin/vpn-up-browser"
+  ```
+
+  `VPN_UP_EXTERNAL_BROWSER` overrides the opener command (default: `open` on macOS, `xdg-open` on Linux, or the bundled `openconnect-external-browser` helper if installed).
+
 ### Run as a login service (auto-reconnect)
 
 ```bash
@@ -342,11 +382,12 @@ Seeded from [config/vpn-up.command.profiles.default](config/vpn-up.command.profi
     <password></password>
     <duo2FAMethod>push</duo2FAMethod>
     <serverCertificate>pin-sha256:BASE64_HASH</serverCertificate>
+    <authMode>password</authMode>
   </VPN>
 </VPNs>
 ```
 
-Supported tag aliases: `username`/`user`, `group`/`authGroup`, `duoMethod`/`duo2FAMethod`. The `<password>` field is deprecated: plaintext values are migrated to the secrets backend and blanked in the XML automatically on first use — prefer `vpn-up set-secret`. A `duo2FAMethod` of `passcode` prompts for the one-time code at connect time.
+Supported tag aliases: `username`/`user`, `group`/`authGroup`, `duoMethod`/`duo2FAMethod`. The `<password>` field is deprecated: plaintext values are migrated to the secrets backend and blanked in the XML automatically on first use — prefer `vpn-up set-secret`. A `duo2FAMethod` of `passcode` prompts for the one-time code at connect time. `<authMode>` is `password` (default) or `sso` for [browser-based SAML/SSO login](#sso--external-browser-login).
 
 ---
 
