@@ -90,11 +90,14 @@ a tag + GitHub release.
 
 1. **Land the work.** All feature/fix PRs for the version are merged to `main`
    and their entries sit under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md).
-2. **Promote the changelog.** On a release branch, change `## [Unreleased]` to
-   `## [vX.Y.Z] — YYYY-MM-DD` and add the `### <Theme> Update` subtitle line.
+2. **Promote the changelog + bump the README badge.** On a release branch,
+   change `## [Unreleased]` to `## [vX.Y.Z] — YYYY-MM-DD` and add the
+   `### <Theme> Update` subtitle line. Also bump the static release badge in
+   [README.md](README.md) (`release-vX.Y.Z-blue`) — it's static on purpose, so
+   shields.io's GitHub token pool can't break it.
    ```bash
    git checkout -b release-vX.Y.Z
-   # edit CHANGELOG.md
+   # edit CHANGELOG.md and the README release badge
    git commit -am "Release vX.Y.Z: <theme>"
    git push -u origin release-vX.Y.Z
    ```
