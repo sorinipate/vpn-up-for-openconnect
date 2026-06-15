@@ -19,6 +19,11 @@
              - sms: Sends an SMS message with a new batch of passcodes to your registered device. -->
         <duo2FAMethod options="passcode, push, phone, sms">&lt;2famethod&gt;</duo2FAMethod>
         <serverCertificate></serverCertificate> <!-- SHA1 -->
+        <!-- authMode: password (default) or sso. Use 'sso' when the gateway
+             forces a browser-based SAML/SSO login (Okta, Azure AD, Ping) with
+             an embedded Duo iframe. Requires openconnect >= 9.0; runs in the
+             foreground and cannot run as a login service. -->
+        <authMode>password</authMode>
     </VPN>
 
     <!-- VPN PROFILE 2 -->
@@ -33,6 +38,8 @@
         <!-- Duo 2FA Method options are the same as for VPN PROFILE 1 -->
         <duo2FAMethod options="passcode, push, phone, sms">&lt;2famethod&gt;</duo2FAMethod>
         <serverCertificate></serverCertificate> <!-- SHA1 -->
+        <!-- authMode options are the same as for VPN PROFILE 1 -->
+        <authMode>password</authMode>
     </VPN>
     <!-- Add more VPN profiles as needed -->
 </VPNs>

@@ -96,6 +96,12 @@ _service_preflight() {
     print_danger "Unknown profile '%s'.\n" "$profile"
     return 1
   fi
+  local authmode
+  authmode="$(xmlstarlet sel -t -m "//VPN[name=$(xpath_literal "$profile")]" -v 'authMode | authmode' "$PROFILES_FILE" 2>/dev/null)"
+  if [ "$authmode" = sso ]; then
+    print_danger "Profile '%s' uses SSO (interactive browser); it cannot run as a login service.\n" "$profile"
+    return 1
+  fi
   if ! sudo -n -v 2>/dev/null; then
     print_warning "No passwordless sudo detected. Service mode requires a sudoers rule for openconnect (see README); the service will fail until it exists.\n"
   fi
