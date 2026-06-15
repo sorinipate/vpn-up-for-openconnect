@@ -5,7 +5,8 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ---
 
-## [Unreleased]
+## [v3.7.0] — 2026-06-16
+### Browser-based SSO Login Update
 
 ### Added
 - **SSO / external-browser authentication** for gateways that force a
