@@ -9,6 +9,28 @@ require_bin() {
   fi
 }
 
+# Major version of the installed openconnect, or empty if unparseable.
+# `openconnect --version` prints e.g. "OpenConnect version v9.12" (some distro
+# builds drop the leading 'v').
+openconnect_major() {
+  openconnect --version 2>&1 | sed -n 's/.*[Vv]ersion v\{0,1\}\([0-9][0-9]*\)\..*/\1/p' | head -1
+}
+
+# Gate the SSO path on openconnect >= 9.0 (when --external-browser landed).
+# Lenient when the version can't be determined so it never blocks on odd builds.
+require_openconnect_sso() {
+  local major; major="$(openconnect_major)"
+  if [ -z "$major" ]; then
+    print_warning "Could not determine openconnect version; SSO (external browser) needs >= 9.0.\n"
+    return 0
+  fi
+  if [ "$major" -lt 9 ]; then
+    print_danger "SSO (external browser) needs openconnect >= 9.0; found v%s. Upgrade openconnect.\n" "$major"
+    return 1
+  fi
+  return 0
+}
+
 check_dependencies() {
   require_bin xmlstarlet "Install via: brew install xmlstarlet | apt-get install xmlstarlet"
   require_bin openconnect "Install via: brew install openconnect | apt-get install openconnect"
@@ -40,6 +62,15 @@ doctor() {
       echo "  [!!] $b MISSING"
     fi
   done
+  if command -v openconnect >/dev/null 2>&1; then
+    local _ocmaj; _ocmaj="$(openconnect_major)"
+    echo "  -    openconnect version: $(openconnect --version 2>&1 | head -1)"
+    if [ -n "$_ocmaj" ] && [ "$_ocmaj" -ge 9 ]; then
+      echo "  [OK] SSO / external browser supported (openconnect >= 9.0)"
+    else
+      echo "  [..] SSO / external browser needs openconnect >= 9.0 (detected: ${_ocmaj:-unknown})"
+    fi
+  fi
   if [ "$(uname)" = "Darwin" ]; then
     if command -v security >/dev/null 2>&1; then echo "  [OK] security (Keychain)"; else echo "  [!!] security missing"; fi
   else
