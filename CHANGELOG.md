@@ -5,6 +5,23 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ---
 
+## [Unreleased]
+
+### Added
+- **SSO / external-browser authentication** for gateways that force a
+  browser-based SAML/SSO login (Okta, Azure AD, Ping Identity — typically with
+  an embedded Duo iframe). Set `<authMode>sso</authMode>` on a profile (or answer
+  the new prompt in `add-profile`) and `vpn-up` connects via OpenConnect's
+  `--external-browser`: no password is piped, the login happens in the browser,
+  and the tunnel comes up afterward. Requires openconnect ≥ 9.0 (surfaced by
+  `doctor`); supported for `anyconnect`/`gp`. SSO profiles run in the foreground
+  and cannot run as a login service (interactive session required). The browser
+  opener defaults to `open`/`xdg-open` and is overridable with
+  `VPN_UP_EXTERNAL_BROWSER` (useful on Linux, where the root/sudo process may not
+  reach the desktop session). New `AUTH` column in `vpn-up list`.
+
+---
+
 ## [v3.6.0] — 2026-06-13
 ### First-Run Usability & Docs Update
 

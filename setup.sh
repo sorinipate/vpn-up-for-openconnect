@@ -60,7 +60,7 @@ CFG
 # Append a <VPN> block to the profiles file (password stays empty — secrets
 # belong in the secrets backend, set separately).
 append_profile() {
-  local name="$1" proto="$2" host="$3" group="$4" user="$5" duo="$6"
+  local name="$1" proto="$2" host="$3" group="$4" user="$5" duo="$6" authmode="${7:-password}"
   local tmp="${PROFILES_FILE}.tmp"
   xmlstarlet ed \
     -s '/VPNs' -t elem -n VPN -v '' \
@@ -72,6 +72,7 @@ append_profile() {
     -s '/VPNs/VPN[last()]' -t elem -n password -v '' \
     -s '/VPNs/VPN[last()]' -t elem -n duo2FAMethod -v "$duo" \
     -s '/VPNs/VPN[last()]' -t elem -n serverCertificate -v '' \
+    -s '/VPNs/VPN[last()]' -t elem -n authMode -v "$authmode" \
     "${PROFILES_FILE}" > "${tmp}" && mv "${tmp}" "${PROFILES_FILE}" && chmod 600 "${PROFILES_FILE}"
 }
 
@@ -80,7 +81,7 @@ add_profile_wizard() {
     ( umask 077; printf '<VPNs>\n</VPNs>\n' > "$PROFILES_FILE" )
   fi
 
-  local name proto host group user duo
+  local name proto host group user duo authmode
   read -r -p "Profile name: " name
   [ -n "$name" ] || { print_danger "Profile name is required.\n"; return 1; }
   if profile_exists "$name"; then
@@ -99,17 +100,34 @@ add_profile_wizard() {
   [ -n "$host" ] || { print_danger "Gateway host is required.\n"; return 1; }
   read -r -p "Auth group (optional): " group
   read -r -p "Username: " user
-  read -r -p "Duo 2FA method (push/phone/sms/passcode; empty = gateway default): " duo
 
-  append_profile "$name" "$proto" "$host" "$group" "$user" "$duo" \
+  # SSO / browser-based login (Okta, Azure AD, Ping + embedded Duo). When on,
+  # credentials and MFA are entered in the browser, so skip the Duo-method and
+  # password prompts entirely.
+  authmode=password; duo=""
+  local _in_sso=""
+  read -r -p "Use SSO / browser-based login (Okta, Azure AD, Ping + Duo)? [y/N]: " _in_sso
+  if [ "$(_bool_default "${_in_sso}" "FALSE")" = TRUE ]; then
+    if [ "$proto" = nc ]; then
+      print_danger "SSO (external browser) is not supported for the 'nc' protocol.\n"
+      return 1
+    fi
+    authmode=sso
+  else
+    read -r -p "Duo 2FA method (push/phone/sms/passcode; empty = gateway default): " duo
+  fi
+
+  append_profile "$name" "$proto" "$host" "$group" "$user" "$duo" "$authmode" \
     || { print_danger "Failed to update %s\n" "$PROFILES_FILE"; return 1; }
   print_success "Added profile '%s' to %s\n" "$name" "$PROFILES_FILE"
 
-  read -r -p "Store the VPN password now? [Y/n]: " _in_pw
-  if [ "$(_bool_default "${_in_pw}" "TRUE")" = TRUE ]; then
-    local _p
-    read -r -s -p "Enter password for ${user}@${host}: " _p; echo
-    [ -n "$_p" ] && secrets_set "$name" "password" "$_p" && print_success "Password stored securely.\n"
+  if [ "$authmode" != sso ]; then
+    read -r -p "Store the VPN password now? [Y/n]: " _in_pw
+    if [ "$(_bool_default "${_in_pw}" "TRUE")" = TRUE ]; then
+      local _p
+      read -r -s -p "Enter password for ${user}@${host}: " _p; echo
+      [ -n "$_p" ] && secrets_set "$name" "password" "$_p" && print_success "Password stored securely.\n"
+    fi
   fi
 
   read -r -p "Fetch and save the gateway certificate pin now? [Y/n]: " _in_pin
