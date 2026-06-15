@@ -411,6 +411,7 @@ Background and design notes:
 
 - [A Safer OpenConnect Workflow for Cisco AnyConnect VPNs on macOS and Linux](https://architegrity.com/blog/safer-openconnect-workflow-cisco-anyconnect-macos-linux) — Architegrity
 - [A Safer OpenConnect Workflow for Cisco AnyConnect VPNs on macOS and Linux](https://dev.to/sorinipate/a-safer-openconnect-workflow-for-cisco-anyconnect-vpns-on-macos-and-linux-5g7o) — Dev.to
+- [A Safer OpenConnect Workflow for Cisco AnyConnect VPNs on macOS and Linux](https://medium.com/@sorin.ipate/a-safer-openconnect-workflow-for-cisco-anyconnect-vpns-on-macos-and-linux-50062d66b082) — Medium
 
 ---
 
