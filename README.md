@@ -5,6 +5,7 @@
 [![CI](https://github.com/sorinipate/vpn-up-for-openconnect/actions/workflows/ci.yml/badge.svg)](https://github.com/sorinipate/vpn-up-for-openconnect/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/badge/release-v3.7.0-blue)](https://github.com/sorinipate/vpn-up-for-openconnect/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-online-blue)](https://sorinipate.github.io/vpn-up-for-openconnect/)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue)
 
 ```text
@@ -419,6 +420,7 @@ Background and design notes:
 
 Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow (PRs only, shellcheck + test suite must pass on macOS and Ubuntu).
 
+- 📖 Documentation site: [sorinipate.github.io/vpn-up-for-openconnect](https://sorinipate.github.io/vpn-up-for-openconnect/)
 - 📐 Design docs: [PRD.md](PRD.md) (what & why) and [ARCHITECTURE.md](ARCHITECTURE.md) (how)
 - 🔐 Security issues: please report privately via [SECURITY.md](SECURITY.md), not public issues
 - 📄 Full release history: [CHANGELOG.md](CHANGELOG.md)

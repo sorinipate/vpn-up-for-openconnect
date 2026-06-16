@@ -1,0 +1,40 @@
+# Jekyll config for the VPN Up documentation site (GitHub Pages).
+# Built by GitHub Pages from the /docs folder on main.
+
+title: VPN Up for OpenConnect
+description: >-
+  Secure, scriptable command-line VPN manager built on OpenConnect for Cisco
+  AnyConnect, Palo Alto GlobalProtect, Pulse Secure and Juniper VPNs on macOS
+  and Linux — with profiles, Duo 2FA, browser-based SSO, certificate pinning,
+  and auto-reconnect.
+
+# Project Pages site lives at https://<user>.github.io/<repo>/
+url: "https://sorinipate.github.io"
+baseurl: "/vpn-up-for-openconnect"
+
+author: Sorin-Doru Ipate
+lang: en_US
+repository: sorinipate/vpn-up-for-openconnect
+
+theme: minima
+plugins:
+  - jekyll-seo-tag      # per-page <title>, meta description, canonical, Open Graph
+  - jekyll-sitemap      # auto-generates /sitemap.xml
+
+# Top navigation (minima renders these in page order)
+header_pages:
+  - installation.md
+  - usage.md
+  - sso-duo.md
+  - protocols.md
+  - troubleshooting.md
+
+minima:
+  skin: dark
+  social_links:
+    - { platform: github, user_url: "https://github.com/sorinipate/vpn-up-for-openconnect" }
+
+exclude:
+  - Gemfile
+  - Gemfile.lock
+  - vendor
