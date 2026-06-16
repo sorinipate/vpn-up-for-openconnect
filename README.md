@@ -425,6 +425,6 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the wor
 - 🔐 Security issues: please report privately via [SECURITY.md](SECURITY.md), not public issues
 - 📄 Full release history: [CHANGELOG.md](CHANGELOG.md)
 - ⚖️ Licensed under the [MIT License](LICENSE) — © Sorin-Doru Ipate
-- ☕ If it saves you time, you can [buy me a coffee](https://buymeacoffee.com/vpnupforopenconnect)
+- ☕ If it saves you time, you can [buy me a coffee](https://buymeacoffee.com/sorinipate)
 
 Thanks to all contributors and users who helped test and refine this project.
