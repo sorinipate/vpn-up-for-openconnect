@@ -54,6 +54,13 @@ See the [installation guide]({{ '/installation/' | relative_url }}) for manual s
 - [Protocols]({{ '/protocols/' | relative_url }}) — AnyConnect, GlobalProtect, Pulse Secure, Juniper
 - [Troubleshooting]({{ '/troubleshooting/' | relative_url }}) — common connection problems and fixes
 
+## Guides
+
+- [Cisco AnyConnect command-line alternative]({{ '/anyconnect-cli-alternative/' | relative_url }}) — connect to AnyConnect VPNs without the GUI client
+- [Connect to GlobalProtect from the command line]({{ '/globalprotect-cli/' | relative_url }}) — Palo Alto GlobalProtect via OpenConnect
+- [Auto-connect a VPN at login]({{ '/vpn-at-login/' | relative_url }}) — launchd (macOS) & systemd (Linux) with auto-reconnect
+- [VPN Up vs. raw OpenConnect]({{ '/vs-openconnect/' | relative_url }}) — what the wrapper adds, and when to use each
+
 ## Open source
 
 VPN Up is MIT-licensed and developed on
