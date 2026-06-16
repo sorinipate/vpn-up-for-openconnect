@@ -73,4 +73,5 @@ Background and design notes:
 
 VPN Up is MIT-licensed and developed on
 [GitHub](https://github.com/sorinipate/vpn-up-for-openconnect). Issues and pull
-requests are welcome.
+requests are welcome — and if it saves you time, you can
+[buy me a coffee ☕](https://buymeacoffee.com/sorinipate).
