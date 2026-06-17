@@ -5,6 +5,22 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ---
 
+## [Unreleased]
+
+### Added
+- **TOTP authenticator-app 2FA** (`<tokenMode>totp</tokenMode>`). For gateways
+  that prompt for a time-based code (Google Authenticator / Authy / hardware
+  TOTP), store the base32 seed once (`vpn-up set-secret '<profile>' token_secret`,
+  or via the `add-profile` wizard) and `vpn-up` generates the current code with
+  `oathtool` at connect time and feeds it as the 2FA answer. The **seed never
+  reaches openconnect's argv or disk** — only the short-lived code transits on
+  stdin (we deliberately avoid `--token-secret`, which would expose it). Because
+  it needs no interaction, a TOTP profile **can run as a login service with
+  auto-reconnect** (unlike Duo-passcode and SSO). New `oathtool` dependency
+  (TOTP only); surfaced by `doctor`; shown in `vpn-up list`.
+
+---
+
 ## [v3.7.0] — 2026-06-16
 ### Browser-based SSO Login Update
 

@@ -32,7 +32,8 @@ load_profile_fields() {
       -v "password" -n \
       -v "duo2FAMethod | duoMethod" -n \
       -v "serverCertificate" -n \
-      -v "authMode | authmode" -n "${PROFILES_FILE}"
+      -v "authMode | authmode" -n \
+      -v "tokenMode | tokenmode" -n "${PROFILES_FILE}"
   )
   VPN_NAME="${fields[0]:-}"
   PROTOCOL="${fields[1]:-}"
@@ -45,6 +46,8 @@ load_profile_fields() {
   # Authentication mode: 'sso' (browser-based SAML/SSO) or 'password' (default).
   VPN_AUTH_MODE="$(printf '%s' "${fields[8]:-password}" | tr '[:upper:]' '[:lower:]')"
   if [ -z "$VPN_AUTH_MODE" ]; then VPN_AUTH_MODE=password; fi
+  # Software-token 2FA: 'totp' generates the one-time code from a stored seed.
+  VPN_TOKEN_MODE="$(printf '%s' "${fields[9]:-}" | tr '[:upper:]' '[:lower:]')"
 
   # Intentionally NOT exported: these are read only by functions in this
   # shell, and exporting would copy the password into the environment of
@@ -112,10 +115,12 @@ list_profiles() {
       -v protocol -o $'\t' \
       -v host -o $'\t' \
       -v 'duo2FAMethod | duoMethod' -o $'\t' \
-      -v 'authMode | authmode' -n "$PROFILES_FILE" \
+      -v 'authMode | authmode' -o $'\t' \
+      -v 'tokenMode | tokenmode' -n "$PROFILES_FILE" \
     | awk -F'\t' '
         BEGIN { printf "%-25s %-11s %-35s %-9s %s\n", "NAME", "PROTOCOL", "HOST", "2FA", "AUTH" }
-        { printf "%-25s %-11s %-35s %-9s %s\n", $1, ($2==""?"-":$2), ($3==""?"-":$3), ($4==""?"-":$4), ($5==""?"password":$5) }'
+        { twofa = ($6!="" ? $6 : ($4=="" ? "-" : $4));
+          printf "%-25s %-11s %-35s %-9s %s\n", $1, ($2==""?"-":$2), ($3==""?"-":$3), twofa, ($5==""?"password":$5) }'
 }
 
 # shellcheck disable=SC2034  # description vars are consumed by core.sh

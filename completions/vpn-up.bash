@@ -41,7 +41,7 @@ _vpn_up() {
       if [ "$COMP_CWORD" -eq 2 ]; then
         _vpn_up_complete_profiles "$cur"
       elif [ "$COMP_CWORD" -eq 3 ]; then
-        mapfile -t COMPREPLY < <(compgen -W "password" -- "$cur")
+        mapfile -t COMPREPLY < <(compgen -W "password token_secret" -- "$cur")
       fi
       ;;
     logs)

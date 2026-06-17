@@ -24,6 +24,10 @@
              an embedded Duo iframe. Requires openconnect >= 9.0; runs in the
              foreground and cannot run as a login service. -->
         <authMode>password</authMode>
+        <!-- tokenMode: empty (default) or totp for an authenticator-app code.
+             The TOTP secret is stored in the secrets backend, not here:
+             vpn-up set-secret "<profile name>" token_secret  (needs oathtool). -->
+        <tokenMode></tokenMode>
     </VPN>
 
     <!-- VPN PROFILE 2 -->
@@ -40,6 +44,10 @@
         <serverCertificate></serverCertificate> <!-- SHA1 -->
         <!-- authMode options are the same as for VPN PROFILE 1 -->
         <authMode>password</authMode>
+        <!-- tokenMode: empty (default) or totp for an authenticator-app code.
+             The TOTP secret is stored in the secrets backend, not here:
+             vpn-up set-secret "<profile name>" token_secret  (needs oathtool). -->
+        <tokenMode></tokenMode>
     </VPN>
     <!-- Add more VPN profiles as needed -->
 </VPNs>

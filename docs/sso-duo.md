@@ -29,6 +29,27 @@ AuthGroup selection don't collide:
 vpn-up start "Work VPN"   # connect; approve the Duo push when prompted
 ```
 
+## TOTP authenticator-app codes (Google Authenticator, Authy, hardware tokens)
+
+If your gateway prompts for a time-based one-time code, store the base32 seed
+once and VPN Up generates the current code at connect time:
+
+```bash
+vpn-up set-secret "Work VPN" token_secret   # paste the base32 seed
+```
+
+Set `<tokenMode>totp</tokenMode>` on the profile (the `add-profile` wizard offers
+it as a 2FA choice). Requires **`oathtool`** (`brew install oath-toolkit` /
+`apt install oathtool`; reported by `vpn-up doctor`).
+
+- The **seed stays in your keychain** — it's never passed to OpenConnect's command
+  line or written to disk. Only the short-lived 6-digit code is sent, on stdin.
+- TOTP needs no interaction, so it's the **one 2FA method that can run as a
+  [login service]({{ '/vpn-at-login/' | relative_url }})** with auto-reconnect —
+  ideal for headless servers. (Duo passcode and SSO can't, since they need a human.)
+- Security note: keeping the seed beside the password in one keychain is
+  effectively "1.5-factor" — it's opt-in.
+
 ## Browser-based SSO (Okta, Azure AD, Ping Identity)
 
 For gateways that require an external browser login, mark the profile with
