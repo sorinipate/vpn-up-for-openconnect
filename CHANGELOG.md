@@ -5,7 +5,8 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ---
 
-## [Unreleased]
+## [v3.8.0] — 2026-06-18
+### TOTP 2FA & Argument Passthrough Update
 
 ### Added
 - **TOTP authenticator-app 2FA** (`<tokenMode>totp</tokenMode>`). For gateways
