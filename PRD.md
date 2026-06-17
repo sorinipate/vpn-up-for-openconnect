@@ -1,6 +1,6 @@
 # Product Requirements Document — VPN Up for OpenConnect
 
-**Status:** Living document · **Owner:** Sorin-Doru Ipate · **Last updated:** 2026-06-16 (v3.7.0)
+**Status:** Living document · **Owner:** Sorin-Doru Ipate · **Last updated:** 2026-06-18 (v3.8.0)
 
 > This PRD describes *what* VPN Up is and *why*. For *how* it's built, see
 > [ARCHITECTURE.md](ARCHITECTURE.md). For the change history, see
@@ -14,8 +14,8 @@
 on top of [OpenConnect](https://www.infradead.org/openconnect/). It lets macOS and
 Linux users connect to Cisco AnyConnect, Palo Alto GlobalProtect, Pulse Secure,
 Juniper Network Connect, and ocserv gateways from the terminal — with named
-profiles, Duo 2FA, browser-based SSO, certificate pinning, secure secret storage,
-auto-reconnect, and shell completion.
+profiles, Duo 2FA, TOTP authenticator codes, browser-based SSO, certificate
+pinning, secure secret storage, auto-reconnect, and shell completion.
 
 It is a *wrapper*, not a fork: OpenConnect does the tunnelling; VPN Up provides the
 profile management, credential hygiene, and lifecycle ergonomics that raw
@@ -52,7 +52,7 @@ upgrades. There is a gap for a **terminal-first, secure, scriptable** front end.
 - Make connecting to an OpenConnect-compatible VPN a **single command** (`vpn-up start "Work"`).
 - **Never** store or expose credentials in plaintext, argv, or child-process environments.
 - Support the **authentication methods real gateways use**: password, Duo 2FA
-  (push/phone/sms/passcode), and browser-based SAML/SSO.
+  (push/phone/sms/passcode), TOTP authenticator codes, and browser-based SAML/SSO.
 - Provide **lifecycle ergonomics**: status, stop, logs, restart, auto-reconnect at login.
 - Be **safe by default** (fail-closed server identity) and **auditable** (small, modular Bash).
 - Run identically on **macOS and Linux**.
@@ -98,6 +98,11 @@ upgrades. There is a gap for a **terminal-first, secure, scriptable** front end.
   `--external-browser` (openconnect ≥ 9.0; `anyconnect`/`gp` only). No password is
   piped; the flow runs foreground with the controlling TTY.
 - **FR-5** Background or foreground operation, configurable; SSO and service mode force foreground.
+- **FR-20** Support **TOTP authenticator-app 2FA** (`tokenMode=totp`): generate the
+  current code from a seed held in the secrets backend (via `oathtool`) and feed it
+  as the gateway's 2FA answer. The seed never reaches openconnect's argv or disk
+  (no `--token-secret`); being non-interactive, a TOTP profile can run as an
+  auto-reconnecting login service.
 
 ### 6.2 Credentials & identity
 - **FR-6** Store secrets in the macOS Keychain, Linux Secret Service, or an
@@ -122,6 +127,10 @@ upgrades. There is a gap for a **terminal-first, secure, scriptable** front end.
 - **FR-17** `set-secret` / `delete-secret` for the secrets backend.
 - **FR-18** `doctor` reports OS, dependencies + openconnect version, secret backend, SSO availability, config.
 - **FR-19** Bash/zsh tab completion for commands and profile names.
+- **FR-21** Allow **extra openconnect arguments** per profile (`extraArgs`): flags
+  vpn-up doesn't model (e.g. `--no-dtls`, `--os=win`, `--csd-wrapper`, a proxy, MTU)
+  are tokenized quote-safely (via `xargs`, never `eval`) and appended before the
+  gateway host; a token that duplicates a vpn-up-managed flag warns but still passes.
 
 ## 7. Non-functional requirements
 
@@ -129,7 +138,8 @@ upgrades. There is a gap for a **terminal-first, secure, scriptable** front end.
   config sourced only if user-owned and not group/world-writable; data files `600`,
   dirs `700`; no `eval`. See [SECURITY.md](SECURITY.md).
 - **NFR-2 Portability** — macOS + Linux; Bash ≥ 4; GNU/BSD differences handled
-  (`stat`, `ps`, `sed`). No hard dependency beyond `openconnect`, `xmlstarlet`, and a secret backend.
+  (`stat`, `ps`, `sed`). No hard dependency beyond `openconnect`, `xmlstarlet`, and a
+  secret backend; `oathtool` is an optional dependency, needed only for TOTP profiles.
 - **NFR-3 Isolation** — all user state under `~/.config/vpn-up` (override via
   `VPN_UP_HOME`/`XDG_CONFIG_HOME`); reinstalling/cleaning the program directory never touches it.
 - **NFR-4 Quality** — shellcheck-clean; bats test suite on macOS + Ubuntu in CI; secret scanning (gitleaks) + CodeQL.
@@ -150,11 +160,13 @@ upgrades. There is a gap for a **terminal-first, secure, scriptable** front end.
 - SSO on the `nc` protocol (unsupported by OpenConnect).
 - On Linux, a root-spawned SSO browser may not reach the desktop session (mitigated by
   the `VPN_UP_EXTERNAL_BROWSER` override).
+- TOTP stores the seed beside the password in the same secret backend — effectively
+  "1.5-factor"; it's opt-in. RSA SecurID and Yubikey OATH tokens are not yet supported.
 
 ## 10. Roadmap (under consideration)
 
-- TOTP / RSA token support via OpenConnect's native `--token-mode`.
-- HTTP/SOCKS proxy passthrough as a profile field.
+- RSA SecurID / Yubikey OATH token support (TOTP already shipped in v3.8.0).
+- First-class HTTP/SOCKS proxy field (today a proxy can be passed via `extraArgs`).
 - Multiple simultaneous tunnels (per-profile state already lays the groundwork).
 
 ## 11. Release & distribution
