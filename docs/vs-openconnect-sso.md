@@ -66,4 +66,5 @@ and especially **auto-reconnect on a server or laptop**. See
 [SSO & 2FA]({{ '/sso-duo/' | relative_url }}).
 
 > Not a Cisco AnyConnect / SAML setup? See also
-> [VPN Up vs. raw OpenConnect]({{ '/vs-openconnect/' | relative_url }}).
+> [VPN Up vs. raw OpenConnect]({{ '/vs-openconnect/' | relative_url }}) and
+> [VPN Up vs. GlobalProtect-openconnect]({{ '/vs-globalprotect-openconnect/' | relative_url }}).

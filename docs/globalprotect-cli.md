@@ -54,4 +54,5 @@ group/realm, and run `vpn-up doctor` to confirm your OpenConnect version. More
 fixes on the [troubleshooting page]({{ '/troubleshooting/' | relative_url }}).
 
 Related: [supported protocols]({{ '/protocols/' | relative_url }}) ·
-[Cisco AnyConnect CLI alternative]({{ '/anyconnect-cli-alternative/' | relative_url }}).
+[Cisco AnyConnect CLI alternative]({{ '/anyconnect-cli-alternative/' | relative_url }}) ·
+[VPN Up vs. GlobalProtect-openconnect]({{ '/vs-globalprotect-openconnect/' | relative_url }}).
