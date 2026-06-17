@@ -365,6 +365,18 @@ Prints the gateway's `pin-sha256:...` value for `<serverCertificate>`, or saves 
 vpn-up doctor
 ```
 
+### Advanced: extra openconnect arguments
+
+Need an openconnect flag `vpn-up` doesn't model (`--no-dtls`, `--os=win`, `--csd-wrapper`, an HTTP/SOCKS proxy, MTU, `--reconnect-timeout`, …)? Set `<extraArgs>` on the profile (or answer the optional "Extra openconnect arguments" prompt in `add-profile`); the value is appended verbatim to the openconnect command, just before the gateway host:
+
+```xml
+<extraArgs>--no-dtls --reconnect-timeout 30</extraArgs>
+```
+
+- Tokenized with `xargs`, so quotes are respected (`"--csd-wrapper=/path with space"` stays one argument) — and **never** `eval`'d.
+- Avoid flags `vpn-up` already manages — `--protocol`, `--user`, `--passwd-on-stdin`, `--background`, `--servercert`, `--authgroup`, `--pid-file`, `--external-browser`, `--token-mode`/`--token-secret`. Duplicating one prints a warning (it may conflict) but is still passed.
+- ⚠️ openconnect runs as **root**; some flags execute programs as root (e.g. `--csd-wrapper`, `--script`). Only put flags here that you'd be comfortable running under `sudo` yourself.
+
 ---
 
 ## ⚙️ Configuration
@@ -399,11 +411,13 @@ Seeded from [config/vpn-up.command.profiles.default](config/vpn-up.command.profi
     <duo2FAMethod>push</duo2FAMethod>
     <serverCertificate>pin-sha256:BASE64_HASH</serverCertificate>
     <authMode>password</authMode>
+    <tokenMode>totp</tokenMode>
+    <extraArgs>--no-dtls</extraArgs>
   </VPN>
 </VPNs>
 ```
 
-Supported tag aliases: `username`/`user`, `group`/`authGroup`, `duoMethod`/`duo2FAMethod`. The `<password>` field is deprecated: plaintext values are migrated to the secrets backend and blanked in the XML automatically on first use — prefer `vpn-up set-secret`. A `duo2FAMethod` of `passcode` prompts for the one-time code at connect time. `<authMode>` is `password` (default) or `sso` for [browser-based SAML/SSO login](#sso--external-browser-login).
+Supported tag aliases: `username`/`user`, `group`/`authGroup`, `duoMethod`/`duo2FAMethod`. The `<password>` field is deprecated: plaintext values are migrated to the secrets backend and blanked in the XML automatically on first use — prefer `vpn-up set-secret`. A `duo2FAMethod` of `passcode` prompts for the one-time code at connect time. `<authMode>` is `password` (default) or `sso` for [browser-based SAML/SSO login](#sso--external-browser-login). `<tokenMode>` is empty (default) or `totp` for [authenticator-app 2FA](#totp-authenticator-app-2fa). `<extraArgs>` passes extra openconnect flags verbatim — see [Advanced: extra openconnect arguments](#advanced-extra-openconnect-arguments).
 
 ---
 

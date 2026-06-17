@@ -382,6 +382,19 @@ generate_totp() {
   oathtool --totp -b "$1" 2>/dev/null
 }
 
+# Warn (but don't block) when a user-supplied extra arg duplicates a flag that
+# vpn-up already manages — overriding these can break connection or status/stop.
+_warn_extra_arg_collisions() {
+  local tok base
+  for tok in "$@"; do
+    base="${tok%%=*}"
+    case "$base" in
+      --protocol|-q|--user|--passwd-on-stdin|--background|--servercert|--authgroup|--pid-file|--external-browser|--token-mode|--token-secret)
+        print_warning "extraArgs contains '%s', which vpn-up already manages; passing it anyway (may conflict).\n" "$base" ;;
+    esac
+  done
+}
+
 run_openconnect() {
   # Validate sudo up-front on the TTY so the prompt doesn't collide with the
   # password pipe below. For passwordless use, configure a scoped sudoers rule
@@ -418,6 +431,20 @@ run_openconnect() {
   [ "$effective_background" = TRUE ] && args+=(--background)
   [ -n "$SERVER_CERTIFICATE" ] && args+=(--servercert="$SERVER_CERTIFICATE")
   [ -n "$VPN_GROUP" ] && args+=(--authgroup "$VPN_GROUP")
+  # Extra user-supplied openconnect args (advanced). Tokenized with xargs so
+  # quotes are respected without eval; appended verbatim before the host.
+  if [ -n "${VPN_EXTRA_ARGS:-}" ]; then
+    local _extra=() _split _rc
+    _split="$(printf '%s\n' "$VPN_EXTRA_ARGS" | xargs -n1 2>/dev/null)"; _rc=$?
+    if [ "$_rc" -ne 0 ]; then
+      print_warning "Ignoring extraArgs for '%s' (malformed quoting).\n" "$VPN_NAME"
+    else
+      mapfile -t _extra <<< "$_split"
+      [ "${#_extra[@]}" -eq 1 ] && [ -z "${_extra[0]}" ] && _extra=()
+      [ "${#_extra[@]}" -gt 0 ] && _warn_extra_arg_collisions "${_extra[@]}"
+      [ "${#_extra[@]}" -gt 0 ] && args+=("${_extra[@]}")
+    fi
+  fi
   args+=("$VPN_HOST")
   args+=(--pid-file "$PID_FILE_PATH")
 
