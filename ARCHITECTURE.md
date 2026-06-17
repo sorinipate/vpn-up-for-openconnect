@@ -1,6 +1,6 @@
 # Architecture — VPN Up for OpenConnect
 
-**Last updated:** 2026-06-16 (v3.7.0)
+**Last updated:** 2026-06-18 (v3.8.0)
 
 > *What* and *why* live in [PRD.md](PRD.md); this document covers *how*. Function and
 > file references are accurate as of the version above — verify against the source
@@ -56,13 +56,13 @@ All modules are sourced by [vpn-up.command](vpn-up.command) in dependency order.
 | **[vpn-up.command](vpn-up.command)** | Entry point. Bash≥4 guard, `set -u`, resolves `PROGRAM_NAME`/`PROGRAM_PATH`/`DATA_DIR`, one-time migration of legacy in-repo state, sources modules, and dispatches the subcommand `case`. Defines `DISPLAY_NAME` indirectly (via logging). |
 | **[logging.sh](logging.sh)** | Paths, print helpers (`print_primary/success/warning/danger`), portable `stat` wrappers (`file_owner_uid`, `file_mode` — GNU `-c` first, BSD `-f` fallback), `profile_slug`, per-profile path setup (`set_profile_paths`), PID helpers (`is_openconnect_pid`, `any_vpn_running`), `show_logs`. Defines `DISPLAY_NAME`. |
 | **[ui.sh](ui.sh)** | ASCII banner (`show_banner`, gated by `SHOW_BANNER` + TTY) and desktop notifications (`notify` → `osascript`/`notify-send`, gated by `NOTIFICATIONS`). |
-| **[dependencies.sh](dependencies.sh)** | `require_bin`, `check_dependencies`, `doctor`. Also `openconnect_major` / `require_openconnect_sso` (the openconnect ≥ 9.0 gate for SSO). |
+| **[dependencies.sh](dependencies.sh)** | `require_bin`, `check_dependencies`, `doctor`. Also `openconnect_major` / `require_openconnect_sso` (the openconnect ≥ 9.0 gate for SSO) and `require_oathtool` (the gate for TOTP). |
 | **[encryption.sh](encryption.sh)** | Secret backend abstraction: `secrets_set/get/delete`, `secrets_backend` selection (macOS Keychain via `security -i` stdin; Linux Secret Service via `secret-tool`; OpenSSL AES-256-CBC + PBKDF2 vault fallback). Namespacing via `secrets_key`. |
 | **[network.sh](network.sh)** | Connectivity check, certificate fetch/verify (`fetch_server_pin`, `verify_gateway_cert`), pin save (`pin_save`), `print_pin_instructions`, `print_current_ip_address`. |
-| **[profiles.sh](profiles.sh)** | Profile XML read/validate: `load_profile_fields` (xmlstarlet → shell vars), `xpath_literal` (injection-safe XPath), `list_profiles`, `profile_names_raw`, `profile_exists`, password migration/scrub, protocol/2FA descriptions. |
-| **[core.sh](core.sh)** | Main flow: `start`, `connect`, `run_openconnect`, `status`, `stop`, `write_connection_state`, `run_hooks`, `assert_safe_to_source`, `load_config`, `resolve_external_browser`. |
+| **[profiles.sh](profiles.sh)** | Profile XML read/validate: `load_profile_fields` (xmlstarlet → shell vars), `xpath_literal` (injection-safe XPath), `list_profiles` (NAME/PROTOCOL/HOST/2FA/AUTH columns), `profile_names_raw`, `profile_exists`, password migration/scrub, protocol/2FA descriptions. |
+| **[core.sh](core.sh)** | Main flow: `start`, `connect`, `run_openconnect`, `status`, `stop`, `write_connection_state`, `run_hooks`, `assert_safe_to_source`, `load_config`, `resolve_external_browser`, `generate_totp`, `_warn_extra_arg_collisions`. |
 | **[setup.sh](setup.sh)** | Interactive wizards: `setup_wizard`, `add_profile_wizard`, `remove_profile`, `append_profile`, `save_configuration`, `_bool_default`. |
-| **[service.sh](service.sh)** | Login-service mode: launchd plist / systemd unit generation, `service_install/uninstall/status`, `_service_preflight` (rejects passcode + SSO profiles). |
+| **[service.sh](service.sh)** | Login-service mode: launchd plist / systemd unit generation, `service_install/uninstall/status`, `_service_preflight` (rejects passcode + SSO profiles; requires a stored seed for TOTP). |
 | **[completions/vpn-up.bash](completions/vpn-up.bash)** | Bash/zsh completion for commands and profile names. |
 
 ## 4. Data & state layout
@@ -87,9 +87,11 @@ namespace; `DISPLAY_NAME` (`vpn-up`) is used only in user-facing text.
 ### Profile schema (`<VPN>`)
 `name`, `protocol`, `host`, `authGroup` (alias `group`), `user` (alias `username`),
 `password` (deprecated; migrated + blanked), `duo2FAMethod` (alias `duoMethod`),
-`serverCertificate`, `authMode` (`password` default | `sso`). `load_profile_fields`
+`serverCertificate`, `authMode` (`password` default | `sso`), `tokenMode`
+(empty | `totp`), `extraArgs` (verbatim openconnect flags). `load_profile_fields`
 reads them positionally via `mapfile`, so **new fields are appended last** to avoid
-shifting indices.
+shifting indices (`extraArgs` is index 10). The TOTP **seed** is *not* in the XML —
+it lives in the secrets backend under the `token_secret` field.
 
 ## 5. Key flows
 
@@ -99,15 +101,23 @@ shifting indices.
    already-running checks, then selects a profile (named or interactive menu).
 2. `load_profile_fields` populates shell vars. For non-SSO profiles,
    `migrate_or_fetch_password` retrieves the secret (migrating legacy plaintext).
-3. **`connect`** validates host/protocol, branches on auth:
+3. **`connect`** validates host/protocol, then branches on auth with precedence
+   **sso → token → duo → plain** (mutually exclusive):
    - **SSO** → service-mode + `nc` guards + `require_openconnect_sso` (≥ 9.0).
+   - **TOTP** (`tokenMode=totp`) → `require_oathtool`, read the seed from the secrets
+     backend (`token_secret`), and `generate_totp` the current code into
+     `VPN_SECOND_FACTOR` (used as the 2FA answer). Non-interactive — allowed in service mode.
    - **Duo passcode** → prompt at connect time (refused in service mode).
    - Fail-closed server identity: `pin-sha256` pin, else `verify_gateway_cert`.
 4. **`run_openconnect`** builds the `openconnect` argv array (no `eval`) and invokes
    `sudo openconnect …`:
-   - **Password mode:** `--passwd-on-stdin`; password (+ optional Duo answer) piped on stdin.
+   - **Password / TOTP mode:** `--passwd-on-stdin`; password (+ the 2FA answer —
+     `VPN_SECOND_FACTOR` for TOTP, else the Duo method) piped on stdin. The TOTP seed
+     is never passed (no `--token-secret`).
    - **SSO mode:** `--external-browser=<resolved>`, **no** `--passwd-on-stdin`, **nothing**
      piped to stdin (openconnect keeps the TTY), forced foreground.
+   - Per-profile `extraArgs` are tokenized with `xargs` (quote-safe, no `eval`) and
+     appended just **before** the host; `_warn_extra_arg_collisions` warns on a managed-flag clash.
    - Background daemonizes (`--background`); foreground/service/SSO stay attached and
      the PID is captured via `pgrep` after a short delay (openconnect only writes
      `--pid-file` when daemonizing). `notify` + `run_hooks` fire on connect/disconnect.
@@ -145,8 +155,8 @@ password.
 ## 7. Quality & CI
 
 - **Tests:** `bats` suite under [tests/](tests/) (`cli`, `core`, `lifecycle`, `logging`,
-  `network`, `profiles`, `secrets`, `service`, `sso`, `ui_setup`), with stubs for
-  network, sudo, keychain, and service managers.
+  `network`, `profiles`, `secrets`, `service`, `sso`, `totp`, `extraargs`, `ui_setup`),
+  with stubs for network, sudo, keychain, oathtool, and service managers.
 - **CI** ([.github/workflows/ci.yml](.github/workflows/ci.yml)): shellcheck +
   `bats tests/` on **macOS and Ubuntu** + gitleaks + CodeQL on every push/PR. `main` is
   protected and PR-only.
@@ -165,5 +175,13 @@ password.
   when daemonizing, so foreground/service/SSO sessions self-record after a short delay.
 - **SSO forced foreground, no stdin pipe** — the single most important correctness
   detail for browser auth; the TTY must stay attached.
+- **TOTP generated client-side, fed on stdin** — the seed stays in the keychain and the
+  short-lived code goes on stdin, so the seed never reaches argv or disk. This deliberately
+  avoids openconnect's native `--token-secret`, which can only take the secret on the
+  command line or in a file. Trade-off: needs `oathtool`, and TOTP is "1.5-factor" if the
+  seed and password share one keychain.
+- **`extraArgs` tokenized with `xargs`** — gives shell-like quote/escape handling for a
+  free-form flag string **without `eval`** (no command substitution or globbing); collisions
+  with managed flags warn rather than block.
 - **`PROGRAM_NAME` vs `DISPLAY_NAME`** — data-file/slug/Keychain namespace is decoupled
   from user-facing naming, so the public command reads `vpn-up` without disturbing state paths.

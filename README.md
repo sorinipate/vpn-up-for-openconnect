@@ -425,7 +425,7 @@ Supported tag aliases: `username`/`user`, `group`/`authGroup`, `duoMethod`/`duo2
 
 **Under consideration** (open an issue if you need one of these):
 
-- RSA SecurID / Yubikey OATH token support (TOTP is already supported — see [SSO & 2FA](#sso--external-browser-login))
+- RSA SecurID / Yubikey OATH token support (TOTP is already supported — see [TOTP authenticator-app 2FA](#totp-authenticator-app-2fa))
 - HTTP/SOCKS proxy passthrough as a profile field
 - Multiple simultaneous tunnels (per-profile state files already lay the groundwork)
 
