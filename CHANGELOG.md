@@ -18,6 +18,12 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
   it needs no interaction, a TOTP profile **can run as a login service with
   auto-reconnect** (unlike Duo-passcode and SSO). New `oathtool` dependency
   (TOTP only); surfaced by `doctor`; shown in `vpn-up list`.
+- **Extra openconnect arguments** per profile (`<extraArgs>`, also an optional
+  prompt in `add-profile`). Power-user passthrough for flags vpn-up doesn't model
+  (`--no-dtls`, `--os=win`, `--csd-wrapper`, proxies, MTU, …). Tokenized with
+  `xargs` so quotes are respected without `eval`; appended verbatim before the
+  gateway host. Duplicating a flag vpn-up already manages prints a warning but is
+  still passed.
 
 ---
 

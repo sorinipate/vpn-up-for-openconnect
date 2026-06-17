@@ -60,7 +60,7 @@ CFG
 # Append a <VPN> block to the profiles file (password stays empty — secrets
 # belong in the secrets backend, set separately).
 append_profile() {
-  local name="$1" proto="$2" host="$3" group="$4" user="$5" duo="$6" authmode="${7:-password}" tokenmode="${8:-}"
+  local name="$1" proto="$2" host="$3" group="$4" user="$5" duo="$6" authmode="${7:-password}" tokenmode="${8:-}" extraargs="${9:-}"
   local tmp="${PROFILES_FILE}.tmp"
   xmlstarlet ed \
     -s '/VPNs' -t elem -n VPN -v '' \
@@ -74,6 +74,7 @@ append_profile() {
     -s '/VPNs/VPN[last()]' -t elem -n serverCertificate -v '' \
     -s '/VPNs/VPN[last()]' -t elem -n authMode -v "$authmode" \
     -s '/VPNs/VPN[last()]' -t elem -n tokenMode -v "$tokenmode" \
+    -s '/VPNs/VPN[last()]' -t elem -n extraArgs -v "$extraargs" \
     "${PROFILES_FILE}" > "${tmp}" && mv "${tmp}" "${PROFILES_FILE}" && chmod 600 "${PROFILES_FILE}"
 }
 
@@ -82,7 +83,7 @@ add_profile_wizard() {
     ( umask 077; printf '<VPNs>\n</VPNs>\n' > "$PROFILES_FILE" )
   fi
 
-  local name proto host group user duo authmode tokenmode
+  local name proto host group user duo authmode tokenmode extraargs
   read -r -p "Profile name: " name
   [ -n "$name" ] || { print_danger "Profile name is required.\n"; return 1; }
   if profile_exists "$name"; then
@@ -137,7 +138,11 @@ add_profile_wizard() {
     esac
   fi
 
-  append_profile "$name" "$proto" "$host" "$group" "$user" "$duo" "$authmode" "$tokenmode" \
+  # Advanced (optional): extra openconnect flags passed verbatim at connect time.
+  extraargs=""
+  read -r -p "Extra openconnect arguments (advanced, optional): " extraargs
+
+  append_profile "$name" "$proto" "$host" "$group" "$user" "$duo" "$authmode" "$tokenmode" "$extraargs" \
     || { print_danger "Failed to update %s\n" "$PROFILES_FILE"; return 1; }
   print_success "Added profile '%s' to %s\n" "$name" "$PROFILES_FILE"
 

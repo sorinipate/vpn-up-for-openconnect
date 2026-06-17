@@ -33,7 +33,8 @@ load_profile_fields() {
       -v "duo2FAMethod | duoMethod" -n \
       -v "serverCertificate" -n \
       -v "authMode | authmode" -n \
-      -v "tokenMode | tokenmode" -n "${PROFILES_FILE}"
+      -v "tokenMode | tokenmode" -n \
+      -v "extraArgs | extraargs" -n "${PROFILES_FILE}"
   )
   VPN_NAME="${fields[0]:-}"
   PROTOCOL="${fields[1]:-}"
@@ -48,6 +49,8 @@ load_profile_fields() {
   if [ -z "$VPN_AUTH_MODE" ]; then VPN_AUTH_MODE=password; fi
   # Software-token 2FA: 'totp' generates the one-time code from a stored seed.
   VPN_TOKEN_MODE="$(printf '%s' "${fields[9]:-}" | tr '[:upper:]' '[:lower:]')"
+  # Advanced: extra openconnect arguments passed verbatim (tokenized at connect).
+  VPN_EXTRA_ARGS="${fields[10]:-}"
 
   # Intentionally NOT exported: these are read only by functions in this
   # shell, and exporting would copy the password into the environment of

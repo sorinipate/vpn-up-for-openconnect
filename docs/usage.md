@@ -79,5 +79,24 @@ Drop executable scripts in `~/.config/vpn-up/hooks/connected.d/` or
 proxies). Hooks receive `VPN_EVENT`, `VPN_NAME`, and `VPN_HOST` — never the
 password — and are skipped unless owned by you and not group/world-writable.
 
+## Advanced: extra openconnect arguments
+
+For a flag VPN Up doesn't model (`--no-dtls`, `--os=win`, `--csd-wrapper`, an
+HTTP/SOCKS proxy, MTU, `--reconnect-timeout`, …), set `<extraArgs>` on the profile
+(or use the optional prompt in `add-profile`). The value is appended verbatim to
+the openconnect command, just before the gateway host:
+
+```xml
+<extraArgs>--no-dtls --reconnect-timeout 30</extraArgs>
+```
+
+- Tokenized with `xargs`, so quotes are respected (`"--csd-wrapper=/path with space"`
+  stays one argument) and the value is **never** `eval`'d.
+- Avoid flags VPN Up already manages (`--protocol`, `--user`, `--passwd-on-stdin`,
+  `--background`, `--servercert`, `--authgroup`, `--pid-file`, `--external-browser`,
+  `--token-mode`/`--token-secret`). Duplicating one warns but is still passed.
+- **openconnect runs as root**, so some flags execute programs as root (e.g.
+  `--csd-wrapper`, `--script`) — only add flags you'd run under `sudo` yourself.
+
 See also: [SSO & Duo 2FA]({{ '/sso-duo/' | relative_url }}) and
 [supported protocols]({{ '/protocols/' | relative_url }}).

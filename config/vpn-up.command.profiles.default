@@ -28,6 +28,13 @@
              The TOTP secret is stored in the secrets backend, not here:
              vpn-up set-secret "<profile name>" token_secret  (needs oathtool). -->
         <tokenMode></tokenMode>
+        <!-- extraArgs (advanced): extra openconnect flags passed verbatim, e.g.
+             --no-dtls, --os=win, --csd-wrapper=/path. Quotes are respected.
+             Avoid flags vpn-up already manages (--protocol, --user, --pid-file,
+             --passwd-on-stdin, --background, --servercert, --authgroup, …).
+             NOTE: openconnect runs as root — some flags (e.g. --csd-wrapper,
+             --script) execute programs as root. -->
+        <extraArgs></extraArgs>
     </VPN>
 
     <!-- VPN PROFILE 2 -->
@@ -48,6 +55,13 @@
              The TOTP secret is stored in the secrets backend, not here:
              vpn-up set-secret "<profile name>" token_secret  (needs oathtool). -->
         <tokenMode></tokenMode>
+        <!-- extraArgs (advanced): extra openconnect flags passed verbatim, e.g.
+             --no-dtls, --os=win, --csd-wrapper=/path. Quotes are respected.
+             Avoid flags vpn-up already manages (--protocol, --user, --pid-file,
+             --passwd-on-stdin, --background, --servercert, --authgroup, …).
+             NOTE: openconnect runs as root — some flags (e.g. --csd-wrapper,
+             --script) execute programs as root. -->
+        <extraArgs></extraArgs>
     </VPN>
     <!-- Add more VPN profiles as needed -->
 </VPNs>
