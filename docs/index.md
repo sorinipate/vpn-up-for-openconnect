@@ -60,6 +60,7 @@ See the [installation guide]({{ '/installation/' | relative_url }}) for manual s
 - [Connect to GlobalProtect from the command line]({{ '/globalprotect-cli/' | relative_url }}) — Palo Alto GlobalProtect via OpenConnect
 - [Auto-connect a VPN at login]({{ '/vpn-at-login/' | relative_url }}) — launchd (macOS) & systemd (Linux) with auto-reconnect
 - [VPN Up vs. raw OpenConnect]({{ '/vs-openconnect/' | relative_url }}) — what the wrapper adds, and when to use each
+- [VPN Up vs. openconnect-sso]({{ '/vs-openconnect-sso/' | relative_url }}) — two AnyConnect SSO clients compared, fairly
 
 ## Related articles
 

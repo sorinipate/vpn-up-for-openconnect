@@ -57,3 +57,6 @@ OpenConnect supports keeps working.
 
 Get started: [installation]({{ '/installation/' | relative_url }}) ·
 [usage]({{ '/usage/' | relative_url }}).
+
+> Comparing SSO clients specifically? See
+> [VPN Up vs. openconnect-sso]({{ '/vs-openconnect-sso/' | relative_url }}).
