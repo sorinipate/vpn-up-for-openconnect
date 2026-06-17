@@ -97,6 +97,7 @@ VPN Up is useful if you:
 - **Four SSL VPN protocols** via [OpenConnect](https://www.infradead.org/openconnect/): Cisco **AnyConnect** (and ocserv), Juniper **Network Connect**, Palo Alto **GlobalProtect**, and **Pulse Secure**
 - **Multiple VPN profiles** — pick from an interactive menu or connect by name with zero prompts (`vpn-up start "Work VPN"`), with full **AuthGroup/realm** support
 - **Duo 2FA** — `push`, `phone`, `sms`, or one-time passcodes prompted at connect time; empty method lets the gateway auto-push
+- **TOTP authenticator-app 2FA** — store the seed once and `vpn-up` generates the code at connect time (via `oathtool`); fully non-interactive, so it works as an auto-reconnecting login service
 - **SSO / external-browser login** — for gateways that force a browser-based SAML/SSO flow (Okta, Azure AD, Ping Identity, often with an embedded Duo iframe), via OpenConnect's `--external-browser` (needs openconnect ≥ 9.0)
 - **Background or foreground** execution, per your config
 
@@ -230,6 +231,20 @@ vpn-up stop                        # stop the VPN (or: stop "Frankfurt VPN")
 ```
 
 Each profile keeps its own log and PID/state files under `~/.config/vpn-up`, so `status`, `stop`, and `logs` are profile-aware.
+
+### TOTP authenticator-app 2FA
+
+For gateways that prompt for a time-based one-time code (Google Authenticator, Authy, a hardware TOTP token), store the base32 seed once and `vpn-up` generates the current code at connect time:
+
+```bash
+vpn-up set-secret "Work VPN" token_secret   # paste the base32 seed
+```
+
+…then set `<tokenMode>totp</tokenMode>` on the profile (the `add-profile` wizard offers this as a 2FA choice). Requires **`oathtool`** (`brew install oath-toolkit` / `apt install oathtool`; shown by `vpn-up doctor`).
+
+- The **seed stays in your keychain** — it's never passed to openconnect's argv or written to disk; only the short-lived 6-digit code is sent (on stdin), the same path as a Duo passcode.
+- Because no interaction is needed, a TOTP profile is the **one 2FA method that can run as a login service** with auto-reconnect (Duo passcode and SSO can't).
+- Security note: storing the TOTP seed beside the password in the same keychain is effectively "1.5-factor" — it's opt-in.
 
 ### SSO / external-browser login
 
@@ -396,7 +411,7 @@ Supported tag aliases: `username`/`user`, `group`/`authGroup`, `duoMethod`/`duo2
 
 **Under consideration** (open an issue if you need one of these):
 
-- TOTP / RSA token support via openconnect's native `--token-mode`
+- RSA SecurID / Yubikey OATH token support (TOTP is already supported — see [SSO & 2FA](#sso--external-browser-login))
 - HTTP/SOCKS proxy passthrough as a profile field
 - Multiple simultaneous tunnels (per-profile state files already lay the groundwork)
 

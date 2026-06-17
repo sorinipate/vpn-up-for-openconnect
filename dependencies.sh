@@ -31,6 +31,16 @@ require_openconnect_sso() {
   return 0
 }
 
+# TOTP profiles need `oathtool` (oath-toolkit) to generate the one-time code.
+# Gate only the TOTP path so non-TOTP users aren't required to install it.
+require_oathtool() {
+  if ! command -v oathtool >/dev/null 2>&1; then
+    print_danger "TOTP 2FA needs 'oathtool'. Install via: brew install oath-toolkit | apt-get install oathtool\n"
+    return 1
+  fi
+  return 0
+}
+
 check_dependencies() {
   require_bin xmlstarlet "Install via: brew install xmlstarlet | apt-get install xmlstarlet"
   require_bin openconnect "Install via: brew install openconnect | apt-get install openconnect"
@@ -70,6 +80,11 @@ doctor() {
     else
       echo "  [..] SSO / external browser needs openconnect >= 9.0 (detected: ${_ocmaj:-unknown})"
     fi
+  fi
+  if command -v oathtool >/dev/null 2>&1; then
+    echo "  [OK] oathtool -> $(command -v oathtool) (TOTP 2FA supported)"
+  else
+    echo "  [..] oathtool not found (needed only for TOTP 2FA: brew install oath-toolkit | apt-get install oathtool)"
   fi
   if [ "$(uname)" = "Darwin" ]; then
     if command -v security >/dev/null 2>&1; then echo "  [OK] security (Keychain)"; else echo "  [!!] security missing"; fi

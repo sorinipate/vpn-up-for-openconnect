@@ -60,7 +60,7 @@ CFG
 # Append a <VPN> block to the profiles file (password stays empty — secrets
 # belong in the secrets backend, set separately).
 append_profile() {
-  local name="$1" proto="$2" host="$3" group="$4" user="$5" duo="$6" authmode="${7:-password}"
+  local name="$1" proto="$2" host="$3" group="$4" user="$5" duo="$6" authmode="${7:-password}" tokenmode="${8:-}"
   local tmp="${PROFILES_FILE}.tmp"
   xmlstarlet ed \
     -s '/VPNs' -t elem -n VPN -v '' \
@@ -73,6 +73,7 @@ append_profile() {
     -s '/VPNs/VPN[last()]' -t elem -n duo2FAMethod -v "$duo" \
     -s '/VPNs/VPN[last()]' -t elem -n serverCertificate -v '' \
     -s '/VPNs/VPN[last()]' -t elem -n authMode -v "$authmode" \
+    -s '/VPNs/VPN[last()]' -t elem -n tokenMode -v "$tokenmode" \
     "${PROFILES_FILE}" > "${tmp}" && mv "${tmp}" "${PROFILES_FILE}" && chmod 600 "${PROFILES_FILE}"
 }
 
@@ -81,7 +82,7 @@ add_profile_wizard() {
     ( umask 077; printf '<VPNs>\n</VPNs>\n' > "$PROFILES_FILE" )
   fi
 
-  local name proto host group user duo authmode
+  local name proto host group user duo authmode tokenmode
   read -r -p "Profile name: " name
   [ -n "$name" ] || { print_danger "Profile name is required.\n"; return 1; }
   if profile_exists "$name"; then
@@ -102,9 +103,9 @@ add_profile_wizard() {
   read -r -p "Username: " user
 
   # SSO / browser-based login (Okta, Azure AD, Ping + embedded Duo). When on,
-  # credentials and MFA are entered in the browser, so skip the Duo-method and
-  # password prompts entirely.
-  authmode=password; duo=""
+  # credentials and MFA are entered in the browser, so skip the 2FA and password
+  # prompts entirely.
+  authmode=password; duo=""; tokenmode=""
   local _in_sso=""
   read -r -p "Use SSO / browser-based login (Okta, Azure AD, Ping + Duo)? [y/N]: " _in_sso
   if [ "$(_bool_default "${_in_sso}" "FALSE")" = TRUE ]; then
@@ -114,10 +115,29 @@ add_profile_wizard() {
     fi
     authmode=sso
   else
-    read -r -p "Duo 2FA method (push/phone/sms/passcode; empty = gateway default): " duo
+    # Choose the 2FA style: Duo, a TOTP authenticator app, or none.
+    local _in_2fa=""
+    read -r -p "Two-factor — (d) Duo, (t) TOTP authenticator app, (n) none [d]: " _in_2fa
+    case "$(printf '%s' "${_in_2fa:-d}" | tr '[:upper:]' '[:lower:]')" in
+      t|totp)
+        tokenmode=totp
+        local _seed=""
+        read -r -s -p "Enter the TOTP secret (base32, from your authenticator app): " _seed; echo
+        if [ -n "$_seed" ]; then
+          if command -v oathtool >/dev/null 2>&1 && [ -n "$(oathtool --totp -b "$_seed" 2>/dev/null)" ]; then
+            secrets_set "$name" "token_secret" "$_seed" && print_success "TOTP secret stored securely.\n"
+          else
+            print_danger "That doesn't look like a valid base32 TOTP secret (or 'oathtool' is missing); not stored. Add it later with: %s set-secret '%s' token_secret\n" "${DISPLAY_NAME}" "$name"
+          fi
+          unset _seed
+        fi
+        ;;
+      n|none|"") : ;;
+      *) read -r -p "Duo 2FA method (push/phone/sms/passcode; empty = gateway default): " duo ;;
+    esac
   fi
 
-  append_profile "$name" "$proto" "$host" "$group" "$user" "$duo" "$authmode" \
+  append_profile "$name" "$proto" "$host" "$group" "$user" "$duo" "$authmode" "$tokenmode" \
     || { print_danger "Failed to update %s\n" "$PROFILES_FILE"; return 1; }
   print_success "Added profile '%s' to %s\n" "$name" "$PROFILES_FILE"
 

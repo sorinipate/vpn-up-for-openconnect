@@ -37,9 +37,11 @@ Because there's no terminal to type into at login, a service profile needs:
    ```
 
 2. **A stored password** — `vpn-up set-secret "Work VPN" password`.
-3. **A non-interactive 2FA method** — `push`, `phone`, or `sms`. Duo `passcode` and
-   [browser SSO]({{ '/sso-duo/' | relative_url }}) profiles are **refused**, since
-   both need interaction.
+3. **A non-interactive 2FA method** — `push`, `phone`, `sms`, or a
+   [TOTP authenticator]({{ '/sso-duo/' | relative_url }}#totp-authenticator-app-codes-google-authenticator-authy-hardware-tokens)
+   (the code is generated from the stored seed, so it's the ideal fit). Duo
+   `passcode` and [browser SSO]({{ '/sso-duo/' | relative_url }}) profiles are
+   **refused**, since both need a human.
 
 `vpn-up service install` runs these preflight checks and warns you if anything is missing.
 

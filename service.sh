@@ -114,6 +114,17 @@ _service_preflight() {
     print_danger "Profile '%s' uses a Duo passcode (interactive); it cannot run as a service.\n" "$profile"
     return 1
   fi
+  # TOTP is non-interactive (the code is generated from a stored seed), so it CAN
+  # run as a service — but only if the seed is stored and oathtool is available.
+  local tokenmode
+  tokenmode="$(xmlstarlet sel -t -m "//VPN[name=$(xpath_literal "$profile")]" -v 'tokenMode | tokenmode' "$PROFILES_FILE" 2>/dev/null)"
+  if [ "$tokenmode" = totp ]; then
+    if [ -z "$(secrets_get "$profile" "token_secret" 2>/dev/null)" ]; then
+      print_danger "Profile '%s' uses TOTP but has no stored secret; a service can't prompt. Store it first: %s set-secret '%s' token_secret\n" "$profile" "${DISPLAY_NAME}" "$profile"
+      return 1
+    fi
+    command -v oathtool >/dev/null 2>&1 || print_warning "'oathtool' not found; the TOTP service will fail until it's installed (brew install oath-toolkit | apt-get install oathtool).\n"
+  fi
   return 0
 }
 

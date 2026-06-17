@@ -193,9 +193,33 @@ connect() {
     require_openconnect_sso || return 1
   fi
 
+  # TOTP authenticator-app 2FA: generate the current one-time code from a seed
+  # stored in the secrets backend and feed it as the second auth line (same path
+  # as a Duo passcode). The seed never reaches openconnect's argv or disk, and
+  # because no interaction is needed it works as a non-interactive service too.
+  VPN_SECOND_FACTOR=""
+  if [ "${VPN_AUTH_MODE:-password}" != sso ] && [ "$VPN_TOKEN_MODE" = totp ]; then
+    require_oathtool || return 1
+    local seed; seed="$(secrets_get "${VPN_NAME}" token_secret)"
+    if [ -z "$seed" ]; then
+      if [ -n "${VPN_UP_SERVICE:-}" ]; then
+        print_danger "No TOTP secret stored for '%s' and service mode cannot prompt. Store it first: %s set-secret '%s' token_secret\n" "${VPN_NAME}" "${DISPLAY_NAME}" "${VPN_NAME}"
+        return 1
+      fi
+      read -r -s -p "Enter the TOTP secret (base32) for ${VPN_NAME}: " seed; echo
+      [ -n "$seed" ] && secrets_set "${VPN_NAME}" token_secret "$seed"
+    fi
+    VPN_SECOND_FACTOR="$(generate_totp "$seed")"
+    unset seed
+    if [ -z "$VPN_SECOND_FACTOR" ]; then
+      print_danger "Could not generate a TOTP code (check the stored secret with: %s set-secret '%s' token_secret).\n" "${DISPLAY_NAME}" "${VPN_NAME}"
+      return 1
+    fi
+  fi
+
   # Duo passcodes are one-time values; never read them from the XML —
-  # prompt at connect time instead. (Skipped for SSO: the browser handles MFA.)
-  if [ "${VPN_AUTH_MODE:-password}" != sso ] && [ "$VPN_DUO2FAMETHOD" = "passcode" ]; then
+  # prompt at connect time instead. (Skipped for SSO and TOTP token mode.)
+  if [ "${VPN_AUTH_MODE:-password}" != sso ] && [ "$VPN_TOKEN_MODE" != totp ] && [ "$VPN_DUO2FAMETHOD" = "passcode" ]; then
     if [ -n "${VPN_UP_SERVICE:-}" ]; then
       print_danger "Profile '%s' uses a Duo passcode, which needs interactive input; it cannot run as a service. Use push/phone/sms instead.\n" "${VPN_NAME}"
       return 1
@@ -228,6 +252,8 @@ connect() {
   print_primary "Starting the %s on %s using %s ...\n" "${VPN_NAME}" "${VPN_HOST}" "${PROTOCOL_DESCRIPTION}"
   if [ "${VPN_AUTH_MODE:-password}" = sso ]; then
     print_primary "Connecting via SSO (external browser) — complete the login in the window that opens ...\n"
+  elif [ "$VPN_TOKEN_MODE" = totp ]; then
+    print_primary "Connecting with a TOTP authenticator code ...\n"
   elif [ -z "$VPN_DUO2FAMETHOD" ]; then
     print_warning "Connecting without 2FA (%s) ...\n" "${VPN_DUO2FAMETHOD_DESCRIPTION}"
   else
@@ -349,6 +375,13 @@ resolve_external_browser() {
   [ "$(uname)" = Darwin ] && printf 'open' || printf 'xdg-open'
 }
 
+# Generate the current RFC 6238 TOTP code from a base32 seed. The seed comes from
+# the secrets backend and is passed as an argument here (a local shell var), never
+# to openconnect — only the short-lived code transits (on stdin).
+generate_totp() {
+  oathtool --totp -b "$1" 2>/dev/null
+}
+
 run_openconnect() {
   # Validate sudo up-front on the TTY so the prompt doesn't collide with the
   # password pipe below. For passwordless use, configure a scoped sudoers rule
@@ -392,12 +425,15 @@ run_openconnect() {
   ( umask 077; mkdir -p "${DATA_DIR}/logs" "${DATA_DIR}/pids" )
   chmod 700 "${DATA_DIR}/logs" "${DATA_DIR}/pids"
 
-  # Feed password (and 2FA answer, if any) on stdin. Create the log file as
-  # the unprivileged user with 600 perms and capture openconnect's stderr too
-  # (previously `sudo tee ... 2>&1` redirected tee's stderr, not openconnect's,
-  # and left a root-owned log in the user's directory).
+  # Feed password (and the 2FA answer, if any) on stdin. The second factor is a
+  # generated TOTP code (VPN_SECOND_FACTOR) when token mode is active, otherwise
+  # the Duo method/passcode. Either way it goes on stdin — never on argv. Create
+  # the log file as the unprivileged user with 600 perms and capture openconnect's
+  # stderr too (previously `sudo tee ... 2>&1` redirected tee's stderr, not
+  # openconnect's, and left a root-owned log in the user's directory).
   local stdin_lines="$VPN_PASSWD"
-  [ -n "$VPN_DUO2FAMETHOD" ] && stdin_lines+=$'\n'"$VPN_DUO2FAMETHOD"
+  local second="${VPN_SECOND_FACTOR:-$VPN_DUO2FAMETHOD}"
+  [ -n "$second" ] && stdin_lines+=$'\n'"$second"
   ( umask 077; : > "$LOG_FILE_PATH" )
   if [ "${VPN_AUTH_MODE:-password}" = sso ]; then
     # SSO: openconnect opens a browser and needs the controlling TTY, so pipe
@@ -444,6 +480,7 @@ run_openconnect() {
     run_hooks disconnected "${VPN_NAME:-}" "${VPN_HOST:-}"
   fi
 
-  # Drop the password from shell memory as soon as it has been piped.
-  unset VPN_PASSWD stdin_lines
+  # Drop the password and any generated 2FA code from shell memory as soon as
+  # they have been piped.
+  unset VPN_PASSWD stdin_lines second VPN_SECOND_FACTOR
 }
