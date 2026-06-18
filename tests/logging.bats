@@ -16,6 +16,12 @@ setup() {
   [ "$LOG_FILE_PATH" = "$DATA_DIR/logs/${PROGRAM_NAME}.My_Work_VPN.log" ]
 }
 
+@test "profile path helpers return slugged per-profile files" {
+  [ "$(profile_pid_file "My Work VPN")" = "$DATA_DIR/pids/${PROGRAM_NAME}.My_Work_VPN.pid" ]
+  [ "$(profile_state_file "My Work VPN")" = "$DATA_DIR/pids/${PROGRAM_NAME}.My_Work_VPN.state" ]
+  [ "$(profile_log_file "My Work VPN")" = "$DATA_DIR/logs/${PROGRAM_NAME}.My_Work_VPN.log" ]
+}
+
 @test "is_openconnect_pid rejects empty, non-numeric, and non-openconnect pids" {
   run is_openconnect_pid "";        [ "$status" -ne 0 ]
   run is_openconnect_pid "12a4";    [ "$status" -ne 0 ]
@@ -24,11 +30,19 @@ setup() {
   run is_openconnect_pid "$$";      [ "$status" -ne 0 ]
 }
 
-@test "any_vpn_running scans pid files and survives an empty pids dir" {
-  run any_vpn_running; [ "$status" -ne 0 ]
-  echo "$$" > "$DATA_DIR/pids/a.pid"
-  is_openconnect_pid() { return 0; }
-  any_vpn_running
+@test "profile_vpn_running targets one profile and prunes stale state" {
+  echo 111 > "$DATA_DIR/pids/${PROGRAM_NAME}.Work_VPN.pid"
+  touch "$DATA_DIR/pids/${PROGRAM_NAME}.Work_VPN.state"
+  is_openconnect_pid() { [ "$1" = "111" ]; }
+  profile_vpn_running "Work VPN"
+  run profile_vpn_running "Lab VPN"
+  [ "$status" -ne 0 ]
+
+  is_openconnect_pid() { return 1; }
+  run profile_vpn_running "Work VPN"
+  [ "$status" -ne 0 ]
+  [ ! -e "$DATA_DIR/pids/${PROGRAM_NAME}.Work_VPN.pid" ]
+  [ ! -e "$DATA_DIR/pids/${PROGRAM_NAME}.Work_VPN.state" ]
 }
 
 @test "file_mode and file_owner_uid report correct values" {
