@@ -8,6 +8,8 @@ description: >-
 permalink: /
 ---
 
+![VPN Up — secure OpenConnect VPN CLI for macOS and Linux (Cisco AnyConnect, GlobalProtect, Duo 2FA, SSO)]({{ '/assets/social-preview.png' | relative_url }})
+
 # VPN Up for OpenConnect
 
 **VPN Up** is a secure, scriptable command-line VPN manager built on
