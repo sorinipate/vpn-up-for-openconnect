@@ -378,6 +378,8 @@ Need an openconnect flag `vpn-up` doesn't model (`--no-dtls`, `--os=win`, `--csd
 - Avoid flags `vpn-up` already manages — `--protocol`, `--user`, `--passwd-on-stdin`, `--background`, `--servercert`, `--authgroup`, `--pid-file`, `--external-browser`, `--token-mode`/`--token-secret`. Duplicating one prints a warning (it may conflict) but is still passed.
 - ⚠️ openconnect runs as **root**; some flags execute programs as root (e.g. `--csd-wrapper`, `--script`). Only put flags here that you'd be comfortable running under `sudo` yourself.
 
+**Split-tunnel routing:** to send only some subnets through the VPN (and the rest direct), set `<extraArgs>--script "vpn-slice 10.0.0.0/8 host.corp"</extraArgs>` — [vpn-slice](https://github.com/dlenski/vpn-slice) is a drop-in `vpnc-script` replacement. Full recipe (include/exclude syntax, hooks alternative, caveats): [Split-tunnel routing](https://sorinipate.github.io/vpn-up-for-openconnect/split-tunnel/).
+
 ### Client-certificate authentication
 
 Authenticate with an **X.509 client certificate** — a file or a **PKCS#11** smartcard / **YubiKey PIV** — on its own (cert-only) or alongside a password/SSO. Set `<clientCertificate>` (and `<clientKey>` if the key is separate); each is a file path or a `pkcs11:` URI:

@@ -55,3 +55,5 @@ if a connection fails.
 
 Authenticating with a certificate instead of (or in addition to) a password? See
 [client-certificate authentication]({{ '/client-certificate-auth/' | relative_url }}).
+Want only some traffic through the VPN? See
+[split-tunnel routing]({{ '/split-tunnel/' | relative_url }}).
