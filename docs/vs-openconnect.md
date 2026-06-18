@@ -39,6 +39,7 @@ vpn-up start "Work VPN"
 | Password kept out of argv & shell history | manual | ✅ |
 | Duo 2FA prompt ordering (push/phone/sms/passcode) | manual | ✅ |
 | Browser-based SSO (`--external-browser`) wiring | manual | ✅ |
+| Client-certificate auth (file or PKCS#11 / YubiKey PIV) | manual | ✅ profile field; PIN kept out of argv |
 | Certificate-pinning helper (`pin` / `pin --save`) | manual | ✅ |
 | Profile-aware `status` / `logs -f` / `stop` | — | ✅ |
 | Auto-reconnect login service (launchd/systemd) | manual | ✅ |
