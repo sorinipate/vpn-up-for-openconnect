@@ -3,3 +3,5 @@
 .DS_Store
 config/vpn-up.command.profiles
 config/vpn-up.command.config
+# Local Claude Code session/permission files (may capture secrets/tokens)
+.claude/
