@@ -5,7 +5,7 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ---
 
-## [Unreleased]
+## [v3.11.0] — 2026-06-19
 ### Added
 
 - **Multiple simultaneous tunnels**. `vpn-up start` now allows different profiles

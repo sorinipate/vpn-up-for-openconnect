@@ -1,6 +1,6 @@
 # Product Requirements Document — VPN Up for OpenConnect
 
-**Status:** Living document · **Owner:** Sorin-Doru Ipate · **Last updated:** 2026-06-18 (v3.10.0)
+**Status:** Living document · **Owner:** Sorin-Doru Ipate · **Last updated:** 2026-06-19 (v3.11.0)
 
 > This PRD describes *what* VPN Up is and *why*. For *how* it's built, see
 > [ARCHITECTURE.md](ARCHITECTURE.md). For the change history, see
