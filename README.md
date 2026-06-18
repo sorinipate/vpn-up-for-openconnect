@@ -3,7 +3,7 @@
 > Secure, scriptable command-line VPN client for Cisco AnyConnect and other SSL VPNs, built on OpenConnect — for macOS & Linux.
 
 [![CI](https://github.com/sorinipate/vpn-up-for-openconnect/actions/workflows/ci.yml/badge.svg)](https://github.com/sorinipate/vpn-up-for-openconnect/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/release-v3.9.2-blue)](https://github.com/sorinipate/vpn-up-for-openconnect/releases/latest)
+[![Release](https://img.shields.io/badge/release-v3.10.0-blue)](https://github.com/sorinipate/vpn-up-for-openconnect/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-online-blue)](https://sorinipate.github.io/vpn-up-for-openconnect/)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue)
@@ -394,6 +394,18 @@ Authenticate with an **X.509 client certificate** — a file or a **PKCS#11** sm
 - For a [login service](#run-as-a-login-service-auto-reconnect), use a PKCS#11 token with a stored PIN, or an unencrypted `0600` key file (a passphrase-protected file key can't run unattended — there's no TTY to prompt on).
 - `vpn-up doctor` reports PKCS#11 (`p11-kit`) availability. Full guide: [docs/client-certificate-auth](https://sorinipate.github.io/vpn-up-for-openconnect/client-certificate-auth/).
 
+### HTTP/SOCKS proxy
+
+Reach the gateway through a proxy by setting `<proxy>` on the profile (or answer the optional proxy prompt in `add-profile`). It's passed to openconnect's `--proxy`:
+
+```xml
+<proxy>http://proxy.corp:8080</proxy>
+<!-- or SOCKS: -->
+<proxy>socks5://127.0.0.1:1080</proxy>
+```
+
+- The proxy URL is an **identifier, not a secret** — it lives in the profile XML. ⚠️ Avoid embedding `user:pass@` in the URL: like any argument, it would be visible in the process table. Prefer a proxy that doesn't require inline credentials.
+
 ---
 
 ## ⚙️ Configuration
@@ -432,11 +444,12 @@ Seeded from [config/vpn-up.command.profiles.default](config/vpn-up.command.profi
     <extraArgs>--no-dtls</extraArgs>
     <clientCertificate>/etc/vpn/me.pem</clientCertificate>
     <clientKey></clientKey>
+    <proxy>http://proxy.corp:8080</proxy>
   </VPN>
 </VPNs>
 ```
 
-Supported tag aliases: `username`/`user`, `group`/`authGroup`, `duoMethod`/`duo2FAMethod`. The `<password>` field is deprecated: plaintext values are migrated to the secrets backend and blanked in the XML automatically on first use — prefer `vpn-up set-secret`. A `duo2FAMethod` of `passcode` prompts for the one-time code at connect time. `<authMode>` is `password` (default) or `sso` for [browser-based SAML/SSO login](#sso--external-browser-login). `<tokenMode>` is empty (default) or `totp` for [authenticator-app 2FA](#totp-authenticator-app-2fa). `<extraArgs>` passes extra openconnect flags verbatim — see [Advanced: extra openconnect arguments](#advanced-extra-openconnect-arguments). `<clientCertificate>`/`<clientKey>` enable [client-certificate authentication](#client-certificate-authentication) — a file path or a PKCS#11 URI; a key passphrase/PIN goes in the secrets backend (`key_password`), never the XML.
+Supported tag aliases: `username`/`user`, `group`/`authGroup`, `duoMethod`/`duo2FAMethod`. The `<password>` field is deprecated: plaintext values are migrated to the secrets backend and blanked in the XML automatically on first use — prefer `vpn-up set-secret`. A `duo2FAMethod` of `passcode` prompts for the one-time code at connect time. `<authMode>` is `password` (default) or `sso` for [browser-based SAML/SSO login](#sso--external-browser-login). `<tokenMode>` is empty (default) or `totp` for [authenticator-app 2FA](#totp-authenticator-app-2fa). `<extraArgs>` passes extra openconnect flags verbatim — see [Advanced: extra openconnect arguments](#advanced-extra-openconnect-arguments). `<clientCertificate>`/`<clientKey>` enable [client-certificate authentication](#client-certificate-authentication) — a file path or a PKCS#11 URI; a key passphrase/PIN goes in the secrets backend (`key_password`), never the XML. `<proxy>` routes the connection through an [HTTP/SOCKS proxy](#httpsocks-proxy).
 
 ---
 
@@ -445,7 +458,6 @@ Supported tag aliases: `username`/`user`, `group`/`authGroup`, `duoMethod`/`duo2
 **Under consideration** (open an issue if you need one of these):
 
 - RSA SecurID / Yubikey OATH (HOTP) token support (TOTP authenticator codes are already supported — see [TOTP authenticator-app 2FA](#totp-authenticator-app-2fa) — as is a Yubikey **PIV client certificate** via [client-certificate authentication](#client-certificate-authentication))
-- HTTP/SOCKS proxy passthrough as a profile field
 - Multiple simultaneous tunnels (per-profile state files already lay the groundwork)
 
 **Explicitly out of scope:** Windows support, GUI.

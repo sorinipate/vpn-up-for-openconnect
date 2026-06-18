@@ -5,6 +5,18 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ---
 
+## [v3.10.0] — 2026-06-18
+### Added
+
+- **First-class HTTP/SOCKS proxy** per profile (`<proxy>`, also an optional prompt in
+  `add-profile`). Set a proxy URL — e.g. `http://proxy.corp:8080` or
+  `socks5://127.0.0.1:1080` — and `vpn-up` passes it to openconnect's `--proxy` (it
+  previously required `<extraArgs>`). The URL is an identifier, not a secret, so it
+  lives in the profile XML; embedding inline `user:pass@` credentials is discouraged
+  since they would reach the command line.
+
+---
+
 ## [v3.9.2] — 2026-06-18
 ### Changed
 

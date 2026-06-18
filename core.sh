@@ -412,7 +412,7 @@ _warn_extra_arg_collisions() {
   for tok in "$@"; do
     base="${tok%%=*}"
     case "$base" in
-      --protocol|-q|--user|--passwd-on-stdin|--background|--servercert|--authgroup|--pid-file|--external-browser|--token-mode|--token-secret|--certificate|-c|--sslkey|-k|--key-password)
+      --protocol|-q|--user|--passwd-on-stdin|--background|--servercert|--authgroup|--pid-file|--external-browser|--token-mode|--token-secret|--certificate|-c|--sslkey|-k|--key-password|--proxy)
         print_warning "extraArgs contains '%s', which vpn-up already manages; passing it anyway (may conflict).\n" "$base" ;;
     esac
   done
@@ -454,6 +454,8 @@ run_openconnect() {
   [ "$effective_background" = TRUE ] && args+=(--background)
   [ -n "$SERVER_CERTIFICATE" ] && args+=(--servercert="$SERVER_CERTIFICATE")
   [ -n "$VPN_GROUP" ] && args+=(--authgroup "$VPN_GROUP")
+  # Optional HTTP/SOCKS proxy (a URL, not a secret — safe on argv).
+  [ -n "${VPN_PROXY:-}" ] && args+=(--proxy="$VPN_PROXY")
   # Client-certificate auth (X.509). The cert/key may be a file path or a PKCS#11
   # URI (smartcard / YubiKey PIV) — an identifier, not a secret, so it is safe on
   # argv. A key passphrase / PKCS#11 PIN is a secret and must NOT hit argv: for a

@@ -60,7 +60,7 @@ CFG
 # Append a <VPN> block to the profiles file (password stays empty — secrets
 # belong in the secrets backend, set separately).
 append_profile() {
-  local name="$1" proto="$2" host="$3" group="$4" user="$5" duo="$6" authmode="${7:-password}" tokenmode="${8:-}" extraargs="${9:-}" clientcert="${10:-}" clientkey="${11:-}"
+  local name="$1" proto="$2" host="$3" group="$4" user="$5" duo="$6" authmode="${7:-password}" tokenmode="${8:-}" extraargs="${9:-}" clientcert="${10:-}" clientkey="${11:-}" proxy="${12:-}"
   local tmp="${PROFILES_FILE}.tmp"
   xmlstarlet ed \
     -s '/VPNs' -t elem -n VPN -v '' \
@@ -77,6 +77,7 @@ append_profile() {
     -s '/VPNs/VPN[last()]' -t elem -n extraArgs -v "$extraargs" \
     -s '/VPNs/VPN[last()]' -t elem -n clientCertificate -v "$clientcert" \
     -s '/VPNs/VPN[last()]' -t elem -n clientKey -v "$clientkey" \
+    -s '/VPNs/VPN[last()]' -t elem -n proxy -v "$proxy" \
     "${PROFILES_FILE}" > "${tmp}" && mv "${tmp}" "${PROFILES_FILE}" && chmod 600 "${PROFILES_FILE}"
 }
 
@@ -88,7 +89,7 @@ add_profile_wizard() {
   # would fail confusingly. Fail with a clear message instead.
   profiles_xml_ok || return 1
 
-  local name proto host group user duo authmode tokenmode extraargs clientcert clientkey
+  local name proto host group user duo authmode tokenmode extraargs clientcert clientkey proxy
   read -r -p "Profile name: " name
   [ -n "$name" ] || { print_danger "Profile name is required.\n"; return 1; }
   if profile_exists "$name"; then
@@ -165,11 +166,16 @@ add_profile_wizard() {
     esac
   fi
 
+  # Optional HTTP/SOCKS proxy. A URL, not a secret — avoid embedding credentials
+  # (they would land on openconnect's command line).
+  proxy=""
+  read -r -p "HTTP/SOCKS proxy (optional, e.g. http://proxy:8080 or socks5://host:1080): " proxy
+
   # Advanced (optional): extra openconnect flags passed verbatim at connect time.
   extraargs=""
   read -r -p "Extra openconnect arguments (advanced, optional): " extraargs
 
-  append_profile "$name" "$proto" "$host" "$group" "$user" "$duo" "$authmode" "$tokenmode" "$extraargs" "$clientcert" "$clientkey" \
+  append_profile "$name" "$proto" "$host" "$group" "$user" "$duo" "$authmode" "$tokenmode" "$extraargs" "$clientcert" "$clientkey" "$proxy" \
     || { print_danger "Failed to update %s\n" "$PROFILES_FILE"; return 1; }
   print_success "Added profile '%s' to %s\n" "$name" "$PROFILES_FILE"
 
