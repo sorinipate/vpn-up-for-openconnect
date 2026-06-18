@@ -1,6 +1,6 @@
 # Architecture — VPN Up for OpenConnect
 
-**Last updated:** 2026-06-18 (v3.10.0)
+**Last updated:** 2026-06-19 (v3.11.0)
 
 > *What* and *why* live in [PRD.md](PRD.md); this document covers *how*. Function and
 > file references are accurate as of the version above — verify against the source
