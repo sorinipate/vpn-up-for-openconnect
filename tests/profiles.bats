@@ -124,3 +124,15 @@ XML
   VPN_DUO2FAMETHOD=weird;   set_2fa_method_description; [ "$VPN_DUO2FAMETHOD_DESCRIPTION" = "CUSTOM" ]
   VPN_DUO2FAMETHOD="";      set_2fa_method_description; [ "$VPN_DUO2FAMETHOD_DESCRIPTION" = "NONE" ]
 }
+
+# The shipped default template must be valid XML that xmlstarlet can parse. XML
+# forbids '--' inside comments; if a flag example like '--no-dtls' creeps back into
+# a comment, the file becomes unparseable and `list` / the start menu break for
+# users who edit the seeded template by hand. Parse the REAL default file here.
+@test "default profiles template parses cleanly and yields its placeholder names" {
+  local default_file="$BATS_TEST_DIRNAME/../config/vpn-up.command.profiles.default"
+  run xmlstarlet sel -t -m '//VPN' -v name -n "$default_file"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"VPN PROFILE 1"* ]]
+  [[ "$output" == *"VPN PROFILE 2"* ]]
+}
