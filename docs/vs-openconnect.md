@@ -61,5 +61,6 @@ Get started: [installation]({{ '/installation/' | relative_url }}) ·
 
 > Comparing specific clients? See
 > [VPN Up vs. openconnect-sso]({{ '/vs-openconnect-sso/' | relative_url }}) (Cisco
-> AnyConnect SSO) and
-> [VPN Up vs. GlobalProtect-openconnect]({{ '/vs-globalprotect-openconnect/' | relative_url }}).
+> AnyConnect SSO),
+> [VPN Up vs. GlobalProtect-openconnect]({{ '/vs-globalprotect-openconnect/' | relative_url }}),
+> and [VPN Up vs. NetworkManager-openconnect]({{ '/vs-networkmanager-openconnect/' | relative_url }}).

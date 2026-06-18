@@ -64,6 +64,7 @@ See the [installation guide]({{ '/installation/' | relative_url }}) for manual s
 - [VPN Up vs. raw OpenConnect]({{ '/vs-openconnect/' | relative_url }}) — what the wrapper adds, and when to use each
 - [VPN Up vs. openconnect-sso]({{ '/vs-openconnect-sso/' | relative_url }}) — two AnyConnect SSO clients compared, fairly
 - [VPN Up vs. GlobalProtect-openconnect]({{ '/vs-globalprotect-openconnect/' | relative_url }}) — two GlobalProtect CLI clients compared
+- [VPN Up vs. NetworkManager-openconnect]({{ '/vs-networkmanager-openconnect/' | relative_url }}) — desktop NetworkManager plugin vs. standalone CLI
 
 ## Related articles
 

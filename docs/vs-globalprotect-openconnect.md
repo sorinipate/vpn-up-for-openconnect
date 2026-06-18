@@ -84,5 +84,6 @@ TOTP, or a client certificate** (file or PKCS#11 / YubiKey PIV), or want
 
 > Comparing other clients? See
 > [VPN Up vs. openconnect-sso]({{ '/vs-openconnect-sso/' | relative_url }}) (Cisco
-> AnyConnect SSO) and
-> [VPN Up vs. raw OpenConnect]({{ '/vs-openconnect/' | relative_url }}).
+> AnyConnect SSO),
+> [VPN Up vs. raw OpenConnect]({{ '/vs-openconnect/' | relative_url }}),
+> and [VPN Up vs. NetworkManager-openconnect]({{ '/vs-networkmanager-openconnect/' | relative_url }}).
