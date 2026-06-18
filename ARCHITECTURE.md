@@ -54,7 +54,7 @@ All modules are sourced by [vpn-up.command](vpn-up.command) in dependency order.
 | Module | Responsibility |
 |---|---|
 | **[vpn-up.command](vpn-up.command)** | Entry point. Bash≥4 guard, `set -u`, resolves `PROGRAM_NAME`/`PROGRAM_PATH`/`DATA_DIR`, one-time migration of legacy in-repo state, sources modules, and dispatches the subcommand `case`. Defines `DISPLAY_NAME` indirectly (via logging). |
-| **[logging.sh](logging.sh)** | Paths, print helpers (`print_primary/success/warning/danger`), portable `stat` wrappers (`file_owner_uid`, `file_mode` — GNU `-c` first, BSD `-f` fallback), `profile_slug`, per-profile path setup (`set_profile_paths`), PID helpers (`is_openconnect_pid`, `any_vpn_running`), `show_logs`. Defines `DISPLAY_NAME`. |
+| **[logging.sh](logging.sh)** | Paths, print helpers (`print_primary/success/warning/danger`), portable `stat` wrappers (`file_owner_uid`, `file_mode` — GNU `-c` first, BSD `-f` fallback), `profile_slug`, per-profile path helpers (`set_profile_paths`, `profile_*_file`, `profile_vpn_running`), PID helpers (`is_openconnect_pid`, `is_vpn_running`), `show_logs`. Defines `DISPLAY_NAME`. |
 | **[ui.sh](ui.sh)** | ASCII banner (`show_banner`, gated by `SHOW_BANNER` + TTY) and desktop notifications (`notify` → `osascript`/`notify-send`, gated by `NOTIFICATIONS`). |
 | **[dependencies.sh](dependencies.sh)** | `require_bin`, `check_dependencies`, `doctor`. Also `openconnect_major` / `require_openconnect_sso` (the openconnect ≥ 9.0 gate for SSO) and `require_oathtool` (the gate for TOTP). `doctor` also reports PKCS#11 (`p11-kit`) availability for client certs. |
 | **[encryption.sh](encryption.sh)** | Secret backend abstraction: `secrets_set/get/delete`, `secrets_backend` selection (macOS Keychain via `security -i` stdin; Linux Secret Service via `secret-tool`; OpenSSL AES-256-CBC + PBKDF2 vault fallback). Namespacing via `secrets_key`. |
@@ -101,8 +101,9 @@ appended last** to avoid shifting indices (`extraArgs` is index 10,
 
 ### 5.1 `start` → `connect` → `run_openconnect`
 1. **`start`** ensures config exists (else `setup_wizard`), loads it (`load_config`
-   after `assert_safe_to_source`), handles the no-profiles first-run, runs network +
-   already-running checks, then selects a profile (named or interactive menu).
+   after `assert_safe_to_source`), handles the no-profiles first-run, runs the
+   network check, then selects a profile (named or interactive menu). Different
+   profiles may run at the same time; a same-profile duplicate is refused.
 2. `load_profile_fields` populates shell vars. For non-SSO profiles,
    `migrate_or_fetch_password` retrieves the secret (migrating legacy plaintext).
 3. **`connect`** validates host/protocol, then branches on auth with precedence
@@ -133,8 +134,9 @@ appended last** to avoid shifting indices (`extraArgs` is index 10,
    - **Proxy:** an optional `proxy` URL is passed as `--proxy=` (an identifier, not a
      secret); `--proxy` is on the collision watch list.
    - Background daemonizes (`--background`); foreground/service/SSO stay attached and
-     the PID is captured via `pgrep` after a short delay (openconnect only writes
-     `--pid-file` when daemonizing). `notify` + `run_hooks` fire on connect/disconnect.
+     the PID is captured after a short delay by matching the openconnect argv to
+     this profile's `--pid-file` (openconnect only writes `--pid-file` when
+     daemonizing). `notify` + `run_hooks` fire on connect/disconnect.
 
 ### 5.2 Browser-command resolution (SSO)
 `resolve_external_browser`: `VPN_UP_EXTERNAL_BROWSER` override → bundled
@@ -186,10 +188,14 @@ unattended.
   a dependency and positional field loading (mitigated by append-only schema growth).
 - **Positional `mapfile` field loading** — fast and empty-field-safe (vs. `read -d`
   which collapses blank fields); requires new fields to be appended last.
-- **One connection at a time** — per-profile state files make `status`/`stop`/`logs`
-  accurate without the complexity of concurrent tunnels.
-- **Wrapper, foreground PID capture via `pgrep`** — openconnect writes `--pid-file` only
-  when daemonizing, so foreground/service/SSO sessions self-record after a short delay.
+- **Multiple simultaneous tunnels** — per-profile PID/state/log files let
+  `status`/`stop`/`logs` track each OpenConnect process independently. Starting the
+  same profile twice is refused, but different profiles can run side by side when
+  their gateway-pushed routes/DNS settings can coexist.
+- **Wrapper, foreground PID capture via argv matching** — openconnect writes
+  `--pid-file` only when daemonizing, so foreground/service/SSO sessions
+  self-record after a short delay by finding the openconnect process launched with
+  that profile's PID file.
 - **SSO forced foreground, no stdin pipe** — the single most important correctness
   detail for browser auth; the TTY must stay attached.
 - **TOTP generated client-side, fed on stdin** — the seed stays in the keychain and the

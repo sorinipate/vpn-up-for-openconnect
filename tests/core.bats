@@ -14,7 +14,27 @@ setup() {
   print_primary() { printf -- "$1" "${@:2}"; }
   notify() { :; }
   source "$BATS_TEST_DIRNAME/../logging.sh"
+  source "$BATS_TEST_DIRNAME/../profiles.sh"
   source "$BATS_TEST_DIRNAME/../core.sh"
+}
+
+_write_start_test_profiles() {
+  cat > "$PROFILES_FILE" <<'XML'
+<VPNs>
+  <VPN><name>Work VPN</name><protocol>anyconnect</protocol><host>work.example.com</host><user>alice</user><password></password></VPN>
+  <VPN><name>Lab VPN</name><protocol>gp</protocol><host>lab.example.com</host><user>bob</user><password></password></VPN>
+</VPNs>
+XML
+}
+
+_write_start_test_config() {
+  cat > "$CONFIGURATION_FILE" <<'EOF'
+BACKGROUND=FALSE
+QUIET=TRUE
+SHOW_BANNER=FALSE
+NOTIFICATIONS=FALSE
+EOF
+  chmod 600 "$CONFIGURATION_FILE"
 }
 
 # --- assert_safe_to_source ---
@@ -62,6 +82,54 @@ setup() {
   [[ "$output" == *"not running"* ]]
   [ ! -e "$DATA_DIR/pids/${PROGRAM_NAME}.Stale.pid" ]
   [ ! -e "$DATA_DIR/pids/${PROGRAM_NAME}.Stale.state" ]
+}
+
+# --- start concurrency guard ---
+
+@test "start allows a different profile while another tunnel is running" {
+  _write_start_test_profiles
+  _write_start_test_config
+  echo 111 > "$DATA_DIR/pids/${PROGRAM_NAME}.Work_VPN.pid"
+  is_openconnect_pid() { [ "$1" = "111" ]; }
+  is_network_available() { return 0; }
+  show_banner() { :; }
+  migrate_or_fetch_password() { :; }
+  connect() { printf 'connected:%s\n' "$VPN_NAME"; }
+
+  run start "Lab VPN"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"connected:Lab VPN"* ]]
+}
+
+@test "start refuses a profile that is already running" {
+  _write_start_test_profiles
+  _write_start_test_config
+  echo 111 > "$DATA_DIR/pids/${PROGRAM_NAME}.Work_VPN.pid"
+  is_openconnect_pid() { [ "$1" = "111" ]; }
+  is_network_available() { return 0; }
+  show_banner() { :; }
+  migrate_or_fetch_password() { echo "migrate-called"; }
+  connect() { echo "connect-called"; }
+
+  run start "Work VPN"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"already running"* ]]
+  [[ "$output" != *"migrate-called"* ]]
+  [[ "$output" != *"connect-called"* ]]
+}
+
+@test "_openconnect_pid_for_pid_file matches the openconnect process with that pid file" {
+  ps() {
+    cat <<EOF
+ 100 openconnect --user=a --pid-file /tmp/a.pid vpn-a.example.com
+ 200 /usr/sbin/openconnect --user=b --pid-file /tmp/b.pid vpn-b.example.com
+ 300 sudo openconnect --user=b --pid-file /tmp/b.pid vpn-b.example.com
+EOF
+  }
+
+  run _openconnect_pid_for_pid_file "/tmp/b.pid"
+  [ "$status" -eq 0 ]
+  [ "$output" = "200" ]
 }
 
 # --- stop ---

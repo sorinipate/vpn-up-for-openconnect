@@ -38,14 +38,14 @@ VPN is running (PID: 88933)
 
 ---
 
-**VPN Up** is a secure, scriptable command-line VPN manager for [OpenConnect](https://www.infradead.org/openconnect/). It connects macOS and Linux machines to **Cisco AnyConnect**, Palo Alto **GlobalProtect**, **Pulse Secure**, **Juniper Network Connect**, and **ocserv** gateways straight from the terminal — with named profiles, Duo 2FA, certificate pinning, secure secret storage, auto-reconnect, and shell completion.
+**VPN Up** is a secure, scriptable command-line VPN manager for [OpenConnect](https://www.infradead.org/openconnect/). It connects macOS and Linux machines to **Cisco AnyConnect**, Palo Alto **GlobalProtect**, **Pulse Secure**, **Juniper Network Connect**, and **ocserv** gateways straight from the terminal — with named profiles, simultaneous tunnels, Duo 2FA, certificate pinning, secure secret storage, auto-reconnect, and shell completion.
 
 It's built for developers, consultants, DevOps engineers, and remote workers who'd rather drive their VPN from the command line than a vendor GUI.
 
 ## ❓ Why use VPN Up?
 
 - Connect to Cisco AnyConnect-compatible VPNs without the official GUI client
-- Manage multiple OpenConnect VPN profiles and connect by name (`vpn-up start "Work VPN"`)
+- Manage multiple OpenConnect VPN profiles, connect by name, and run compatible profiles side by side (`vpn-up start "Work VPN"`)
 - Use **Duo 2FA** from the command line — push, phone, SMS, or one-time passcode
 - Store VPN secrets in the macOS **Keychain**, Linux **Secret Service**, or an encrypted OpenSSL vault — never in plaintext config files
 - Run VPN connections as **launchd/systemd login services** with auto-reconnect
@@ -58,7 +58,7 @@ VPN Up is useful if you:
 - Use OpenConnect instead of vendor VPN clients
 - Connect to Cisco AnyConnect, GlobalProtect, Pulse Secure, Juniper, or ocserv VPNs
 - Want a terminal-first VPN workflow on macOS or Linux
-- Juggle multiple client VPN profiles on one machine
+- Juggle multiple client VPN profiles on one machine, including simultaneous tunnels when their routes can coexist
 - Need Duo 2FA support from the command line
 - Want secure password storage without plaintext config files
 - Want VPN auto-reconnect at login via launchd or systemd
@@ -95,7 +95,7 @@ VPN Up is useful if you:
 
 ### Connect
 - **Four SSL VPN protocols** via [OpenConnect](https://www.infradead.org/openconnect/): Cisco **AnyConnect** (and ocserv), Juniper **Network Connect**, Palo Alto **GlobalProtect**, and **Pulse Secure**
-- **Multiple VPN profiles** — pick from an interactive menu or connect by name with zero prompts (`vpn-up start "Work VPN"`), with full **AuthGroup/realm** support
+- **Multiple VPN profiles and tunnels** — pick from an interactive menu or connect by name with zero prompts (`vpn-up start "Work VPN"`), with full **AuthGroup/realm** support; compatible profiles can stay connected at the same time
 - **Duo 2FA** — `push`, `phone`, `sms`, or one-time passcodes prompted at connect time; empty method lets the gateway auto-push
 - **TOTP authenticator-app 2FA** — store the seed once and `vpn-up` generates the code at connect time (via `oathtool`); fully non-interactive, so it works as an auto-reconnecting login service
 - **SSO / external-browser login** — for gateways that force a browser-based SAML/SSO flow (Okta, Azure AD, Ping Identity, often with an embedded Duo iframe), via OpenConnect's `--external-browser` (needs openconnect ≥ 9.0). Because the login runs in your **real** browser, **passkeys / FIDO2 / YubiKey-WebAuthn work automatically**
@@ -109,7 +109,7 @@ VPN Up is useful if you:
 - **Isolated user data** — config, profiles, secrets, and logs live in `~/.config/vpn-up` with `600`/`700` permissions, untouched by updates or reinstalls
 
 ### Operate
-- **Profile-aware lifecycle** — `status` shows profile, gateway, and uptime; `stop` and `logs -f` target a specific connection
+- **Profile-aware lifecycle** — `status` shows every running tunnel with profile, gateway, and uptime; `stop` and `logs -f` target a specific connection
 - **Login service with auto-reconnect** — launchd (macOS) / systemd (Linux) supervision; reconnects when the tunnel drops
 - **Lifecycle hooks** — run your own scripts on connect/disconnect (mount shares, switch proxies)
 - **Desktop notifications** on connect/disconnect (Notification Center / `notify-send`)
@@ -226,12 +226,12 @@ vpn-up start "Frankfurt VPN"       # connect directly (scriptable)
 vpn-up list                        # list configured profiles
 vpn-up add-profile                 # guided profile creation (+ secret, + pin)
 vpn-up remove-profile "Old VPN"    # remove profile + secret + logs + service
-vpn-up status                      # profile, gateway, uptime
+vpn-up status                      # all running profiles, gateways, uptime
 vpn-up logs -f                     # follow the connection log
-vpn-up stop                        # stop the VPN (or: stop "Frankfurt VPN")
+vpn-up stop                        # stop all VPNs (or: stop "Frankfurt VPN")
 ```
 
-Each profile keeps its own log and PID/state files under `~/.config/vpn-up`, so `status`, `stop`, and `logs` are profile-aware.
+Each profile keeps its own log and PID/state files under `~/.config/vpn-up`, so `status`, `stop`, and `logs` are profile-aware. You can connect multiple different profiles at once; starting the same profile twice is refused. Whether two tunnels coexist cleanly still depends on the routes and DNS settings pushed by their gateways — split-tunnel or non-overlapping routes are the safest fit.
 
 ### TOTP authenticator-app 2FA
 
@@ -458,11 +458,10 @@ Supported tag aliases: `username`/`user`, `group`/`authGroup`, `duoMethod`/`duo2
 **Under consideration** (open an issue if you need one of these):
 
 - Yubikey OATH (HOTP) token support (TOTP authenticator codes are already supported — see [TOTP authenticator-app 2FA](#totp-authenticator-app-2fa) — as is a Yubikey **PIV client certificate** via [client-certificate authentication](#client-certificate-authentication))
-- Multiple simultaneous tunnels (per-profile state files already lay the groundwork)
 
 **Explicitly out of scope:** Windows support, GUI, and **RSA SecurID** — importing a SecurID token requires passing the token secret to openconnect on the command line (`--token-secret`), which would break VPN Up's rule of never putting secrets in argv (the same reason TOTP is fed on stdin rather than via `--token-secret`).
 
-**Known behavior:** some AnyConnect gateways emit an initial `Unexpected 404 result from server` — this is benign if the connection proceeds successfully.
+**Known behavior:** some AnyConnect gateways emit an initial `Unexpected 404 result from server` — this is benign if the connection proceeds successfully. Simultaneous full-tunnel VPNs can also fight over the default route or DNS. VPN Up tracks and controls each OpenConnect process independently, but OpenConnect and the VPN gateways still own route/DNS installation.
 
 ---
 

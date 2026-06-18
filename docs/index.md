@@ -41,7 +41,7 @@ See the [installation guide]({{ '/installation/' | relative_url }}) for manual s
 ## Why VPN Up?
 
 - Connect to Cisco AnyConnect-compatible VPNs **without the vendor GUI client**
-- Manage **multiple VPN profiles** and connect by name (`vpn-up start "Work"`)
+- Manage **multiple VPN profiles**, connect by name, and run compatible tunnels side by side (`vpn-up start "Work"`)
 - **Duo 2FA** from the command line — push, phone, SMS, or one-time passcode
 - **Browser-based SSO** (Okta, Azure AD, Ping Identity) for gateways that force an external browser login
 - Secrets in the macOS **Keychain**, Linux **Secret Service**, or an encrypted vault — never plaintext

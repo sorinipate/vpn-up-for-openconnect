@@ -25,19 +25,36 @@ file_mode()      { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/nu
 # Point the PID/LOG/STATE globals at a specific profile's files.
 # shellcheck disable=SC2034  # globals are consumed by core.sh
 set_profile_paths() {
-  local slug; slug="$(profile_slug "$1")"
-  PID_FILE_PATH="${DATA_DIR}/pids/${PROGRAM_NAME}.${slug}.pid"
-  STATE_FILE_PATH="${DATA_DIR}/pids/${PROGRAM_NAME}.${slug}.state"
-  LOG_FILE_PATH="${DATA_DIR}/logs/${PROGRAM_NAME}.${slug}.log"
+  PID_FILE_PATH="$(profile_pid_file "$1")"
+  STATE_FILE_PATH="$(profile_state_file "$1")"
+  LOG_FILE_PATH="$(profile_log_file "$1")"
 }
 
-# True if any PID file (legacy or per-profile) points at a live openconnect.
-any_vpn_running() {
-  local f
-  for f in "${DATA_DIR}/pids/"*.pid; do
-    [ -e "$f" ] || continue
-    is_openconnect_pid "$(cat "$f")" && return 0
-  done
+profile_pid_file() {
+  local slug; slug="$(profile_slug "$1")"
+  printf '%s/pids/%s.%s.pid' "$DATA_DIR" "$PROGRAM_NAME" "$slug"
+}
+
+profile_state_file() {
+  local slug; slug="$(profile_slug "$1")"
+  printf '%s/pids/%s.%s.state' "$DATA_DIR" "$PROGRAM_NAME" "$slug"
+}
+
+profile_log_file() {
+  local slug; slug="$(profile_slug "$1")"
+  printf '%s/logs/%s.%s.log' "$DATA_DIR" "$PROGRAM_NAME" "$slug"
+}
+
+profile_vpn_running() {
+  local pidfile statefile pid
+  pidfile="$(profile_pid_file "$1")"
+  statefile="$(profile_state_file "$1")"
+  [ -f "$pidfile" ] || return 1
+  pid="$(cat "$pidfile" 2>/dev/null || true)"
+  if is_openconnect_pid "$pid"; then
+    return 0
+  fi
+  rm -f "$pidfile" "$statefile"
   return 1
 }
 

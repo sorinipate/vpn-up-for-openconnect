@@ -3,7 +3,8 @@ layout: page
 title: Usage
 description: >-
   Connect to a VPN from the command line with VPN Up: named profiles, status,
-  stop, logs, certificate pinning, login service with auto-reconnect, and hooks.
+  stop, logs, simultaneous tunnels, certificate pinning, login service with
+  auto-reconnect, and hooks.
 permalink: /usage/
 ---
 
@@ -28,14 +29,17 @@ vpn-up start "Frankfurt VPN"       # connect directly (scriptable)
 vpn-up list                        # list configured profiles (name, protocol, host, 2FA, auth)
 vpn-up add-profile                 # guided profile creation
 vpn-up remove-profile "Old VPN"    # remove profile + secret + logs + service
-vpn-up status                      # profile, gateway, uptime
+vpn-up status                      # all running profiles, gateways, uptime
 vpn-up logs -f                     # follow the connection log
-vpn-up stop                        # stop the VPN (or: stop "Frankfurt VPN")
+vpn-up stop                        # stop all VPNs (or: stop "Frankfurt VPN")
 vpn-up doctor                      # diagnose environment & secret backend
 ```
 
 Each profile keeps its own log and PID/state files under `~/.config/vpn-up`, so
-`status`, `stop`, and `logs` are profile-aware.
+`status`, `stop`, and `logs` are profile-aware. Multiple different profiles can
+be connected at the same time; starting the same profile twice is refused. Route
+and DNS compatibility still depends on what each gateway pushes, so split-tunnel
+or non-overlapping routes are the safest simultaneous setup.
 
 ## Secure secret storage
 
