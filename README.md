@@ -3,7 +3,7 @@
 > Secure, scriptable command-line VPN client for Cisco AnyConnect and other SSL VPNs, built on OpenConnect — for macOS & Linux.
 
 [![CI](https://github.com/sorinipate/vpn-up-for-openconnect/actions/workflows/ci.yml/badge.svg)](https://github.com/sorinipate/vpn-up-for-openconnect/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/release-v3.9.1-blue)](https://github.com/sorinipate/vpn-up-for-openconnect/releases/latest)
+[![Release](https://img.shields.io/badge/release-v3.9.2-blue)](https://github.com/sorinipate/vpn-up-for-openconnect/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-online-blue)](https://sorinipate.github.io/vpn-up-for-openconnect/)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue)

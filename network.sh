@@ -30,6 +30,7 @@ verify_gateway_cert() {
 pin_save() {
   local profile="$1"
   check_file_existence "$PROFILES_FILE" "Profiles"
+  profiles_xml_ok || return 1
   if ! profile_exists "$profile"; then
     print_danger "Unknown profile '%s'.\n" "$profile"
     return 1

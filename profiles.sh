@@ -12,6 +12,21 @@ xpath_literal() {
   printf "concat('%s')" "${s//\'/${rep}}"
 }
 
+# Verify the profiles file is well-formed XML. A missing file is treated as OK
+# (first-run handling and check_file_existence deal with absence separately). On
+# malformed XML, print ONE clear message — never the raw libxml2 parser noise —
+# and return 1, so callers can bail gracefully instead of leaking errors or
+# misreading the file as "no profiles". Reused by every command that reads it.
+profiles_xml_ok() {
+  [ -f "$PROFILES_FILE" ] || return 0
+  if ! xmlstarlet val "$PROFILES_FILE" >/dev/null 2>&1; then
+    print_danger "Your profiles file isn't valid XML, so it can't be read: %s\n" "$PROFILES_FILE"
+    print_warning "Edit it to fix the XML (a common cause is an XML comment containing a double hyphen), or recreate a profile with '%s add-profile'.\n" "${DISPLAY_NAME}"
+    return 1
+  fi
+  return 0
+}
+
 # shellcheck disable=SC2034  # fields are consumed by core.sh
 load_profile_fields() {
   local selection="$1"
@@ -108,7 +123,8 @@ migrate_or_fetch_password() {
 }
 
 list_profile_names() {
-  IFS=$'\n' read -d '' -r -a vpn_names < <(xmlstarlet sel -t -m "//VPN" -v "name" -n "$PROFILES_FILE")
+  profiles_xml_ok || return 1
+  IFS=$'\n' read -d '' -r -a vpn_names < <(xmlstarlet sel -t -m "//VPN" -v "name" -n "$PROFILES_FILE" 2>/dev/null)
   vpn_names+=("Quit")
   printf "%s\n" "${vpn_names[@]}"
 }
@@ -127,6 +143,7 @@ profile_exists() {
 # Tabular overview of all profiles (no secrets shown).
 list_profiles() {
   check_file_existence "$PROFILES_FILE" "Profiles"
+  profiles_xml_ok || return 1
   xmlstarlet sel -t -m '//VPN' \
       -v name -o $'\t' \
       -v protocol -o $'\t' \

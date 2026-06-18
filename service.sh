@@ -92,6 +92,7 @@ UNIT
 # Sanity checks before installing a service for a profile.
 _service_preflight() {
   local profile="$1"
+  profiles_xml_ok || return 1
   if ! profile_exists "$profile"; then
     print_danger "Unknown profile '%s'.\n" "$profile"
     return 1
