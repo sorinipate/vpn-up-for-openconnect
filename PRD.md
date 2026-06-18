@@ -16,7 +16,7 @@ Linux users connect to Cisco AnyConnect, Palo Alto GlobalProtect, Pulse Secure,
 Juniper Network Connect, and ocserv gateways from the terminal — with named
 profiles, Duo 2FA, TOTP authenticator codes, browser-based SSO, client-certificate
 auth (incl. PKCS#11 smartcards / YubiKey PIV), certificate pinning, secure secret
-storage, auto-reconnect, and shell completion.
+storage, multiple simultaneous tunnels, auto-reconnect, and shell completion.
 
 It is a *wrapper*, not a fork: OpenConnect does the tunnelling; VPN Up provides the
 profile management, credential hygiene, and lifecycle ergonomics that raw
@@ -54,7 +54,8 @@ upgrades. There is a gap for a **terminal-first, secure, scriptable** front end.
 - **Never** store or expose credentials in plaintext, argv, or child-process environments.
 - Support the **authentication methods real gateways use**: password, Duo 2FA
   (push/phone/sms/passcode), TOTP authenticator codes, and browser-based SAML/SSO.
-- Provide **lifecycle ergonomics**: status, stop, logs, restart, auto-reconnect at login.
+- Provide **lifecycle ergonomics**: status, stop, logs, restart, simultaneous
+  compatible tunnels, auto-reconnect at login.
 - Be **safe by default** (fail-closed server identity) and **auditable** (small, modular Bash).
 - Run identically on **macOS and Linux**.
 
@@ -62,8 +63,6 @@ upgrades. There is a gap for a **terminal-first, secure, scriptable** front end.
 - **Windows support** — explicitly out of scope.
 - **A GUI** — terminal-first by design.
 - **Replacing OpenConnect** — VPN Up orchestrates it; it does not reimplement tunnelling.
-- **Multiple simultaneous tunnels** — one active connection at a time (per-profile
-  state files make bookkeeping accurate, not the tunnels concurrent). Under consideration.
 
 ## 4. Target users & personas
 
@@ -78,7 +77,9 @@ upgrades. There is a gap for a **terminal-first, secure, scriptable** front end.
 
 - *As a developer*, I run `vpn-up start "Work"` and I'm connected after a single Duo
   push — no password typed, no command to remember.
-- *As a consultant*, I keep five client profiles and pick one from a menu (`vpn-up start`).
+- *As a consultant*, I keep five client profiles, pick one from a menu
+  (`vpn-up start`), and keep two compatible client tunnels up when their routes do
+  not overlap.
 - *As an SSO user*, I mark a profile `authMode=sso`, and `vpn-up start` opens my
   browser for the Okta/Azure/Ping + Duo login, then the tunnel comes up.
 - *As a remote worker*, I run `vpn-up service install "Work"` so the VPN connects at
@@ -131,6 +132,10 @@ upgrades. There is a gap for a **terminal-first, secure, scriptable** front end.
   (launchd on macOS, systemd user unit on Linux). SSO and passcode profiles are refused (interactive).
 - **FR-15** Lifecycle hooks: user scripts in `hooks/connected.d` / `hooks/disconnected.d`,
   run with `VPN_EVENT`/`VPN_NAME`/`VPN_HOST` (never the password), skipped unless safely owned.
+- **FR-24** Multiple simultaneous tunnels: different profiles can be connected
+  at the same time, with per-profile PID/state/log files. Starting the same
+  profile twice is refused. Route and DNS compatibility remains governed by
+  OpenConnect and gateway-pushed settings.
 
 ### 6.4 Management & diagnostics
 - **FR-16** Guided `setup` wizard and `add-profile` / `remove-profile` (handle XML, secrets, pins, services).
@@ -170,7 +175,10 @@ upgrades. There is a gap for a **terminal-first, secure, scriptable** front end.
 
 ## 9. Out of scope / explicit limitations
 
-- Windows; GUI; concurrent multi-tunnel.
+- Windows; GUI.
+- Simultaneous full-tunnel VPNs can conflict over the default route or DNS. VPN Up
+  manages each OpenConnect process independently, but OpenConnect and the gateways
+  still own route/DNS installation.
 - SSO under a non-interactive login service (requires a desktop session).
 - SSO on the `nc` protocol (unsupported by OpenConnect).
 - On Linux, a root-spawned SSO browser may not reach the desktop session (mitigated by
@@ -192,7 +200,6 @@ upgrades. There is a gap for a **terminal-first, secure, scriptable** front end.
 - Yubikey OATH (HOTP) token support (TOTP shipped in v3.8.0; PKCS#11 client
   certificates, incl. Yubikey PIV, shipped in v3.9.0). *RSA SecurID is out of scope —
   see §9.*
-- Multiple simultaneous tunnels (per-profile state already lays the groundwork).
 
 ## 11. Release & distribution
 

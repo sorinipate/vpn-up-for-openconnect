@@ -5,6 +5,22 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ---
 
+## [Unreleased]
+### Added
+
+- **Multiple simultaneous tunnels**. `vpn-up start` now allows different profiles
+  to run side by side using the existing per-profile PID/state/log layout, while
+  still refusing to start the same profile twice. `status`, `stop [profile]`, and
+  `logs [profile]` remain profile-aware.
+
+### Changed
+
+- Foreground, service, and SSO sessions now record their PID by matching the
+  openconnect process launched with that profile's `--pid-file`, instead of
+  assuming the newest openconnect process belongs to the current start command.
+
+---
+
 ## [v3.10.0] — 2026-06-18
 ### Added
 

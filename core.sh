@@ -51,6 +51,15 @@ load_config() {
   source "$CONFIGURATION_FILE"
 }
 
+ensure_profile_not_running() {
+  set_profile_paths "$VPN_NAME"
+  if profile_vpn_running "$VPN_NAME"; then
+    print_warning "VPN profile '%s' is already running. Run '%s status' or '%s stop \"%s\"' first.\n" "${VPN_NAME}" "${DISPLAY_NAME}" "${DISPLAY_NAME}" "${VPN_NAME}"
+    return 1
+  fi
+  return 0
+}
+
 start() {
   local requested="${1:-}"
   # Ensure config exists or run wizard
@@ -100,11 +109,6 @@ start() {
     exit 1
   fi
 
-  if any_vpn_running; then
-    print_warning "Already connected to a VPN! Run '%s status' or '%s stop' first.\n" "${DISPLAY_NAME}" "${DISPLAY_NAME}"
-    exit 1
-  fi
-
   print_primary "Starting ${DISPLAY_NAME} ...\n"
 
   if [ -n "$requested" ]; then
@@ -115,6 +119,7 @@ start() {
       exit 1
     fi
     load_profile_fields "$requested"
+    ensure_profile_not_running || exit 1
     if [ "${VPN_AUTH_MODE:-password}" != sso ]; then
       migrate_or_fetch_password || exit 1
     fi
@@ -130,6 +135,9 @@ start() {
       fi
       if printf "%s\n" "${vpn_names[@]}" | grep -qx -- "$option"; then
         load_profile_fields "$option"
+        if ! ensure_profile_not_running; then
+          continue
+        fi
         if [ "${VPN_AUTH_MODE:-password}" != sso ]; then
           migrate_or_fetch_password || exit 1
         fi
@@ -405,6 +413,34 @@ _append_pkcs11_pin_source() {
   printf '%s%spin-source=file:%s' "$uri" "$sep" "$pinfile"
 }
 
+_openconnect_pid_for_pid_file() {
+  local pidfile="$1"
+  { ps axww -o pid= -o command= 2>/dev/null || ps -eo pid= -o args= 2>/dev/null; } \
+    | awk -v pidfile="$pidfile" '
+        {
+          exe = $2
+          sub(/^.*\//, "", exe)
+          if (exe == "openconnect" && index($0, "--pid-file") && index($0, pidfile)) {
+            pid = $1
+          }
+        }
+        END { if (pid != "") print pid }
+      '
+}
+
+_record_foreground_openconnect_pid() {
+  (
+    sleep 3
+    local _pid
+    _pid="$(_openconnect_pid_for_pid_file "$PID_FILE_PATH")"
+    if [ -n "$_pid" ]; then
+      printf '%s\n' "$_pid" > "$PID_FILE_PATH"
+      notify "VPN Up" "Connected to ${VPN_NAME}"
+      run_hooks connected "${VPN_NAME}" "${VPN_HOST}"
+    fi
+  ) &
+}
+
 # Warn (but don't block) when a user-supplied extra arg duplicates a flag that
 # vpn-up already manages — overriding these can break connection or status/stop.
 _warn_extra_arg_collisions() {
@@ -515,14 +551,7 @@ run_openconnect() {
     # NOTHING on stdin. Always foreground; capture the PID the same way as the
     # foreground password path so status/stop work during the session.
     write_connection_state
-    ( sleep 3
-      _pid="$(pgrep -n -x openconnect 2>/dev/null || true)"
-      if [ -n "$_pid" ]; then
-        printf '%s\n' "$_pid" > "$PID_FILE_PATH"
-        notify "VPN Up" "Connected to ${VPN_NAME}"
-        run_hooks connected "${VPN_NAME}" "${VPN_HOST}"
-      fi
-    ) &
+    _record_foreground_openconnect_pid
     sudo openconnect "${args[@]}" 2>&1 | tee -a "$LOG_FILE_PATH"
     rm -f "$PID_FILE_PATH" "$STATE_FILE_PATH"
     notify "VPN Up" "Disconnected from ${VPN_NAME:-VPN}"
@@ -539,14 +568,7 @@ run_openconnect() {
     # record the PID ourselves (after the tunnel has had time to come up) so
     # status/stop work during a foreground/service session.
     write_connection_state
-    ( sleep 3
-      _pid="$(pgrep -n -x openconnect 2>/dev/null || true)"
-      if [ -n "$_pid" ]; then
-        printf '%s\n' "$_pid" > "$PID_FILE_PATH"
-        notify "VPN Up" "Connected to ${VPN_NAME}"
-        run_hooks connected "${VPN_NAME}" "${VPN_HOST}"
-      fi
-    ) &
+    _record_foreground_openconnect_pid
     printf "%s\n" "$stdin_lines" \
       | sudo openconnect "${args[@]}" 2>&1 | tee -a "$LOG_FILE_PATH"
     # Foreground session over (disconnect or failure): clean our records.
