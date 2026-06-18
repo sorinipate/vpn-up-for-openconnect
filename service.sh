@@ -105,7 +105,11 @@ _service_preflight() {
   if ! sudo -n -v 2>/dev/null; then
     print_warning "No passwordless sudo detected. Service mode requires a sudoers rule for openconnect (see README); the service will fail until it exists.\n"
   fi
-  if [ -z "$(secrets_get "$profile" "password" 2>/dev/null)" ]; then
+  local clientcert
+  clientcert="$(xmlstarlet sel -t -m "//VPN[name=$(xpath_literal "$profile")]" -v 'clientCertificate | clientcertificate' "$PROFILES_FILE" 2>/dev/null)"
+  # A cert-only profile needs no stored password, so only warn about a missing
+  # password when there is no client certificate to authenticate with.
+  if [ -z "$clientcert" ] && [ -z "$(secrets_get "$profile" "password" 2>/dev/null)" ]; then
     print_warning "No stored password for '%s'. Store one first: %s set-secret '%s' password\n" "$profile" "${DISPLAY_NAME}" "$profile"
   fi
   local duo
@@ -124,6 +128,21 @@ _service_preflight() {
       return 1
     fi
     command -v oathtool >/dev/null 2>&1 || print_warning "'oathtool' not found; the TOTP service will fail until it's installed (brew install oath-toolkit | apt-get install oathtool).\n"
+  fi
+  # Client-certificate auth works as a service only when no interactive prompt is
+  # needed. A PKCS#11 token needs a stored PIN (key_password); a file-based key
+  # must be unencrypted (a passphrase prompt has no TTY under launchd/systemd).
+  if [ -n "$clientcert" ]; then
+    case "$clientcert" in
+      pkcs11:*)
+        if [ -z "$(secrets_get "$profile" "key_password" 2>/dev/null)" ]; then
+          print_warning "Profile '%s' uses a PKCS#11 client certificate; a service can't enter the PIN. Store it first: %s set-secret '%s' key_password\n" "$profile" "${DISPLAY_NAME}" "$profile"
+        fi
+        ;;
+      *)
+        print_warning "Profile '%s' uses a client-certificate file. If the private key is passphrase-protected it cannot run as a service (no TTY to prompt); use an unencrypted 0600 key.\n" "$profile"
+        ;;
+    esac
   fi
   return 0
 }

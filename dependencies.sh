@@ -86,6 +86,13 @@ doctor() {
   else
     echo "  [..] oathtool not found (needed only for TOTP 2FA: brew install oath-toolkit | apt-get install oathtool)"
   fi
+  # PKCS#11 (p11-kit / GnuTLS) lets openconnect use a client certificate from a
+  # smartcard / YubiKey PIV; file-based client certs need nothing extra.
+  if command -v p11tool >/dev/null 2>&1 || command -v p11-kit >/dev/null 2>&1; then
+    echo "  [OK] PKCS#11 tooling present (smartcard / YubiKey-PIV client certificates)"
+  else
+    echo "  [..] p11-kit/p11tool not found (needed only for PKCS#11 client certs: brew install p11-kit | apt-get install p11-kit; file-based client certs work without it)"
+  fi
   if [ "$(uname)" = "Darwin" ]; then
     if command -v security >/dev/null 2>&1; then echo "  [OK] security (Keychain)"; else echo "  [!!] security missing"; fi
   else

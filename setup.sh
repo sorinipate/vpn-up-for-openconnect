@@ -60,7 +60,7 @@ CFG
 # Append a <VPN> block to the profiles file (password stays empty — secrets
 # belong in the secrets backend, set separately).
 append_profile() {
-  local name="$1" proto="$2" host="$3" group="$4" user="$5" duo="$6" authmode="${7:-password}" tokenmode="${8:-}" extraargs="${9:-}"
+  local name="$1" proto="$2" host="$3" group="$4" user="$5" duo="$6" authmode="${7:-password}" tokenmode="${8:-}" extraargs="${9:-}" clientcert="${10:-}" clientkey="${11:-}"
   local tmp="${PROFILES_FILE}.tmp"
   xmlstarlet ed \
     -s '/VPNs' -t elem -n VPN -v '' \
@@ -75,6 +75,8 @@ append_profile() {
     -s '/VPNs/VPN[last()]' -t elem -n authMode -v "$authmode" \
     -s '/VPNs/VPN[last()]' -t elem -n tokenMode -v "$tokenmode" \
     -s '/VPNs/VPN[last()]' -t elem -n extraArgs -v "$extraargs" \
+    -s '/VPNs/VPN[last()]' -t elem -n clientCertificate -v "$clientcert" \
+    -s '/VPNs/VPN[last()]' -t elem -n clientKey -v "$clientkey" \
     "${PROFILES_FILE}" > "${tmp}" && mv "${tmp}" "${PROFILES_FILE}" && chmod 600 "${PROFILES_FILE}"
 }
 
@@ -83,7 +85,7 @@ add_profile_wizard() {
     ( umask 077; printf '<VPNs>\n</VPNs>\n' > "$PROFILES_FILE" )
   fi
 
-  local name proto host group user duo authmode tokenmode extraargs
+  local name proto host group user duo authmode tokenmode extraargs clientcert clientkey
   read -r -p "Profile name: " name
   [ -n "$name" ] || { print_danger "Profile name is required.\n"; return 1; }
   if profile_exists "$name"; then
@@ -138,17 +140,43 @@ add_profile_wizard() {
     esac
   fi
 
+  # Client-certificate auth (optional): a file path or a PKCS#11 URI (smartcard /
+  # YubiKey PIV). Additive — it works alongside any auth mode, including SSO.
+  clientcert=""; clientkey=""
+  read -r -p "Client certificate (file path or pkcs11: URI, optional): " clientcert
+  if [ -n "$clientcert" ]; then
+    read -r -p "Client key (file path or pkcs11: URI; empty if in the cert): " clientkey
+    case "$clientcert" in
+      pkcs11:*)
+        local _in_pin=""
+        read -r -p "Store the PKCS#11 PIN now (needed for a login service)? [y/N]: " _in_pin
+        if [ "$(_bool_default "${_in_pin}" "FALSE")" = TRUE ]; then
+          local _pin
+          read -r -s -p "Enter the PKCS#11 PIN: " _pin; echo
+          [ -n "$_pin" ] && secrets_set "$name" "key_password" "$_pin" && print_success "PKCS#11 PIN stored securely.\n"
+          unset _pin
+        fi
+        ;;
+      *)
+        print_warning "If the key is passphrase-protected, openconnect will prompt for it at connect time (foreground only).\n" ;;
+    esac
+  fi
+
   # Advanced (optional): extra openconnect flags passed verbatim at connect time.
   extraargs=""
   read -r -p "Extra openconnect arguments (advanced, optional): " extraargs
 
-  append_profile "$name" "$proto" "$host" "$group" "$user" "$duo" "$authmode" "$tokenmode" "$extraargs" \
+  append_profile "$name" "$proto" "$host" "$group" "$user" "$duo" "$authmode" "$tokenmode" "$extraargs" "$clientcert" "$clientkey" \
     || { print_danger "Failed to update %s\n" "$PROFILES_FILE"; return 1; }
   print_success "Added profile '%s' to %s\n" "$name" "$PROFILES_FILE"
 
   if [ "$authmode" != sso ]; then
-    read -r -p "Store the VPN password now? [Y/n]: " _in_pw
-    if [ "$(_bool_default "${_in_pw}" "TRUE")" = TRUE ]; then
+    # Cert-only gateways need no password, so default to "no" when a client
+    # certificate is configured; otherwise default to "yes".
+    local _pw_default="TRUE" _pw_hint="[Y/n]"
+    if [ -n "$clientcert" ]; then _pw_default="FALSE"; _pw_hint="[y/N]"; fi
+    read -r -p "Store the VPN password now? ${_pw_hint}: " _in_pw
+    if [ "$(_bool_default "${_in_pw}" "${_pw_default}")" = TRUE ]; then
       local _p
       read -r -s -p "Enter password for ${user}@${host}: " _p; echo
       [ -n "$_p" ] && secrets_set "$name" "password" "$_p" && print_success "Password stored securely.\n"

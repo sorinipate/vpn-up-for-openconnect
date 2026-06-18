@@ -3,7 +3,7 @@
 > Secure, scriptable command-line VPN client for Cisco AnyConnect and other SSL VPNs, built on OpenConnect — for macOS & Linux.
 
 [![CI](https://github.com/sorinipate/vpn-up-for-openconnect/actions/workflows/ci.yml/badge.svg)](https://github.com/sorinipate/vpn-up-for-openconnect/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/badge/release-v3.8.0-blue)](https://github.com/sorinipate/vpn-up-for-openconnect/releases/latest)
+[![Release](https://img.shields.io/badge/release-v3.9.0-blue)](https://github.com/sorinipate/vpn-up-for-openconnect/releases/latest)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Docs](https://img.shields.io/badge/docs-online-blue)](https://sorinipate.github.io/vpn-up-for-openconnect/)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-blue)
@@ -98,7 +98,8 @@ VPN Up is useful if you:
 - **Multiple VPN profiles** — pick from an interactive menu or connect by name with zero prompts (`vpn-up start "Work VPN"`), with full **AuthGroup/realm** support
 - **Duo 2FA** — `push`, `phone`, `sms`, or one-time passcodes prompted at connect time; empty method lets the gateway auto-push
 - **TOTP authenticator-app 2FA** — store the seed once and `vpn-up` generates the code at connect time (via `oathtool`); fully non-interactive, so it works as an auto-reconnecting login service
-- **SSO / external-browser login** — for gateways that force a browser-based SAML/SSO flow (Okta, Azure AD, Ping Identity, often with an embedded Duo iframe), via OpenConnect's `--external-browser` (needs openconnect ≥ 9.0)
+- **SSO / external-browser login** — for gateways that force a browser-based SAML/SSO flow (Okta, Azure AD, Ping Identity, often with an embedded Duo iframe), via OpenConnect's `--external-browser` (needs openconnect ≥ 9.0). Because the login runs in your **real** browser, **passkeys / FIDO2 / YubiKey-WebAuthn work automatically**
+- **Client-certificate authentication** — an X.509 cert/key file *or* a **PKCS#11** smartcard / **YubiKey PIV**, on its own or alongside a password/SSO; the key passphrase or PIN is kept out of the process table
 - **Background or foreground** execution, per your config
 
 ### Secure
@@ -117,7 +118,7 @@ VPN Up is useful if you:
 - **Guided setup** — a first-run wizard plus `add-profile` / `remove-profile`, which handle XML, secrets, pins, and services in one step
 - **`doctor`** diagnostics — environment, dependencies, secret backend, and config at a glance
 - **Bash/zsh tab completion** for commands and profile names
-- **Hardened & tested** — 71 tests on macOS + Ubuntu in CI, shellcheck-clean, secret scanning, modern Bash (≥ 4), no `eval`
+- **Hardened & tested** — 100+ tests on macOS + Ubuntu in CI, shellcheck-clean, secret scanning, modern Bash (≥ 4), no `eval`
 
 ---
 
@@ -377,6 +378,20 @@ Need an openconnect flag `vpn-up` doesn't model (`--no-dtls`, `--os=win`, `--csd
 - Avoid flags `vpn-up` already manages — `--protocol`, `--user`, `--passwd-on-stdin`, `--background`, `--servercert`, `--authgroup`, `--pid-file`, `--external-browser`, `--token-mode`/`--token-secret`. Duplicating one prints a warning (it may conflict) but is still passed.
 - ⚠️ openconnect runs as **root**; some flags execute programs as root (e.g. `--csd-wrapper`, `--script`). Only put flags here that you'd be comfortable running under `sudo` yourself.
 
+### Client-certificate authentication
+
+Authenticate with an **X.509 client certificate** — a file or a **PKCS#11** smartcard / **YubiKey PIV** — on its own (cert-only) or alongside a password/SSO. Set `<clientCertificate>` (and `<clientKey>` if the key is separate); each is a file path or a `pkcs11:` URI:
+
+```xml
+<clientCertificate>/etc/vpn/me.pem</clientCertificate>
+<!-- or a smartcard / YubiKey PIV: -->
+<clientCertificate>pkcs11:manufacturer=piv_II;id=%01;type=cert</clientCertificate>
+```
+
+- The cert **path/URI is not a secret** (it stays in the XML); a key **passphrase or PKCS#11 PIN is** — it never goes on the command line. An encrypted key/token prompts interactively, or store a PKCS#11 PIN for unattended use: `vpn-up set-secret "Work" key_password` (fed via a transient `pin-source` file, never argv).
+- For a [login service](#run-as-a-login-service-auto-reconnect), use a PKCS#11 token with a stored PIN, or an unencrypted `0600` key file (a passphrase-protected file key can't run unattended — there's no TTY to prompt on).
+- `vpn-up doctor` reports PKCS#11 (`p11-kit`) availability. Full guide: [docs/client-certificate-auth](https://sorinipate.github.io/vpn-up-for-openconnect/client-certificate-auth/).
+
 ---
 
 ## ⚙️ Configuration
@@ -413,11 +428,13 @@ Seeded from [config/vpn-up.command.profiles.default](config/vpn-up.command.profi
     <authMode>password</authMode>
     <tokenMode>totp</tokenMode>
     <extraArgs>--no-dtls</extraArgs>
+    <clientCertificate>/etc/vpn/me.pem</clientCertificate>
+    <clientKey></clientKey>
   </VPN>
 </VPNs>
 ```
 
-Supported tag aliases: `username`/`user`, `group`/`authGroup`, `duoMethod`/`duo2FAMethod`. The `<password>` field is deprecated: plaintext values are migrated to the secrets backend and blanked in the XML automatically on first use — prefer `vpn-up set-secret`. A `duo2FAMethod` of `passcode` prompts for the one-time code at connect time. `<authMode>` is `password` (default) or `sso` for [browser-based SAML/SSO login](#sso--external-browser-login). `<tokenMode>` is empty (default) or `totp` for [authenticator-app 2FA](#totp-authenticator-app-2fa). `<extraArgs>` passes extra openconnect flags verbatim — see [Advanced: extra openconnect arguments](#advanced-extra-openconnect-arguments).
+Supported tag aliases: `username`/`user`, `group`/`authGroup`, `duoMethod`/`duo2FAMethod`. The `<password>` field is deprecated: plaintext values are migrated to the secrets backend and blanked in the XML automatically on first use — prefer `vpn-up set-secret`. A `duo2FAMethod` of `passcode` prompts for the one-time code at connect time. `<authMode>` is `password` (default) or `sso` for [browser-based SAML/SSO login](#sso--external-browser-login). `<tokenMode>` is empty (default) or `totp` for [authenticator-app 2FA](#totp-authenticator-app-2fa). `<extraArgs>` passes extra openconnect flags verbatim — see [Advanced: extra openconnect arguments](#advanced-extra-openconnect-arguments). `<clientCertificate>`/`<clientKey>` enable [client-certificate authentication](#client-certificate-authentication) — a file path or a PKCS#11 URI; a key passphrase/PIN goes in the secrets backend (`key_password`), never the XML.
 
 ---
 
@@ -425,7 +442,7 @@ Supported tag aliases: `username`/`user`, `group`/`authGroup`, `duoMethod`/`duo2
 
 **Under consideration** (open an issue if you need one of these):
 
-- RSA SecurID / Yubikey OATH token support (TOTP is already supported — see [TOTP authenticator-app 2FA](#totp-authenticator-app-2fa))
+- RSA SecurID / Yubikey OATH (HOTP) token support (TOTP authenticator codes are already supported — see [TOTP authenticator-app 2FA](#totp-authenticator-app-2fa) — as is a Yubikey **PIV client certificate** via [client-certificate authentication](#client-certificate-authentication))
 - HTTP/SOCKS proxy passthrough as a profile field
 - Multiple simultaneous tunnels (per-profile state files already lay the groundwork)
 

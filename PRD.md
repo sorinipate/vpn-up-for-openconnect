@@ -1,6 +1,6 @@
 # Product Requirements Document — VPN Up for OpenConnect
 
-**Status:** Living document · **Owner:** Sorin-Doru Ipate · **Last updated:** 2026-06-18 (v3.8.0)
+**Status:** Living document · **Owner:** Sorin-Doru Ipate · **Last updated:** 2026-06-18 (v3.9.0)
 
 > This PRD describes *what* VPN Up is and *why*. For *how* it's built, see
 > [ARCHITECTURE.md](ARCHITECTURE.md). For the change history, see
@@ -14,8 +14,9 @@
 on top of [OpenConnect](https://www.infradead.org/openconnect/). It lets macOS and
 Linux users connect to Cisco AnyConnect, Palo Alto GlobalProtect, Pulse Secure,
 Juniper Network Connect, and ocserv gateways from the terminal — with named
-profiles, Duo 2FA, TOTP authenticator codes, browser-based SSO, certificate
-pinning, secure secret storage, auto-reconnect, and shell completion.
+profiles, Duo 2FA, TOTP authenticator codes, browser-based SSO, client-certificate
+auth (incl. PKCS#11 smartcards / YubiKey PIV), certificate pinning, secure secret
+storage, auto-reconnect, and shell completion.
 
 It is a *wrapper*, not a fork: OpenConnect does the tunnelling; VPN Up provides the
 profile management, credential hygiene, and lifecycle ergonomics that raw
@@ -96,13 +97,22 @@ upgrades. There is a gap for a **terminal-first, secure, scriptable** front end.
   (prompted at connect time, never read from XML).
 - **FR-4** Support **browser-based SAML/SSO** (`authMode=sso`) via OpenConnect's
   `--external-browser` (openconnect ≥ 9.0; `anyconnect`/`gp` only). No password is
-  piped; the flow runs foreground with the controlling TTY.
+  piped; the flow runs foreground with the controlling TTY. Because the login
+  happens in the user's real browser, **FIDO2/passkey/YubiKey-WebAuthn** factors
+  the identity provider offers work with no extra configuration.
 - **FR-5** Background or foreground operation, configurable; SSO and service mode force foreground.
 - **FR-20** Support **TOTP authenticator-app 2FA** (`tokenMode=totp`): generate the
   current code from a seed held in the secrets backend (via `oathtool`) and feed it
   as the gateway's 2FA answer. The seed never reaches openconnect's argv or disk
   (no `--token-secret`); being non-interactive, a TOTP profile can run as an
   auto-reconnecting login service.
+- **FR-22** Support **client-certificate authentication** (`clientCertificate`,
+  `clientKey`): an X.509 cert/key **file** or a **PKCS#11 URI** (smartcard /
+  YubiKey PIV), applied additively alongside any auth mode (or cert-only). The
+  cert/key path or URI is not a secret (it lives in the profile); a key passphrase
+  or PKCS#11 PIN is a secret and never reaches argv — it is prompted interactively,
+  or, for a PKCS#11 token, fed from the secrets backend (`key_password`) via a
+  transient `pin-source` file so the profile can run as a login service.
 
 ### 6.2 Credentials & identity
 - **FR-6** Store secrets in the macOS Keychain, Linux Secret Service, or an
@@ -139,7 +149,8 @@ upgrades. There is a gap for a **terminal-first, secure, scriptable** front end.
   dirs `700`; no `eval`. See [SECURITY.md](SECURITY.md).
 - **NFR-2 Portability** — macOS + Linux; Bash ≥ 4; GNU/BSD differences handled
   (`stat`, `ps`, `sed`). No hard dependency beyond `openconnect`, `xmlstarlet`, and a
-  secret backend; `oathtool` is an optional dependency, needed only for TOTP profiles.
+  secret backend; `oathtool` (TOTP) and `p11-kit`/`p11tool` (PKCS#11 client
+  certificates) are optional dependencies, needed only for those features.
 - **NFR-3 Isolation** — all user state under `~/.config/vpn-up` (override via
   `VPN_UP_HOME`/`XDG_CONFIG_HOME`); reinstalling/cleaning the program directory never touches it.
 - **NFR-4 Quality** — shellcheck-clean; bats test suite on macOS + Ubuntu in CI; secret scanning (gitleaks) + CodeQL.
@@ -161,11 +172,18 @@ upgrades. There is a gap for a **terminal-first, secure, scriptable** front end.
 - On Linux, a root-spawned SSO browser may not reach the desktop session (mitigated by
   the `VPN_UP_EXTERNAL_BROWSER` override).
 - TOTP stores the seed beside the password in the same secret backend — effectively
-  "1.5-factor"; it's opt-in. RSA SecurID and Yubikey OATH tokens are not yet supported.
+  "1.5-factor"; it's opt-in. RSA SecurID and Yubikey OATH (HOTP) tokens are not yet
+  supported (a Yubikey PIV *client certificate* is — see FR-22).
+- A **passphrase-protected client-certificate file** cannot run as a login service
+  (no TTY to prompt on); use an unencrypted `0600` key or a PKCS#11 token with a
+  stored PIN. A stored PKCS#11 PIN sits in the same secret backend as the password
+  (same "1.5-factor" caveat). The `pin-source` feed depends on the local GnuTLS
+  honoring RFC 7512; otherwise OpenConnect falls back to prompting.
 
 ## 10. Roadmap (under consideration)
 
-- RSA SecurID / Yubikey OATH token support (TOTP already shipped in v3.8.0).
+- RSA SecurID / Yubikey OATH (HOTP) token support (TOTP shipped in v3.8.0; PKCS#11
+  client certificates, incl. Yubikey PIV, shipped in v3.9.0).
 - First-class HTTP/SOCKS proxy field (today a proxy can be passed via `extraArgs`).
 - Multiple simultaneous tunnels (per-profile state already lays the groundwork).
 
