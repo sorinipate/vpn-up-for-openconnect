@@ -1,6 +1,6 @@
 # Architecture — VPN Up for OpenConnect
 
-**Last updated:** 2026-06-18 (v3.8.0)
+**Last updated:** 2026-06-18 (v3.9.0)
 
 > *What* and *why* live in [PRD.md](PRD.md); this document covers *how*. Function and
 > file references are accurate as of the version above — verify against the source
@@ -56,11 +56,11 @@ All modules are sourced by [vpn-up.command](vpn-up.command) in dependency order.
 | **[vpn-up.command](vpn-up.command)** | Entry point. Bash≥4 guard, `set -u`, resolves `PROGRAM_NAME`/`PROGRAM_PATH`/`DATA_DIR`, one-time migration of legacy in-repo state, sources modules, and dispatches the subcommand `case`. Defines `DISPLAY_NAME` indirectly (via logging). |
 | **[logging.sh](logging.sh)** | Paths, print helpers (`print_primary/success/warning/danger`), portable `stat` wrappers (`file_owner_uid`, `file_mode` — GNU `-c` first, BSD `-f` fallback), `profile_slug`, per-profile path setup (`set_profile_paths`), PID helpers (`is_openconnect_pid`, `any_vpn_running`), `show_logs`. Defines `DISPLAY_NAME`. |
 | **[ui.sh](ui.sh)** | ASCII banner (`show_banner`, gated by `SHOW_BANNER` + TTY) and desktop notifications (`notify` → `osascript`/`notify-send`, gated by `NOTIFICATIONS`). |
-| **[dependencies.sh](dependencies.sh)** | `require_bin`, `check_dependencies`, `doctor`. Also `openconnect_major` / `require_openconnect_sso` (the openconnect ≥ 9.0 gate for SSO) and `require_oathtool` (the gate for TOTP). |
+| **[dependencies.sh](dependencies.sh)** | `require_bin`, `check_dependencies`, `doctor`. Also `openconnect_major` / `require_openconnect_sso` (the openconnect ≥ 9.0 gate for SSO) and `require_oathtool` (the gate for TOTP). `doctor` also reports PKCS#11 (`p11-kit`) availability for client certs. |
 | **[encryption.sh](encryption.sh)** | Secret backend abstraction: `secrets_set/get/delete`, `secrets_backend` selection (macOS Keychain via `security -i` stdin; Linux Secret Service via `secret-tool`; OpenSSL AES-256-CBC + PBKDF2 vault fallback). Namespacing via `secrets_key`. |
 | **[network.sh](network.sh)** | Connectivity check, certificate fetch/verify (`fetch_server_pin`, `verify_gateway_cert`), pin save (`pin_save`), `print_pin_instructions`, `print_current_ip_address`. |
 | **[profiles.sh](profiles.sh)** | Profile XML read/validate: `load_profile_fields` (xmlstarlet → shell vars), `xpath_literal` (injection-safe XPath), `list_profiles` (NAME/PROTOCOL/HOST/2FA/AUTH columns), `profile_names_raw`, `profile_exists`, password migration/scrub, protocol/2FA descriptions. |
-| **[core.sh](core.sh)** | Main flow: `start`, `connect`, `run_openconnect`, `status`, `stop`, `write_connection_state`, `run_hooks`, `assert_safe_to_source`, `load_config`, `resolve_external_browser`, `generate_totp`, `_warn_extra_arg_collisions`. |
+| **[core.sh](core.sh)** | Main flow: `start`, `connect`, `run_openconnect`, `status`, `stop`, `write_connection_state`, `run_hooks`, `assert_safe_to_source`, `load_config`, `resolve_external_browser`, `generate_totp`, `_warn_extra_arg_collisions`, `_append_pkcs11_pin_source` (RFC 7512 PIN feed for PKCS#11 client certs). |
 | **[setup.sh](setup.sh)** | Interactive wizards: `setup_wizard`, `add_profile_wizard`, `remove_profile`, `append_profile`, `save_configuration`, `_bool_default`. |
 | **[service.sh](service.sh)** | Login-service mode: launchd plist / systemd unit generation, `service_install/uninstall/status`, `_service_preflight` (rejects passcode + SSO profiles; requires a stored seed for TOTP). |
 | **[completions/vpn-up.bash](completions/vpn-up.bash)** | Bash/zsh completion for commands and profile names. |
@@ -88,10 +88,13 @@ namespace; `DISPLAY_NAME` (`vpn-up`) is used only in user-facing text.
 `name`, `protocol`, `host`, `authGroup` (alias `group`), `user` (alias `username`),
 `password` (deprecated; migrated + blanked), `duo2FAMethod` (alias `duoMethod`),
 `serverCertificate`, `authMode` (`password` default | `sso`), `tokenMode`
-(empty | `totp`), `extraArgs` (verbatim openconnect flags). `load_profile_fields`
-reads them positionally via `mapfile`, so **new fields are appended last** to avoid
-shifting indices (`extraArgs` is index 10). The TOTP **seed** is *not* in the XML —
-it lives in the secrets backend under the `token_secret` field.
+(empty | `totp`), `extraArgs` (verbatim openconnect flags), `clientCertificate` /
+`clientKey` (a file path or a PKCS#11 URI for client-certificate auth).
+`load_profile_fields` reads them positionally via `mapfile`, so **new fields are
+appended last** to avoid shifting indices (`extraArgs` is index 10,
+`clientCertificate`/`clientKey` are 11/12). Secrets are *not* in the XML — the TOTP
+**seed** (`token_secret`) and any client-key **passphrase / PKCS#11 PIN**
+(`key_password`) live in the secrets backend.
 
 ## 5. Key flows
 
@@ -108,6 +111,9 @@ it lives in the secrets backend under the `token_secret` field.
      backend (`token_secret`), and `generate_totp` the current code into
      `VPN_SECOND_FACTOR` (used as the 2FA answer). Non-interactive — allowed in service mode.
    - **Duo passcode** → prompt at connect time (refused in service mode).
+   - **Client certificate** (`clientCertificate`/`clientKey`) is *additive*, not part
+     of the precedence — it applies under any auth mode. `migrate_or_fetch_password`
+     treats a cert-bearing profile with no stored password as cert-only (no prompt).
    - Fail-closed server identity: `pin-sha256` pin, else `verify_gateway_cert`.
 4. **`run_openconnect`** builds the `openconnect` argv array (no `eval`) and invokes
    `sudo openconnect …`:
@@ -118,6 +124,11 @@ it lives in the secrets backend under the `token_secret` field.
      piped to stdin (openconnect keeps the TTY), forced foreground.
    - Per-profile `extraArgs` are tokenized with `xargs` (quote-safe, no `eval`) and
      appended just **before** the host; `_warn_extra_arg_collisions` warns on a managed-flag clash.
+   - **Client cert:** `--certificate=`/`--sslkey=` carry the path or PKCS#11 URI (an
+     identifier, safe on argv). For a `pkcs11:` URI with a stored `key_password`,
+     `_append_pkcs11_pin_source` writes the PIN to a transient `0600` file and adds
+     `pin-source=file:…` to the URI (never the PIN on argv); the file is shredded
+     after the session. A file-key passphrase is left to openconnect's TTY prompt.
    - Background daemonizes (`--background`); foreground/service/SSO stay attached and
      the PID is captured via `pgrep` after a short delay (openconnect only writes
      `--pid-file` when daemonizing). `notify` + `run_hooks` fire on connect/disconnect.
@@ -137,7 +148,9 @@ waits, SIGKILL fallback, then cleans pid/state and fires the disconnected hook.
 `vpn-up start <profile>` with `VPN_UP_SERVICE=1` and supervises openconnect in the
 foreground (KeepAlive/Restart for auto-reconnect). `_service_preflight` refuses
 passcode and SSO profiles (interactive) and warns on missing passwordless sudo / stored
-password.
+password — but not about a missing password for a cert-only profile, and it flags a
+PKCS#11 cert without a stored PIN (or a possibly-encrypted file key) as unable to run
+unattended.
 
 ## 6. Security model (summary)
 
@@ -155,8 +168,9 @@ password.
 ## 7. Quality & CI
 
 - **Tests:** `bats` suite under [tests/](tests/) (`cli`, `core`, `lifecycle`, `logging`,
-  `network`, `profiles`, `secrets`, `service`, `sso`, `totp`, `extraargs`, `ui_setup`),
-  with stubs for network, sudo, keychain, oathtool, and service managers.
+  `network`, `profiles`, `secrets`, `service`, `sso`, `totp`, `extraargs`,
+  `clientcert`, `ui_setup`), with stubs for network, sudo, keychain, oathtool, and
+  service managers.
 - **CI** ([.github/workflows/ci.yml](.github/workflows/ci.yml)): shellcheck +
   `bats tests/` on **macOS and Ubuntu** + gitleaks + CodeQL on every push/PR. `main` is
   protected and PR-only.
@@ -183,5 +197,11 @@ password.
 - **`extraArgs` tokenized with `xargs`** — gives shell-like quote/escape handling for a
   free-form flag string **without `eval`** (no command substitution or globbing); collisions
   with managed flags warn rather than block.
+- **Client-cert PIN via `pin-source` file, never argv** — a PKCS#11 PIN would leak in the
+  process table if passed as `--key-password`, so (mirroring the TOTP decision) the PIN is
+  written to a transient `0600` file referenced by RFC 7512 `pin-source` and shredded after.
+  Trade-off: it depends on the local GnuTLS honoring `pin-source` (else openconnect prompts),
+  and a stored PIN is "1.5-factor"; a passphrase-protected *file* key has no non-argv feed at
+  all, so it is interactive-only — both documented.
 - **`PROGRAM_NAME` vs `DISPLAY_NAME`** — data-file/slug/Keychain namespace is decoupled
   from user-facing naming, so the public command reads `vpn-up` without disturbing state paths.

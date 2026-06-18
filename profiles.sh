@@ -34,7 +34,9 @@ load_profile_fields() {
       -v "serverCertificate" -n \
       -v "authMode | authmode" -n \
       -v "tokenMode | tokenmode" -n \
-      -v "extraArgs | extraargs" -n "${PROFILES_FILE}"
+      -v "extraArgs | extraargs" -n \
+      -v "clientCertificate | clientcertificate" -n \
+      -v "clientKey | clientkey" -n "${PROFILES_FILE}"
   )
   VPN_NAME="${fields[0]:-}"
   PROTOCOL="${fields[1]:-}"
@@ -51,6 +53,11 @@ load_profile_fields() {
   VPN_TOKEN_MODE="$(printf '%s' "${fields[9]:-}" | tr '[:upper:]' '[:lower:]')"
   # Advanced: extra openconnect arguments passed verbatim (tokenized at connect).
   VPN_EXTRA_ARGS="${fields[10]:-}"
+  # Client-certificate auth: a file path or a PKCS#11 URI (pkcs11:...) for a
+  # smartcard/YubiKey-PIV. The optional key may be a separate file/URI. These are
+  # identifiers, not secrets; any passphrase/PIN lives in the secrets backend.
+  VPN_CLIENT_CERT="${fields[11]:-}"
+  VPN_CLIENT_KEY="${fields[12]:-}"
 
   # Intentionally NOT exported: these are read only by functions in this
   # shell, and exporting would copy the password into the environment of
@@ -81,6 +88,13 @@ migrate_or_fetch_password() {
     secrets_set "${VPN_NAME}" "password" "${VPN_PASSWD}"
     s="${VPN_PASSWD}"
     scrub_profile_password "${VPN_NAME}"
+  fi
+  if [ -z "$s" ] && [ -n "${VPN_CLIENT_CERT:-}" ]; then
+    # Cert-only auth: the client certificate stands in for the password. Don't
+    # force a prompt or fail; a password is used only if one is actually stored
+    # (cert + password gateways).
+    VPN_PASSWD=""
+    return 0
   fi
   if [ -z "$s" ]; then
     if [ -n "${VPN_UP_SERVICE:-}" ]; then

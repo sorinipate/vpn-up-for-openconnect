@@ -35,6 +35,20 @@
              NOTE: openconnect runs as root — some flags (e.g. --csd-wrapper,
              --script) execute programs as root. -->
         <extraArgs></extraArgs>
+        <!-- clientCertificate / clientKey (optional): X.509 client-certificate
+             authentication. Each may be a file path or a PKCS#11 URI for a
+             smartcard / YubiKey PIV, e.g.
+               <clientCertificate>/etc/vpn/me.pem</clientCertificate>
+               <clientCertificate>pkcs11:manufacturer=piv_II;id=%01</clientCertificate>
+             clientKey is only needed when the private key is separate from the
+             cert. The cert/key path or URI is NOT a secret; a key passphrase or
+             PKCS#11 PIN is — store it in the secrets backend instead of here:
+             vpn-up set-secret "<profile name>" key_password
+             An encrypted key prompts for its passphrase interactively (foreground
+             only). For a login service, use an unencrypted 0600 key or a PKCS#11
+             token with a stored PIN. -->
+        <clientCertificate></clientCertificate>
+        <clientKey></clientKey>
     </VPN>
 
     <!-- VPN PROFILE 2 -->
@@ -62,6 +76,10 @@
              NOTE: openconnect runs as root — some flags (e.g. --csd-wrapper,
              --script) execute programs as root. -->
         <extraArgs></extraArgs>
+        <!-- clientCertificate / clientKey: see VPN PROFILE 1. A key passphrase or
+             PKCS#11 PIN goes in the secrets backend (key_password), not here. -->
+        <clientCertificate></clientCertificate>
+        <clientKey></clientKey>
     </VPN>
     <!-- Add more VPN profiles as needed -->
 </VPNs>

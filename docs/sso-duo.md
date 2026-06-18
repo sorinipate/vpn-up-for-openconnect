@@ -75,6 +75,14 @@ VPN Up runs OpenConnect with `--external-browser`: it opens your browser to the
 identity provider, you complete the login (including Duo) there, and the tunnel
 comes up afterward. **No password is stored or piped** for SSO profiles.
 
+> **Passkeys & FIDO2 / YubiKey (WebAuthn) work automatically.** Because the SSO
+> login happens in your **real** browser, any authenticator the identity provider
+> accepts — a passkey, a FIDO2 security key, or a YubiKey as a WebAuthn device —
+> just works, with no extra configuration in VPN Up. (Delegating to the real
+> browser, rather than an embedded one, is what makes hardware WebAuthn reliable.)
+> For a YubiKey holding a *client certificate* (PIV) instead, see
+> [client-certificate authentication]({{ '/client-certificate-auth/' | relative_url }}).
+
 ### Requirements and behavior
 
 - **OpenConnect ≥ 9.0** (when `--external-browser` landed). `vpn-up doctor` reports

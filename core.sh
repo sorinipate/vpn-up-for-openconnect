@@ -382,6 +382,22 @@ generate_totp() {
   oathtool --totp -b "$1" 2>/dev/null
 }
 
+# Securely supply a PKCS#11 PIN (e.g. a YubiKey PIV smartcard) to openconnect
+# WITHOUT placing it on argv: reference a transient 0600 file via the RFC 7512
+# 'pin-source' URI attribute. Best-effort — if the local GnuTLS build ignores
+# pin-source, openconnect simply falls back to prompting on the TTY. Non-pkcs11
+# URIs (and plain file keys) are returned unchanged; those rely on openconnect's
+# interactive passphrase prompt, since it offers no non-argv feed for them.
+_append_pkcs11_pin_source() {
+  local uri="$1" pinfile="$2" sep='?'
+  case "$uri" in
+    pkcs11:*) ;;
+    *) printf '%s' "$uri"; return ;;
+  esac
+  case "$uri" in *\?*) sep='&' ;; esac
+  printf '%s%spin-source=file:%s' "$uri" "$sep" "$pinfile"
+}
+
 # Warn (but don't block) when a user-supplied extra arg duplicates a flag that
 # vpn-up already manages — overriding these can break connection or status/stop.
 _warn_extra_arg_collisions() {
@@ -389,7 +405,7 @@ _warn_extra_arg_collisions() {
   for tok in "$@"; do
     base="${tok%%=*}"
     case "$base" in
-      --protocol|-q|--user|--passwd-on-stdin|--background|--servercert|--authgroup|--pid-file|--external-browser|--token-mode|--token-secret)
+      --protocol|-q|--user|--passwd-on-stdin|--background|--servercert|--authgroup|--pid-file|--external-browser|--token-mode|--token-secret|--certificate|-c|--sslkey|-k|--key-password)
         print_warning "extraArgs contains '%s', which vpn-up already manages; passing it anyway (may conflict).\n" "$base" ;;
     esac
   done
@@ -431,6 +447,29 @@ run_openconnect() {
   [ "$effective_background" = TRUE ] && args+=(--background)
   [ -n "$SERVER_CERTIFICATE" ] && args+=(--servercert="$SERVER_CERTIFICATE")
   [ -n "$VPN_GROUP" ] && args+=(--authgroup "$VPN_GROUP")
+  # Client-certificate auth (X.509). The cert/key may be a file path or a PKCS#11
+  # URI (smartcard / YubiKey PIV) — an identifier, not a secret, so it is safe on
+  # argv. A key passphrase / PKCS#11 PIN is a secret and must NOT hit argv: for a
+  # pkcs11: URI with a stored 'key_password' we feed the PIN via a transient 0600
+  # file (pin-source); a file key's passphrase is prompted interactively.
+  local _pin_file="" _cc="${VPN_CLIENT_CERT:-}" _ck="${VPN_CLIENT_KEY:-}"
+  if [ -n "$_cc" ]; then
+    case "$_cc" in
+      pkcs11:*)
+        local _pin; _pin="$(secrets_get "${VPN_NAME}" key_password 2>/dev/null)"
+        if [ -n "$_pin" ]; then
+          _pin_file="${DATA_DIR}/pids/.${PROGRAM_NAME}.$(profile_slug "$VPN_NAME").pin"
+          ( umask 077; printf '%s' "$_pin" > "$_pin_file" )
+          chmod 600 "$_pin_file" 2>/dev/null || true
+          _cc="$(_append_pkcs11_pin_source "$_cc" "$_pin_file")"
+          [ -n "$_ck" ] && _ck="$(_append_pkcs11_pin_source "$_ck" "$_pin_file")"
+          unset _pin
+        fi
+        ;;
+    esac
+    args+=(--certificate="$_cc")
+    [ -n "$_ck" ] && args+=(--sslkey="$_ck")
+  fi
   # Extra user-supplied openconnect args (advanced). Tokenized with xargs so
   # quotes are respected without eval; appended verbatim before the host.
   if [ -n "${VPN_EXTRA_ARGS:-}" ]; then
@@ -505,6 +544,12 @@ run_openconnect() {
     rm -f "$PID_FILE_PATH" "$STATE_FILE_PATH"
     notify "VPN Up" "Disconnected from ${VPN_NAME:-VPN}"
     run_hooks disconnected "${VPN_NAME:-}" "${VPN_HOST:-}"
+  fi
+
+  # Shred the transient PKCS#11 PIN file (openconnect has read it during auth).
+  if [ -n "${_pin_file:-}" ] && [ -e "$_pin_file" ]; then
+    if command -v shred >/dev/null 2>&1; then shred -u "$_pin_file" 2>/dev/null || rm -f "$_pin_file"
+    else rm -f "$_pin_file"; fi
   fi
 
   # Drop the password and any generated 2FA code from shell memory as soon as

@@ -59,6 +59,7 @@ See the [installation guide]({{ '/installation/' | relative_url }}) for manual s
 - [Cisco AnyConnect command-line alternative]({{ '/anyconnect-cli-alternative/' | relative_url }}) — connect to AnyConnect VPNs without the GUI client
 - [Connect to GlobalProtect from the command line]({{ '/globalprotect-cli/' | relative_url }}) — Palo Alto GlobalProtect via OpenConnect
 - [Auto-connect a VPN at login]({{ '/vpn-at-login/' | relative_url }}) — launchd (macOS) & systemd (Linux) with auto-reconnect
+- [Client-certificate authentication]({{ '/client-certificate-auth/' | relative_url }}) — X.509 file or PKCS#11 smartcard / YubiKey PIV
 - [VPN Up vs. raw OpenConnect]({{ '/vs-openconnect/' | relative_url }}) — what the wrapper adds, and when to use each
 - [VPN Up vs. openconnect-sso]({{ '/vs-openconnect-sso/' | relative_url }}) — two AnyConnect SSO clients compared, fairly
 - [VPN Up vs. GlobalProtect-openconnect]({{ '/vs-globalprotect-openconnect/' | relative_url }}) — two GlobalProtect CLI clients compared

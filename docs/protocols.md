@@ -52,3 +52,6 @@ If the vendor client is "Cisco AnyConnect," use `anyconnect`. For Palo Alto
 GlobalProtect use `gp`. When in doubt, try `anyconnect` first — many gateways are
 AnyConnect-compatible. See [troubleshooting]({{ '/troubleshooting/' | relative_url }})
 if a connection fails.
+
+Authenticating with a certificate instead of (or in addition to) a password? See
+[client-certificate authentication]({{ '/client-certificate-auth/' | relative_url }}).

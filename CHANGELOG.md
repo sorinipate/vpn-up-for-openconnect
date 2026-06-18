@@ -5,6 +5,30 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ---
 
+## [v3.9.0] — 2026-06-18
+### Client-certificate authentication
+
+### Added
+- **Client-certificate authentication** (`<clientCertificate>` / `<clientKey>`,
+  also prompted by `add-profile`). Authenticate with an X.509 cert/key **file** or
+  a **PKCS#11 URI** (smartcard / **YubiKey PIV**), on its own (cert-only) or
+  alongside a password, Duo, TOTP, or SSO — it's additive and doesn't change the
+  auth precedence. The cert/key **path or URI is not a secret** (it stays in the
+  profile); a key passphrase or PKCS#11 PIN **never reaches openconnect's argv**.
+  An encrypted key/token prompts interactively; for unattended/login-service use,
+  store a PKCS#11 PIN (`vpn-up set-secret '<profile>' key_password`) and `vpn-up`
+  feeds it through a transient `0600` `pin-source` file, shredded after the session.
+- `doctor` now reports **PKCS#11** (`p11-kit`/`p11tool`) availability; `service`
+  preflight understands cert-only and PKCS#11 profiles.
+
+### Documented
+- **FIDO2 / passkeys / YubiKey-WebAuthn already work with SSO** — because the
+  browser-based SAML/SSO login runs in your real browser, no extra configuration is
+  needed. New [client-certificate](https://sorinipate.github.io/vpn-up-for-openconnect/client-certificate-auth/)
+  docs page; SSO page notes the WebAuthn support.
+
+---
+
 ## [v3.8.0] — 2026-06-18
 ### TOTP 2FA & Argument Passthrough Update
 
