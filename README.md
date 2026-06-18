@@ -457,10 +457,10 @@ Supported tag aliases: `username`/`user`, `group`/`authGroup`, `duoMethod`/`duo2
 
 **Under consideration** (open an issue if you need one of these):
 
-- RSA SecurID / Yubikey OATH (HOTP) token support (TOTP authenticator codes are already supported — see [TOTP authenticator-app 2FA](#totp-authenticator-app-2fa) — as is a Yubikey **PIV client certificate** via [client-certificate authentication](#client-certificate-authentication))
+- Yubikey OATH (HOTP) token support (TOTP authenticator codes are already supported — see [TOTP authenticator-app 2FA](#totp-authenticator-app-2fa) — as is a Yubikey **PIV client certificate** via [client-certificate authentication](#client-certificate-authentication))
 - Multiple simultaneous tunnels (per-profile state files already lay the groundwork)
 
-**Explicitly out of scope:** Windows support, GUI.
+**Explicitly out of scope:** Windows support, GUI, and **RSA SecurID** — importing a SecurID token requires passing the token secret to openconnect on the command line (`--token-secret`), which would break VPN Up's rule of never putting secrets in argv (the same reason TOTP is fed on stdin rather than via `--token-secret`).
 
 **Known behavior:** some AnyConnect gateways emit an initial `Unexpected 404 result from server` — this is benign if the connection proceeds successfully.
 

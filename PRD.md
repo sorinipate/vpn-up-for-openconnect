@@ -176,8 +176,11 @@ upgrades. There is a gap for a **terminal-first, secure, scriptable** front end.
 - On Linux, a root-spawned SSO browser may not reach the desktop session (mitigated by
   the `VPN_UP_EXTERNAL_BROWSER` override).
 - TOTP stores the seed beside the password in the same secret backend — effectively
-  "1.5-factor"; it's opt-in. RSA SecurID and Yubikey OATH (HOTP) tokens are not yet
-  supported (a Yubikey PIV *client certificate* is — see FR-22).
+  "1.5-factor"; it's opt-in. Yubikey OATH (HOTP) tokens are not yet supported (a
+  Yubikey PIV *client certificate* is — see FR-22). **RSA SecurID is out of scope**:
+  importing a SecurID token requires giving openconnect the token secret on the
+  command line (`--token-secret`), which violates NFR-1 (no secrets in argv) — the
+  same reason TOTP is fed on stdin rather than via `--token-secret`.
 - A **passphrase-protected client-certificate file** cannot run as a login service
   (no TTY to prompt on); use an unencrypted `0600` key or a PKCS#11 token with a
   stored PIN. A stored PKCS#11 PIN sits in the same secret backend as the password
@@ -186,8 +189,9 @@ upgrades. There is a gap for a **terminal-first, secure, scriptable** front end.
 
 ## 10. Roadmap (under consideration)
 
-- RSA SecurID / Yubikey OATH (HOTP) token support (TOTP shipped in v3.8.0; PKCS#11
-  client certificates, incl. Yubikey PIV, shipped in v3.9.0).
+- Yubikey OATH (HOTP) token support (TOTP shipped in v3.8.0; PKCS#11 client
+  certificates, incl. Yubikey PIV, shipped in v3.9.0). *RSA SecurID is out of scope —
+  see §9.*
 - Multiple simultaneous tunnels (per-profile state already lays the groundwork).
 
 ## 11. Release & distribution
