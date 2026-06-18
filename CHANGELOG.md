@@ -5,6 +5,20 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ---
 
+## [v3.9.1] — 2026-06-18
+### Fixed
+
+- The default profiles template (`config/vpn-up.command.profiles.default`) could not
+  be parsed by `xmlstarlet`: its `<extraArgs>` comments contained `--` (e.g.
+  `--no-dtls`, `--protocol`), which the XML spec forbids inside comments and modern
+  libxml2 rejects as a fatal error. Users who **edit the seeded template by hand**
+  (rather than using `add-profile`, which generates comment-free XML) hit
+  `Double hyphen within comment` errors and an empty list from `vpn-up list` and the
+  interactive `start` menu, and silent "no profiles" detection. Reworded the comments
+  to be `--`-free; added a regression test that parses the shipped template.
+
+---
+
 ## [v3.9.0] — 2026-06-18
 ### Client-certificate authentication
 

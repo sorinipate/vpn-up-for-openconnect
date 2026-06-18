@@ -28,12 +28,14 @@
              The TOTP secret is stored in the secrets backend, not here:
              vpn-up set-secret "<profile name>" token_secret  (needs oathtool). -->
         <tokenMode></tokenMode>
-        <!-- extraArgs (advanced): extra openconnect flags passed verbatim, e.g.
-             --no-dtls, --os=win, --csd-wrapper=/path. Quotes are respected.
-             Avoid flags vpn-up already manages (--protocol, --user, --pid-file,
-             --passwd-on-stdin, --background, --servercert, --authgroup, …).
-             NOTE: openconnect runs as root — some flags (e.g. --csd-wrapper,
-             --script) execute programs as root. -->
+        <!-- extraArgs (advanced): extra openconnect flags passed verbatim at
+             connect time, such as no-dtls, os=win, csd-wrapper, or a split-tunnel
+             script (write each with its usual leading dashes). Quotes are
+             respected. Avoid flags vpn-up already manages (protocol, user,
+             pid-file, passwd-on-stdin, background, servercert, authgroup,
+             external-browser, certificate, sslkey). openconnect runs as root, so
+             some flags (csd-wrapper, script) execute programs as root. Full list
+             and examples: https://sorinipate.github.io/vpn-up-for-openconnect/usage/ -->
         <extraArgs></extraArgs>
         <!-- clientCertificate / clientKey (optional): X.509 client-certificate
              authentication. Each may be a file path or a PKCS#11 URI for a
@@ -69,12 +71,7 @@
              The TOTP secret is stored in the secrets backend, not here:
              vpn-up set-secret "<profile name>" token_secret  (needs oathtool). -->
         <tokenMode></tokenMode>
-        <!-- extraArgs (advanced): extra openconnect flags passed verbatim, e.g.
-             --no-dtls, --os=win, --csd-wrapper=/path. Quotes are respected.
-             Avoid flags vpn-up already manages (--protocol, --user, --pid-file,
-             --passwd-on-stdin, --background, --servercert, --authgroup, …).
-             NOTE: openconnect runs as root — some flags (e.g. --csd-wrapper,
-             --script) execute programs as root. -->
+        <!-- extraArgs (advanced): see VPN PROFILE 1. -->
         <extraArgs></extraArgs>
         <!-- clientCertificate / clientKey: see VPN PROFILE 1. A key passphrase or
              PKCS#11 PIN goes in the secrets backend (key_password), not here. -->
