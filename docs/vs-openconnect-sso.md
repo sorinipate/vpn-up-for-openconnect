@@ -29,6 +29,7 @@ fair, not a pitch.)
 | TOTP 2FA | Auto-filled into the SSO form | Generated from a keychain seed for the gateway prompt; seed never on argv/disk |
 | Extra openconnect args | Yes (`-- …`) | Yes (`<extraArgs>`, quote-safe, with collision warnings) |
 | Duo push / phone / sms / passcode | Not the focus | First-class |
+| Client-certificate auth | Not a focus | **Yes** — file or PKCS#11 / YubiKey PIV (first-class) |
 | Named profiles + keyring secrets | Yes / Yes | Yes / Yes (Keychain, Secret Service, or encrypted vault) |
 | Protocols | Cisco AnyConnect (SAML) | anyconnect, gp, pulse, nc |
 | `status` / `stop` / `logs`, cert pinning | — | Yes |
@@ -44,8 +45,9 @@ browser — it can fully script username, password, and TOTP entry, and it works
 even on older OpenConnect because it brings its own browser. VPN Up instead
 *delegates to your real browser* via OpenConnect ≥ 9's `--external-browser`: you
 complete the login where your password manager, passkeys, and Duo already live.
-Simpler and arguably safer, at the cost of needing OpenConnect ≥ 9 and a desktop
-session.
+Because it's your real browser, **FIDO2 / passkeys / YubiKey-WebAuthn just work** —
+hardware WebAuthn is often unreliable inside an embedded Qt browser. Simpler and
+arguably safer, at the cost of needing OpenConnect ≥ 9 and a desktop session.
 
 **Scope.** openconnect-sso is focused on the SSO *login*. VPN Up is a full
 lifecycle manager — profiles, secure secrets, Duo, certificate pinning,

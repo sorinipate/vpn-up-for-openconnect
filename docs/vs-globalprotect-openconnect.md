@@ -4,7 +4,8 @@ title: VPN Up vs. GlobalProtect-openconnect
 description: >-
   How VPN Up compares to yuezk/GlobalProtect-openconnect for connecting to Palo
   Alto GlobalProtect VPNs from the command line — platform support, protocols,
-  free vs. paid GUI, SSO/FIDO2 vs. Duo/TOTP, and auto-reconnect.
+  free vs. paid GUI, authentication (SSO, Duo, TOTP, client certificates), and
+  auto-reconnect.
 permalink: /vs-globalprotect-openconnect/
 ---
 
@@ -27,8 +28,8 @@ OpenConnect foundation; this aims to be fair, not a pitch.)
 | Interface | CLI **and** GUI + system tray | CLI only (terminal-first by design) |
 | License / cost | CLI free (GPL-3.0); **GUI proprietary, paid** (7-day trial) | **Fully free, MIT** — no paid tier |
 | Browser SSO / SAML | Yes (default or specified browser) | Yes (`--external-browser`, needs OpenConnect ≥ 9) |
-| FIDO2 / YubiKey | **Yes** | Not yet (on the roadmap) |
-| Client-certificate auth | Yes | Via `<extraArgs>` (not first-class) |
+| FIDO2 / YubiKey | **Yes** (browser SSO) | Yes — via browser SSO (passkeys / WebAuthn); YubiKey **PIV** as a client certificate |
+| Client-certificate auth | Yes | **Yes** — file or PKCS#11 / YubiKey PIV (first-class) |
 | Duo push / phone / sms / passcode | Not the focus | First-class |
 | TOTP authenticator codes | — (uses FIDO2 / SSO instead) | Yes — seed in keychain, code on stdin; works non-interactively |
 | Named profiles + keyring secrets | Portal/gateway config + keyring | Yes (Keychain, Secret Service, or encrypted vault) |
@@ -56,24 +57,30 @@ and free, but its *GUI* is proprietary and requires payment after a 7-day trial.
 Up is entirely MIT and auditable Bash — nothing closed, nothing to pay for, and the
 whole codebase is small enough to read end to end.
 
-**2FA philosophy.** GlobalProtect-openconnect leans on **FIDO2/YubiKey + browser
-SSO** — hardware-token strength, but interactive by nature. VPN Up covers **Duo +
-TOTP + browser SSO**, and crucially its **TOTP path runs non-interactively as a
-login service**: a headless box or laptop can auto-reconnect without a human
-approving each prompt. That's a genuine VPN Up differentiator — at the trade-off
-that the TOTP seed lives in the keychain ("1.5-factor"), which a YubiKey avoids.
+**Authentication.** The two now overlap more than they used to. Both do browser
+SSO, and both get **FIDO2 / passkeys / YubiKey-WebAuthn** for free because the SSO
+login happens in a browser. VPN Up also has first-class **Duo**, **TOTP**, and
+**client-certificate** auth — a cert/key file *or* a **PKCS#11 / YubiKey PIV** token
+(the [client-certificate guide]({{ '/client-certificate-auth/' | relative_url }})).
+Its real differentiator is **non-interactive auth that runs as a login service**:
+TOTP (code generated from a keychain seed) and a PKCS#11 cert (PIN fed via a
+transient `pin-source` file) let a headless box or laptop auto-reconnect without a
+human approving each prompt — at the trade-off that the seed/PIN lives in the
+keychain ("1.5-factor"), which a hardware-only token avoids.
 
 ## When to choose which
 
 **Choose GlobalProtect-openconnect if** you're on **Linux**, use **GlobalProtect**,
-want a **GUI / system-tray** experience, or need **FIDO2 / YubiKey** — and you're
+and want a **GUI / system-tray** experience with broad distro packaging — and you're
 fine paying for the GUI (or staying on its free CLI).
 
 **Choose VPN Up if** you need **macOS** support, connect to **more than just
-GlobalProtect**, want a **fully-free, auditable, scriptable** tool, rely on **Duo or
-TOTP**, or want **auto-reconnect at login on a server or laptop** without a GUI. See
-[installation]({{ '/installation/' | relative_url }}) and
-[GlobalProtect from the CLI]({{ '/globalprotect-cli/' | relative_url }}).
+GlobalProtect**, want a **fully-free, auditable, scriptable** tool, rely on **Duo,
+TOTP, or a client certificate** (file or PKCS#11 / YubiKey PIV), or want
+**auto-reconnect at login on a server or laptop** without a GUI. See
+[installation]({{ '/installation/' | relative_url }}),
+[GlobalProtect from the CLI]({{ '/globalprotect-cli/' | relative_url }}), and
+[client-certificate auth]({{ '/client-certificate-auth/' | relative_url }}).
 
 > Comparing other clients? See
 > [VPN Up vs. openconnect-sso]({{ '/vs-openconnect-sso/' | relative_url }}) (Cisco
