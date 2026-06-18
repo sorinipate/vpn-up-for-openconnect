@@ -16,6 +16,15 @@ author: Sorin-Doru Ipate
 lang: en_US
 repository: sorinipate/vpn-up-for-openconnect
 
+# Default social / link-preview card (jekyll-seo-tag emits og:image + twitter:image).
+# Path includes the baseurl because seo-tag resolves it against `url` only.
+image:
+  path: /vpn-up-for-openconnect/assets/social-preview.png
+  width: 2560
+  height: 1280
+twitter:
+  card: summary_large_image
+
 theme: minima
 plugins:
   - jekyll-seo-tag      # per-page <title>, meta description, canonical, Open Graph
