@@ -5,6 +5,19 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ---
 
+## [v3.9.2] — 2026-06-18
+### Changed
+
+- Commands that read the profiles file (`list`, the interactive `start` menu,
+  `add-profile`, `remove-profile`, `pin --save`, `service install`) now **fail
+  gracefully on a malformed profiles file** with a single clear message ("Your
+  profiles file isn't valid XML …") instead of leaking raw `xmlstarlet`/libxml2
+  parser errors. A malformed file is also no longer silently misread as "no
+  profiles" (which previously could wrongly trigger the first-run wizard). New
+  internal `profiles_xml_ok` guard, with tests.
+
+---
+
 ## [v3.9.1] — 2026-06-18
 ### Fixed
 

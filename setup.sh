@@ -84,6 +84,9 @@ add_profile_wizard() {
   if [ ! -f "$PROFILES_FILE" ]; then
     ( umask 077; printf '<VPNs>\n</VPNs>\n' > "$PROFILES_FILE" )
   fi
+  # Don't try to append to a profiles file that isn't valid XML — xmlstarlet ed
+  # would fail confusingly. Fail with a clear message instead.
+  profiles_xml_ok || return 1
 
   local name proto host group user duo authmode tokenmode extraargs clientcert clientkey
   read -r -p "Profile name: " name
@@ -194,6 +197,7 @@ add_profile_wizard() {
 remove_profile() {
   local name="$1"
   [ -n "$name" ] || { echo "Usage: ${DISPLAY_NAME} remove-profile <profile>" >&2; return 1; }
+  profiles_xml_ok || return 1
   if ! profile_exists "$name"; then
     print_danger "Unknown profile '%s'.\n" "$name"
     return 1

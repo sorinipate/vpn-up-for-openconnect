@@ -60,6 +60,13 @@ start() {
   load_config
   print_warning "Loaded configuration from %s ...\n" "$CONFIGURATION_FILE"
 
+  # A malformed profiles file must fail with a clear message — not be silently
+  # misread as "no profiles" (which would wrongly trigger first-run) or leak raw
+  # libxml2 parser errors when we read it below.
+  if [ -f "$PROFILES_FILE" ] && ! profiles_xml_ok; then
+    exit 1
+  fi
+
   # First run with no profiles: offer the guided wizard when interactive;
   # fall back to seeding the XML template for scripts/services.
   if [ ! -f "$PROFILES_FILE" ] || [ -z "$(profile_names_raw)" ]; then

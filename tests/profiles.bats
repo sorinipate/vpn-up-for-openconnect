@@ -136,3 +136,44 @@ XML
   [[ "$output" == *"VPN PROFILE 1"* ]]
   [[ "$output" == *"VPN PROFILE 2"* ]]
 }
+
+# --- graceful handling of a malformed profiles file (no leaked libxml2 errors) ---
+
+@test "profiles_xml_ok accepts a well-formed file and a missing file" {
+  run profiles_xml_ok                 # valid file written in setup()
+  [ "$status" -eq 0 ]
+  rm -f "$PROFILES_FILE"
+  run profiles_xml_ok                 # absent -> OK (handled by first-run logic)
+  [ "$status" -eq 0 ]
+}
+
+@test "profiles_xml_ok rejects malformed XML with a clear message and no parser noise" {
+  print_danger()  { printf -- "$1" "${@:2}"; }   # make messages observable
+  print_warning() { printf -- "$1" "${@:2}"; }
+  printf '<VPNs><VPN><name>Broken' > "$PROFILES_FILE"   # truncated: invalid XML
+  run profiles_xml_ok
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"isn't valid XML"* ]]
+  [[ "$output" != *"parser error"* ]]                  # no raw libxml2 leakage
+}
+
+@test "list_profiles on a malformed file fails gracefully (clear message, no libxml2 noise)" {
+  print_danger()  { printf -- "$1" "${@:2}"; }
+  print_warning() { printf -- "$1" "${@:2}"; }
+  check_file_existence() { :; }
+  printf '<VPNs><VPN><name>Broken' > "$PROFILES_FILE"
+  run list_profiles
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"isn't valid XML"* ]]
+  [[ "$output" != *"parser error"* ]]
+  [[ "$output" != *"Double hyphen"* ]]
+}
+
+@test "list_profile_names on a malformed file returns non-zero instead of an empty menu" {
+  print_danger()  { :; }
+  print_warning() { :; }
+  printf '<VPNs><VPN><name>Broken' > "$PROFILES_FILE"
+  run list_profile_names
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"Quit"* ]]          # didn't fall through to a bogus menu
+}
