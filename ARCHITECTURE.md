@@ -1,6 +1,6 @@
 # Architecture — VPN Up for OpenConnect
 
-**Last updated:** 2026-06-18 (v3.9.0)
+**Last updated:** 2026-06-18 (v3.10.0)
 
 > *What* and *why* live in [PRD.md](PRD.md); this document covers *how*. Function and
 > file references are accurate as of the version above — verify against the source
@@ -89,10 +89,11 @@ namespace; `DISPLAY_NAME` (`vpn-up`) is used only in user-facing text.
 `password` (deprecated; migrated + blanked), `duo2FAMethod` (alias `duoMethod`),
 `serverCertificate`, `authMode` (`password` default | `sso`), `tokenMode`
 (empty | `totp`), `extraArgs` (verbatim openconnect flags), `clientCertificate` /
-`clientKey` (a file path or a PKCS#11 URI for client-certificate auth).
+`clientKey` (a file path or a PKCS#11 URI for client-certificate auth), `proxy` (an
+HTTP/SOCKS proxy URL → `--proxy`).
 `load_profile_fields` reads them positionally via `mapfile`, so **new fields are
 appended last** to avoid shifting indices (`extraArgs` is index 10,
-`clientCertificate`/`clientKey` are 11/12). Secrets are *not* in the XML — the TOTP
+`clientCertificate`/`clientKey` are 11/12, `proxy` is 13). Secrets are *not* in the XML — the TOTP
 **seed** (`token_secret`) and any client-key **passphrase / PKCS#11 PIN**
 (`key_password`) live in the secrets backend.
 
@@ -129,6 +130,8 @@ appended last** to avoid shifting indices (`extraArgs` is index 10,
      `_append_pkcs11_pin_source` writes the PIN to a transient `0600` file and adds
      `pin-source=file:…` to the URI (never the PIN on argv); the file is shredded
      after the session. A file-key passphrase is left to openconnect's TTY prompt.
+   - **Proxy:** an optional `proxy` URL is passed as `--proxy=` (an identifier, not a
+     secret); `--proxy` is on the collision watch list.
    - Background daemonizes (`--background`); foreground/service/SSO stay attached and
      the PID is captured via `pgrep` after a short delay (openconnect only writes
      `--pid-file` when daemonizing). `notify` + `run_hooks` fire on connect/disconnect.
@@ -169,8 +172,8 @@ unattended.
 
 - **Tests:** `bats` suite under [tests/](tests/) (`cli`, `core`, `lifecycle`, `logging`,
   `network`, `profiles`, `secrets`, `service`, `sso`, `totp`, `extraargs`,
-  `clientcert`, `ui_setup`), with stubs for network, sudo, keychain, oathtool, and
-  service managers.
+  `clientcert`, `proxy`, `ui_setup`), with stubs for network, sudo, keychain, oathtool,
+  and service managers.
 - **CI** ([.github/workflows/ci.yml](.github/workflows/ci.yml)): shellcheck +
   `bats tests/` on **macOS and Ubuntu** + gitleaks + CodeQL on every push/PR. `main` is
   protected and PR-only.

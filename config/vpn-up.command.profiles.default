@@ -51,6 +51,11 @@
              token with a stored PIN. -->
         <clientCertificate></clientCertificate>
         <clientKey></clientKey>
+        <!-- proxy (optional): HTTP/SOCKS proxy URL for openconnect, e.g.
+             http://proxy.corp:8080 or socks5://127.0.0.1:1080. It is an
+             identifier, not a secret; avoid embedding user:pass in the URL
+             (that would put credentials on the command line). -->
+        <proxy></proxy>
     </VPN>
 
     <!-- VPN PROFILE 2 -->
@@ -77,6 +82,8 @@
              PKCS#11 PIN goes in the secrets backend (key_password), not here. -->
         <clientCertificate></clientCertificate>
         <clientKey></clientKey>
+        <!-- proxy: see VPN PROFILE 1 (HTTP/SOCKS proxy URL for openconnect). -->
+        <proxy></proxy>
     </VPN>
     <!-- Add more VPN profiles as needed -->
 </VPNs>

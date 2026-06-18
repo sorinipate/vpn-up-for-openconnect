@@ -1,6 +1,6 @@
 # Product Requirements Document — VPN Up for OpenConnect
 
-**Status:** Living document · **Owner:** Sorin-Doru Ipate · **Last updated:** 2026-06-18 (v3.9.0)
+**Status:** Living document · **Owner:** Sorin-Doru Ipate · **Last updated:** 2026-06-18 (v3.10.0)
 
 > This PRD describes *what* VPN Up is and *why*. For *how* it's built, see
 > [ARCHITECTURE.md](ARCHITECTURE.md). For the change history, see
@@ -141,6 +141,10 @@ upgrades. There is a gap for a **terminal-first, secure, scriptable** front end.
   vpn-up doesn't model (e.g. `--no-dtls`, `--os=win`, `--csd-wrapper`, a proxy, MTU)
   are tokenized quote-safely (via `xargs`, never `eval`) and appended before the
   gateway host; a token that duplicates a vpn-up-managed flag warns but still passes.
+- **FR-23** Allow a first-class **HTTP/SOCKS proxy** per profile (`proxy`): a URL
+  (e.g. `http://proxy:8080`, `socks5://host:1080`) passed to openconnect's `--proxy`.
+  The URL is an identifier, not a secret (it lives in the XML); embedding inline
+  credentials is discouraged since they would reach argv.
 
 ## 7. Non-functional requirements
 
@@ -184,7 +188,6 @@ upgrades. There is a gap for a **terminal-first, secure, scriptable** front end.
 
 - RSA SecurID / Yubikey OATH (HOTP) token support (TOTP shipped in v3.8.0; PKCS#11
   client certificates, incl. Yubikey PIV, shipped in v3.9.0).
-- First-class HTTP/SOCKS proxy field (today a proxy can be passed via `extraArgs`).
 - Multiple simultaneous tunnels (per-profile state already lays the groundwork).
 
 ## 11. Release & distribution

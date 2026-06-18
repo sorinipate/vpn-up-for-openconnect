@@ -51,7 +51,8 @@ load_profile_fields() {
       -v "tokenMode | tokenmode" -n \
       -v "extraArgs | extraargs" -n \
       -v "clientCertificate | clientcertificate" -n \
-      -v "clientKey | clientkey" -n "${PROFILES_FILE}"
+      -v "clientKey | clientkey" -n \
+      -v "proxy | proxyUrl" -n "${PROFILES_FILE}"
   )
   VPN_NAME="${fields[0]:-}"
   PROTOCOL="${fields[1]:-}"
@@ -73,6 +74,9 @@ load_profile_fields() {
   # identifiers, not secrets; any passphrase/PIN lives in the secrets backend.
   VPN_CLIENT_CERT="${fields[11]:-}"
   VPN_CLIENT_KEY="${fields[12]:-}"
+  # Optional HTTP/SOCKS proxy URL (e.g. http://proxy:8080, socks5://127.0.0.1:1080)
+  # passed to openconnect. An identifier, not a secret — avoid embedding credentials.
+  VPN_PROXY="${fields[13]:-}"
 
   # Intentionally NOT exported: these are read only by functions in this
   # shell, and exporting would copy the password into the environment of
