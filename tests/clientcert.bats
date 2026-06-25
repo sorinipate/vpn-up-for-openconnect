@@ -165,3 +165,23 @@ XML
   [ "$status" -eq 0 ]
   [[ "$output" == *"key_password"* ]]
 }
+
+# --- _append_pkcs11_pin_source (pure URI builder) ---
+
+@test "_append_pkcs11_pin_source returns non-pkcs11 URIs and file paths unchanged" {
+  run _append_pkcs11_pin_source "/etc/vpn/me.key" "/run/pin"
+  [ "$status" -eq 0 ]
+  [ "$output" = "/etc/vpn/me.key" ]
+}
+
+@test "_append_pkcs11_pin_source appends pin-source with '?' when the URI has no query" {
+  run _append_pkcs11_pin_source "pkcs11:manufacturer=piv_II;id=%01" "/run/pin"
+  [ "$status" -eq 0 ]
+  [ "$output" = "pkcs11:manufacturer=piv_II;id=%01?pin-source=file:/run/pin" ]
+}
+
+@test "_append_pkcs11_pin_source appends pin-source with '&' when the URI already has a query" {
+  run _append_pkcs11_pin_source "pkcs11:id=%01?type=cert" "/run/pin"
+  [ "$status" -eq 0 ]
+  [ "$output" = "pkcs11:id=%01?type=cert&pin-source=file:/run/pin" ]
+}

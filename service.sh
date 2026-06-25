@@ -12,7 +12,12 @@ LAUNCH_AGENT_DIR="${VPN_UP_LAUNCH_AGENT_DIR:-$HOME/Library/LaunchAgents}"
 SYSTEMD_USER_DIR="${VPN_UP_SYSTEMD_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user}"
 SERVICE_LABEL_PREFIX="com.sorinipate.vpn-up"
 
-_xml_escape() { local s="$1"; s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"; printf '%s' "$s"; }
+# Escape &, <, > for XML/plist/unit content. Done via sed, not bash ${//}
+# substitution: under bash >= 5.2 `patsub_replacement` is on by default, so an
+# unescaped `&` in a ${var//pat/repl} replacement expands to the matched text
+# (e.g. ${s//</&lt;} yields "<lt;", not "&lt;"). sed's `\&` is an unambiguous
+# literal ampersand across all bash versions. `&` must be escaped first.
+_xml_escape() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
 
 _service_path_for() {
   local slug; slug="$(profile_slug "$1")"

@@ -5,6 +5,18 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ---
 
+## [Unreleased]
+### Fixed
+
+- **Service file XML escaping on bash ≥ 5.2.** `_xml_escape` built entities with
+  bash `${var//pat/repl}` substitution, but bash 5.2+ enables `patsub_replacement`
+  by default, so an unescaped `&` in the replacement expands to the matched text —
+  turning `<`/`>` into `<lt;`/`>gt;` instead of `&lt;`/`&gt;`. A VPN profile name
+  containing `<` or `>` therefore produced a malformed launchd plist / systemd unit.
+  Escaping now uses `sed` (`\&` is an unambiguous literal across bash versions).
+
+---
+
 ## [v3.11.0] — 2026-06-19
 ### Added
 
