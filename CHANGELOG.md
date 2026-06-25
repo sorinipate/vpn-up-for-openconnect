@@ -5,7 +5,7 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ---
 
-## [Unreleased]
+## [v3.11.1] — 2026-06-19
 ### Fixed
 
 - **Service file XML escaping on bash ≥ 5.2.** `_xml_escape` built entities with
