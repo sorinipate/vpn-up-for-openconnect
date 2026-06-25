@@ -14,6 +14,27 @@ setup() {
   source "$BATS_TEST_DIRNAME/../service.sh"
 }
 
+@test "_xml_escape escapes &, <, > and leaves plain text untouched" {
+  [ "$(_xml_escape "plain text")" = "plain text" ]
+  [ "$(_xml_escape "a & b")" = "a &amp; b" ]
+  [ "$(_xml_escape "1 < 2")" = "1 &lt; 2" ]
+  [ "$(_xml_escape "2 > 1")" = "2 &gt; 1" ]
+  [ "$(_xml_escape "<tag attr=\"x\">")" = "&lt;tag attr=\"x\"&gt;" ]
+}
+
+@test "_xml_escape escapes ampersand first so entities are not double-escaped" {
+  # An input that already looks like an entity must not become &amp;lt;
+  [ "$(_xml_escape "&lt;")" = "&amp;lt;" ]
+  [ "$(_xml_escape "A < B & C > D")" = "A &lt; B &amp; C &gt; D" ]
+}
+
+@test "_xml_escape output for an injection-y profile name yields well-formed XML in the plist" {
+  run write_launch_agent_plist 'Evil</string><key>x</key><string>& <oops>'
+  [ "$status" -eq 0 ]
+  printf '%s\n' "$output" | xmlstarlet val -q -
+  [[ "$output" != *"<oops>"* ]]   # the literal '<' was escaped, not emitted as a tag
+}
+
 @test "write_launch_agent_plist produces valid plist with service env and profile" {
   run write_launch_agent_plist "My Work & VPN"
   [ "$status" -eq 0 ]
