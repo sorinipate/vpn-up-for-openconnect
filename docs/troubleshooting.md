@@ -31,19 +31,30 @@ the connection then proceeds and the tunnel comes up.
 
 ## It keeps asking for my sudo password
 
-`openconnect` needs root, so VPN Up runs it under `sudo`. For non-interactive use
-(and for the login service), add a sudoers rule scoped to the one binary:
+`openconnect` needs root, so VPN Up runs it under `sudo`. That prompt is the
+**safe** configuration — the sudo password is never stored anywhere.
+
+> ⚠️ **A passwordless rule is not "just scoped to one binary."** sudoers matches
+> the command, not its arguments, and several `openconnect` flags (`--script`,
+> `--script-tun`, `--csd-wrapper`, `--config`) execute a program as root. A
+> `NOPASSWD` rule for `openconnect` is therefore effectively passwordless root
+> for your account. On macOS it is weaker still: Homebrew's prefix is owned by
+> the installing user, so a rule pointing into it can be bypassed by replacing
+> the binary. Read
+> [Known limitations](https://github.com/sorinipate/vpn-up-for-openconnect/blob/main/SECURITY.md#known-limitations)
+> before installing one.
+
+If you accept that trade-off (it is required for the login service):
 
 ```bash
-# macOS (Homebrew):
-echo "$USER ALL=(root) NOPASSWD: /opt/homebrew/sbin/openconnect" | sudo tee /etc/sudoers.d/vpn-up
+command -v openconnect     # verify the real path first
+
+# macOS (Homebrew, Apple Silicon — usually /opt/homebrew/bin/openconnect):
+echo "$USER ALL=(root) NOPASSWD: /opt/homebrew/bin/openconnect" | sudo tee /etc/sudoers.d/vpn-up
 # Linux:
 echo "$USER ALL=(root) NOPASSWD: /usr/sbin/openconnect" | sudo tee /etc/sudoers.d/vpn-up
 sudo chmod 440 /etc/sudoers.d/vpn-up
 ```
-
-The sudo password is **never** stored. Verify the binary path with
-`command -v openconnect`.
 
 ## SSO browser doesn't open (Linux)
 
