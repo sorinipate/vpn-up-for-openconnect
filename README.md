@@ -480,7 +480,7 @@ Background and design notes:
 Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow (PRs only, shellcheck + test suite must pass on macOS and Ubuntu).
 
 - 📖 Documentation site: [sorinipate.github.io/vpn-up-for-openconnect](https://sorinipate.github.io/vpn-up-for-openconnect/)
-- 📐 Design docs: [PRD.md](PRD.md) (what & why) and [ARCHITECTURE.md](ARCHITECTURE.md) (how)
+- 📐 Design docs: [PRD.md](PRD.md) (what & why), [ARCHITECTURE.md](ARCHITECTURE.md) (how), and [PRIVILEGED-HELPER-DESIGN.md](PRIVILEGED-HELPER-DESIGN.md) (draft: the planned root trust boundary)
 - 🔐 Security issues: please report privately via [SECURITY.md](SECURITY.md), not public issues
 - 📄 Full release history: [CHANGELOG.md](CHANGELOG.md)
 - ⚖️ Licensed under the [MIT License](LICENSE) — © Sorin-Doru Ipate
