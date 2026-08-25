@@ -25,7 +25,7 @@ on drop (30-second throttle).
 > ⚠️ **Not recommended for now.** The login service cannot work without a
 > passwordless sudoers rule for `openconnect`, and that rule currently grants
 > effective root to your account (see
-> [Known limitations](https://github.com/sorinipate/vpn-up-for-openconnect/blob/main/SECURITY.md#known-limitations)).
+> [Known limitations](https://github.com/sorinipate/vpn-up-for-openconnect/blob/main/SECURITY.md#known-limitations).
 > Until VPN Up ships a root-owned privileged helper, prefer connecting manually
 > and typing your sudo password. If you do install the service, do it only on a
 > single-user machine you trust — not a shared or centrally managed one.

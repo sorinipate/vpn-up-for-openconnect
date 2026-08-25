@@ -444,11 +444,15 @@ _record_foreground_openconnect_pid() {
 # Warn (but don't block) about user-supplied extra args. Two classes:
 #
 #   1. Flags that make openconnect execute another program AS ROOT. openconnect
-#      runs under sudo, so --script/--csd-wrapper/--script-tun hand root to
-#      whatever they name, and --config/--xmlconfig can set those from a file.
-#      They are legitimately needed (split tunnelling, CSD/trojan wrappers), so
-#      they are passed through — but paired with a passwordless sudoers rule for
-#      openconnect they are a root-execution path, so say so loudly.
+#      runs under sudo, so --script/--script-tun/--csd-wrapper hand root to
+#      whatever they name; --config/--xmlconfig can set those from a file;
+#      --external-browser names an opener openconnect runs as root during SSO;
+#      and --csd-user enables execution of the gateway-supplied CSD trojan
+#      (--csd-user=root runs it as root). Short forms count too: -s, -S, -x.
+#      They are legitimately needed (split tunnelling, CSD/trojan wrappers, a
+#      session-aware browser opener), so they are passed through — but paired
+#      with a passwordless sudoers rule for openconnect they are a
+#      root-execution path, so say so loudly.
 #      NOTE: this warning is a footgun guardrail, NOT a security boundary. A
 #      NOPASSWD rule naming the openconnect binary lets anything running as this
 #      user invoke openconnect directly with these same flags, bypassing vpn-up
@@ -460,7 +464,7 @@ _warn_extra_arg_privileged() {
   for tok in "$@"; do
     base="${tok%%=*}"
     case "$base" in
-      --script|--script-tun|--csd-wrapper|--config|--xmlconfig)
+      --script|-s|--script-tun|-S|--csd-wrapper|--csd-user|--config|--xmlconfig|-x|--external-browser)
         print_danger "extraArgs contains '%s': openconnect runs as root, so this executes a program (or reads a config that can name one) WITH ROOT PRIVILEGES. Passing it anyway — only point it at something only root can write. See SECURITY.md.\n" "$base" ;;
     esac
   done

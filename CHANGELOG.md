@@ -30,9 +30,13 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 - **The login service is documented as not recommended** until that helper
   lands, since it cannot run without the sudoers rule.
 - **`extraArgs` entries that execute programs as root now print a loud warning.**
-  `--script`, `--script-tun`, `--csd-wrapper`, `--config`, and `--xmlconfig`
-  raise a distinct danger-level message (previously `--script` and
-  `--csd-wrapper` were not flagged at all). The arguments are still passed
+  `--script`/`-s`, `--script-tun`/`-S`, `--csd-wrapper`, `--csd-user`,
+  `--config`, `--xmlconfig`/`-x`, and `--external-browser` raise a distinct
+  danger-level message (previously `--script` and `--csd-wrapper` were not
+  flagged at all). Short forms are covered because they reach root identically;
+  `--external-browser` is included because openconnect launches the SSO opener as
+  root; `--csd-user` because it enables execution of the gateway-supplied CSD
+  binary (`--csd-user=root` as root). The arguments are still passed
   through — split tunnelling and CSD need them — and this remains a footgun
   guardrail, **not** a security boundary: while the sudoers rule permits
   `openconnect` itself, no client-side filtering can enforce anything.
