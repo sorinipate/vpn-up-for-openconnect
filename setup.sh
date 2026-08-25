@@ -24,7 +24,8 @@ readonly DANGER="\x1b[31;1m"
 readonly RESET="\x1b[0m"
 
 # NOTE: openconnect runs via sudo; the sudo password is never stored anywhere.
-# For passwordless operation, add a scoped sudoers rule (see README).
+# For passwordless operation, add a sudoers rule for openconnect (see README) —
+# note it grants effective root to the invoking user (see SECURITY.md).
 
 # OPENCONNECT OPTIONS
 readonly BACKGROUND=__BACKGROUND__

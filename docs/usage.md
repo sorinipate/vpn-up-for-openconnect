@@ -66,6 +66,11 @@ vpn-up service uninstall "Frankfurt VPN"
 Requirements: a passwordless sudoers rule for `openconnect`, a stored password,
 and a non-interactive 2FA method (push/phone/sms — not passcode, and not SSO).
 
+> ⚠️ That sudoers rule grants **effective root** to your account, so the login
+> service is not recommended until VPN Up ships a root-owned privileged helper —
+> see [Known limitations](https://github.com/sorinipate/vpn-up-for-openconnect/blob/main/SECURITY.md#known-limitations) and
+> [Run at login]({{ '/vpn-at-login/' | relative_url }}).
+
 ## Certificate pinning
 
 ```bash
@@ -99,8 +104,12 @@ the openconnect command, just before the gateway host:
 - Avoid flags VPN Up already manages (`--protocol`, `--user`, `--passwd-on-stdin`,
   `--background`, `--servercert`, `--authgroup`, `--pid-file`, `--external-browser`,
   `--token-mode`/`--token-secret`). Duplicating one warns but is still passed.
-- **openconnect runs as root**, so some flags execute programs as root (e.g.
-  `--csd-wrapper`, `--script`) — only add flags you'd run under `sudo` yourself.
+- ⚠️ **Some flags execute a program as root.** openconnect runs under `sudo`, so
+  `--script`, `--script-tun`, `--csd-wrapper`, `--config`, and `--xmlconfig` all
+  hand root to whatever they name. VPN Up warns loudly and still passes them
+  (split tunnelling and CSD need them), but with a passwordless sudoers rule they
+  form a root-execution path — point them only at a program on a path that only
+  root can write. See [Known limitations](https://github.com/sorinipate/vpn-up-for-openconnect/blob/main/SECURITY.md#known-limitations).
 
 See also: [SSO & Duo 2FA]({{ '/sso-duo/' | relative_url }}) and
 [supported protocols]({{ '/protocols/' | relative_url }}).

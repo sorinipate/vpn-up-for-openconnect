@@ -441,8 +441,31 @@ _record_foreground_openconnect_pid() {
   ) &
 }
 
-# Warn (but don't block) when a user-supplied extra arg duplicates a flag that
-# vpn-up already manages — overriding these can break connection or status/stop.
+# Warn (but don't block) about user-supplied extra args. Two classes:
+#
+#   1. Flags that make openconnect execute another program AS ROOT. openconnect
+#      runs under sudo, so --script/--csd-wrapper/--script-tun hand root to
+#      whatever they name, and --config/--xmlconfig can set those from a file.
+#      They are legitimately needed (split tunnelling, CSD/trojan wrappers), so
+#      they are passed through — but paired with a passwordless sudoers rule for
+#      openconnect they are a root-execution path, so say so loudly.
+#      NOTE: this warning is a footgun guardrail, NOT a security boundary. A
+#      NOPASSWD rule naming the openconnect binary lets anything running as this
+#      user invoke openconnect directly with these same flags, bypassing vpn-up
+#      entirely. The boundary has to live in sudoers (see SECURITY.md).
+#   2. Flags vpn-up already manages — overriding these can break the connection
+#      or status/stop.
+_warn_extra_arg_privileged() {
+  local tok base
+  for tok in "$@"; do
+    base="${tok%%=*}"
+    case "$base" in
+      --script|--script-tun|--csd-wrapper|--config|--xmlconfig)
+        print_danger "extraArgs contains '%s': openconnect runs as root, so this executes a program (or reads a config that can name one) WITH ROOT PRIVILEGES. Passing it anyway — only point it at something only root can write. See SECURITY.md.\n" "$base" ;;
+    esac
+  done
+}
+
 _warn_extra_arg_collisions() {
   local tok base
   for tok in "$@"; do
@@ -456,8 +479,10 @@ _warn_extra_arg_collisions() {
 
 run_openconnect() {
   # Validate sudo up-front on the TTY so the prompt doesn't collide with the
-  # password pipe below. For passwordless use, configure a scoped sudoers rule
-  # (see README) instead of storing the sudo password anywhere.
+  # password pipe below. For passwordless use, configure a sudoers rule for
+  # openconnect (see README) instead of storing the sudo password anywhere —
+  # but note that such a rule grants effective root, since sudoers does not
+  # constrain arguments and openconnect can execute programs (see SECURITY.md).
   if [ -n "${VPN_UP_SERVICE:-}" ]; then
     # Service mode (launchd/systemd): no TTY, so sudo must not prompt.
     if ! sudo -n -v 2>/dev/null; then
@@ -525,7 +550,10 @@ run_openconnect() {
     else
       mapfile -t _extra <<< "$_split"
       [ "${#_extra[@]}" -eq 1 ] && [ -z "${_extra[0]}" ] && _extra=()
-      [ "${#_extra[@]}" -gt 0 ] && _warn_extra_arg_collisions "${_extra[@]}"
+      if [ "${#_extra[@]}" -gt 0 ]; then
+        _warn_extra_arg_privileged "${_extra[@]}"
+        _warn_extra_arg_collisions "${_extra[@]}"
+      fi
       [ "${#_extra[@]}" -gt 0 ] && args+=("${_extra[@]}")
     fi
   fi

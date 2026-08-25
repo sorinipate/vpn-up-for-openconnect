@@ -22,19 +22,36 @@ vpn-up service uninstall "Work VPN"   # remove it
 The service manager supervises `openconnect` in the foreground and relaunches it
 on drop (30-second throttle).
 
+> ⚠️ **Not recommended for now.** The login service cannot work without a
+> passwordless sudoers rule for `openconnect`, and that rule currently grants
+> effective root to your account (see
+> [Known limitations](https://github.com/sorinipate/vpn-up-for-openconnect/blob/main/SECURITY.md#known-limitations)).
+> Until VPN Up ships a root-owned privileged helper, prefer connecting manually
+> and typing your sudo password. If you do install the service, do it only on a
+> single-user machine you trust — not a shared or centrally managed one.
+
 ## Requirements
 
 Because there's no terminal to type into at login, a service profile needs:
 
-1. **A passwordless sudoers rule** scoped to the `openconnect` binary:
+1. **A passwordless sudoers rule** for the `openconnect` binary:
 
    ```bash
-   # macOS (Homebrew):
-   echo "$USER ALL=(root) NOPASSWD: /opt/homebrew/sbin/openconnect" | sudo tee /etc/sudoers.d/vpn-up
+   command -v openconnect     # verify the real path first
+
+   # macOS (Homebrew, Apple Silicon — usually /opt/homebrew/bin/openconnect):
+   echo "$USER ALL=(root) NOPASSWD: /opt/homebrew/bin/openconnect" | sudo tee /etc/sudoers.d/vpn-up
    # Linux:
    echo "$USER ALL=(root) NOPASSWD: /usr/sbin/openconnect" | sudo tee /etc/sudoers.d/vpn-up
    sudo chmod 440 /etc/sudoers.d/vpn-up
    ```
+
+   ⚠️ This rule grants **effective root** to your account, not a privilege
+   scoped to one binary: sudoers does not constrain arguments, and
+   `openconnect`'s `--script` / `--csd-wrapper` / `--config` flags execute
+   programs as root. On macOS it is weaker still — Homebrew's prefix is owned by
+   the installing user, so the permitted binary can simply be replaced. See
+   [Known limitations](https://github.com/sorinipate/vpn-up-for-openconnect/blob/main/SECURITY.md#known-limitations).
 
 2. **A stored password** — `vpn-up set-secret "Work VPN" password`.
 3. **A non-interactive 2FA method** — `push`, `phone`, `sms`, or a
