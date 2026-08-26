@@ -46,19 +46,31 @@ SRC       = src/validate.c src/authparse.c src/policy.c src/request.c \
             src/state.c src/proc.c src/registry.c src/elf.c src/closure.c \
             src/exec.c
 TEST_SRC  = t/main.c t/harness.c t/test_policy.c t/test_state.c t/test_registry.c \
-            t/test_exec.c t/test_adversarial.c t/test_closure.c
+            t/test_exec.c t/test_adversarial.c t/test_closure.c \
+            t/test_integration.c
 TEST_BIN  = build/vu-test
 ADMIN_BIN  = build/vpn-up-admin
 HELPER_BIN = build/vpn-up-helper
 
+# The stand-in for OpenConnect at the execve boundary (step 11). A compiled
+# binary, not a script: the closure check parses the pinned binary's ELF dynamic
+# section, and a stand-in that could not pass the real check would not be
+# standing in for much. Defined HERE rather than next to its rule because make
+# expands a prerequisite list when the rule is read, so a variable defined later
+# expands to nothing in `all:`.
+FAKE_BIN   = build/fake-openconnect
+
 SAN_FLAGS = $(CSTD) $(FEATURE) $(WARN) -g -O1 -fno-omit-frame-pointer -Iinclude -It
 
-.PHONY: all test clean ubsan asan sanitize test-elf-closure gcc-check
+.PHONY: all test clean ubsan asan sanitize test-elf-closure gcc-check wur-check
 
-all: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN)
+all: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN) $(FAKE_BIN)
 
 build:
 	mkdir -p build
+
+$(FAKE_BIN): t/integration/fake-openconnect.c | build
+	$(CC) $(CSTD) $(FEATURE) -Wall -Wextra -Werror $(OPT) -o $@ $<
 
 $(TEST_BIN): $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h | build
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(TEST_SRC)
@@ -69,7 +81,7 @@ $(ADMIN_BIN): $(SRC) src/admin_main.c include/vu.h include/vu_state.h include/vu
 $(HELPER_BIN): $(SRC) src/helper_main.c include/vu.h include/vu_state.h include/vu_registry.h include/vu_exec.h | build
 	$(CC) $(CFLAGS) -o $@ $(SRC) src/helper_main.c
 
-test: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN) test-elf-closure gcc-check
+test: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN) $(FAKE_BIN) test-elf-closure gcc-check wur-check
 	./$(TEST_BIN)
 	# The admin tool must refuse to run without privilege, and must not need
 	# privilege merely to report its own version.
@@ -117,6 +129,25 @@ test: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN) test-elf-closure gcc-check
 	done
 	@echo "ok: vpn-up-admin offers no connect subcommand"
 
+# Discarded results from functions glibc marks warn_unused_result.
+#
+# This exists because the class is INVISIBLE on macOS, and not for want of a
+# compiler: the attribute comes from glibc's headers under _FORTIFY_SOURCE, not
+# from gcc, so neither clang nor a Homebrew gcc diagnoses it on Darwin. It can
+# only be caught by a glibc build - i.e. in CI - or by a lint like this one.
+#
+# The trap that made it worth automating: `(void)` DOES suppress the warning in
+# clang and does NOT in gcc. So the idiom that looks like "I deliberately ignored
+# this" is silently fine locally and a hard error in CI.
+#
+# A grep, not a parser. It will not catch a result assigned and then ignored, and
+# it does not need to: the shapes below are the ones that actually occur.
+WUR_FUNCS = read write pread pwrite fread fwrite fgets system realloc
+
+.PHONY: wur-check
+wur-check:
+	@fail=0; 	for fn in $(WUR_FUNCS); do 		if grep -rnE "\(void\)$$fn\(" $(SRC) $(TEST_SRC) src/*_main.c t/integration/*.c 2>/dev/null; then 			echo "wur-check: (void) does NOT suppress -Wunused-result in gcc; consume $$fn's result"; 			fail=1; 		fi; 		if grep -rnE "^[[:space:]]+$$fn\(" $(SRC) $(TEST_SRC) src/*_main.c t/integration/*.c 2>/dev/null; then 			echo "wur-check: $$fn's result is discarded; glibc marks it warn_unused_result"; 			fail=1; 		fi; 	done; 	if [ $$fail -ne 0 ]; then exit 1; fi; 	echo "wur-check: no discarded warn_unused_result calls"
+
 # A build with a REAL gcc, when one is present.
 #
 # clang and gcc do not agree about which mistakes are errors, and CI builds with
@@ -149,7 +180,7 @@ gcc-check: | build
 # ELF parse of a Mach-O binary reports "not an ELF binary" and the check still
 # refuses. Only the synthetic ELF fixtures in t/test_closure.c get past it.
 .PHONY: test-elf-closure
-test-elf-closure: $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h include/vu_closure.h | build
+test-elf-closure: $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h include/vu_closure.h $(FAKE_BIN) | build
 	$(CC) $(CFLAGS) -DVU_LIBRARY_CLOSURE_ELF=1 -o build/vu-test-elf $(SRC) $(TEST_SRC)
 	./build/vu-test-elf
 
@@ -162,11 +193,11 @@ test-elf-closure: $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h include/vu_
 # so `make asan` cannot run there. UndefinedBehaviorSanitizer does not intercept
 # malloc and works on both platforms. CI therefore runs ubsan everywhere and asan
 # on Linux only; do not read a macOS asan hang as a finding in this code.
-ubsan: $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h | build
+ubsan: $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h $(FAKE_BIN) | build
 	$(CC) $(SAN_FLAGS) -fsanitize=undefined -o build/vu-test-ubsan $(SRC) $(TEST_SRC)
 	UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 ./build/vu-test-ubsan
 
-asan: $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h | build
+asan: $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h $(FAKE_BIN) | build
 	$(CC) $(SAN_FLAGS) -fsanitize=address -o build/vu-test-asan $(SRC) $(TEST_SRC)
 	ASAN_OPTIONS=detect_leaks=1 ./build/vu-test-asan
 

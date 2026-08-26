@@ -14,6 +14,8 @@ cause is probably below.
   t/test_adversarial.c   attacks on all of the above                   (step 9)
   t/fixtures/auth/       fixtures shared with tests/twophase.bats      (step 9)
   t/test_closure.c       the trusted execution closure                 (step 10)
+  t/test_integration.c   a real execve into a real second process       (step 11)
+  t/integration/         the stand-in OpenConnect, and two scripts      (step 11)
 
 The first four are organised by module and mostly assert that each piece does
 what it says. The fifth is organised by ATTACK and mostly asserts refusals; it
@@ -83,6 +85,27 @@ TWO LIMITS ON THAT, both learned by getting it wrong:
     CI compiler version (brew install gcc@13).
   - clang cannot substitute for it at all. The int-out-of-a-conditional case is
     not diagnosed by clang under ANY warning set, including -Weverything.
+
+A CLASS NO LOCAL COMPILER CAN CATCH, and the sharpest trap here so far:
+
+    char b;
+    (void)read(fd, &b, 1);      /* fine on macOS, hard error on glibc */
+
+glibc marks read, write, fread, fwrite, fgets, system and realloc with
+warn_unused_result under _FORTIFY_SOURCE. Two things make this invisible on a
+development Mac:
+
+  - the attribute comes from the LIBC, not the compiler, so Darwin's headers do
+    not carry it and neither clang nor a Homebrew gcc says anything;
+  - `(void)` suppresses -Wunused-result in clang and does NOT in gcc. So the
+    idiom that reads as "I deliberately ignored this" is silently accepted
+    locally and rejected in CI.
+
+Installing a compiler does not help. Only a glibc build does - CI, or a Linux
+container, which this project does not currently require. `make wur-check` is the
+substitute: a grep for the discarded-result shapes, part of `make test`, that
+turns an invisible class into a local failure. It was validated by reintroducing
+the bug that reached CI and watching it fire.
 
 Diagnostics that only exist in GCC, and therefore only fail in CI:
 
@@ -190,12 +213,51 @@ boundary even though root produced it.
 If this alert recurs, the disposition is "used in tests", not a code change. And
 it will recur: test_adversarial.c, test_exec.c, test_registry.c and test_state.c
 all build fixture paths from the environment the same way.
+------------------------------------------------------------- integration
+
+t/test_integration.c performs a real execve into a real second process, using the
+helper's own functions in the helper's own order. It needs no root and no VPN
+gateway, which is what makes it a test rather than a procedure: the state root
+and expected owner have been parameters since step 5 precisely so the privileged
+sequence could be exercised unprivileged.
+
+t/integration/fake-openconnect.c is the stand-in. It is a compiled C program and
+not a script for a specific reason: the closure check parses the pinned binary's
+ELF dynamic section, and a script is refused as "not an ELF binary" - a stand-in
+that could not pass the real check would not be standing in for much. It reports
+to STDOUT rather than to a file named by an environment variable, because the
+helper hands its child a constructed environment with PATH and nothing else.
+
+Two scripts, both opt-in:
+
+  t/integration/run.sh               the real binaries, as root, end to end.
+                                     VPN_UP_INTEGRATION=1, Linux only. Creates
+                                     and removes /opt/vpn-up-integration and
+                                     touches nothing else.
+  t/integration/openconnect-probe.sh questions only the real OpenConnect can
+                                     answer: which proxy schemes it supports
+                                     (design 17.5) and whether it leaves an
+                                     inherited locked descriptor alone (18).
+
+Two things the integration test found about itself, both worth knowing before
+writing another one:
+
+  - The stand-in's path must be ABSOLUTE. The first version used the relative
+    path the Makefile builds and the child died at execve with no explanation,
+    because vu_harden_process does chdir("/") first. That is the design's
+    absolute-path pin demonstrating itself.
+  - SIGPIPE must be ignored while writing the cookie. Without that, a child that
+    dies before reading kills the test runner with signal 13 and the only output
+    is an exit code, which took a second run to diagnose. A harness whose failure
+    mode is "the harness dies" cannot report anything.
 
 ---------------------------------------------------------- what is NOT tested yet
 
 By design, because it needs something this corpus does not have:
 
-  lock survival across execve, cookie passthrough on a real tunnel     (step 11)
+  a real VPN gateway: two-phase against a live server, cookie lifetime
+    (design 17.4), whether any protocol needs the client certificate at
+    connect rather than only at auth (17.3)
   the macOS dyld closure: LC_LOAD_DYLIB, the shared cache, DYLD_*      (step 13)
 
 The ACL case IS tested, on macOS, using chmod +a to grant write access to a file

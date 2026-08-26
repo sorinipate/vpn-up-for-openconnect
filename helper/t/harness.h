@@ -61,5 +61,6 @@ void vu_test_registry(void); /* t/test_registry.c — Model B approval records *
 void vu_test_exec(void);     /* t/test_exec.c     — the phase-two argv itself */
 void vu_test_adversarial(void); /* t/test_adversarial.c — step 9: attacks, not features */
 void vu_test_closure(void);      /* t/test_closure.c     — step 10: the execution closure */
+void vu_test_integration(void);  /* t/test_integration.c — step 11: a real execve */
 
 #endif
