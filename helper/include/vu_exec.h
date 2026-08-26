@@ -91,7 +91,14 @@ bool vu_build_argv(const vu_request *req, const vu_approval *appr,
  * it is populated for printing and names the objects that failed. See
  * vu_closure_check, of which this is the pinned-path wrapper.
  */
+/*
+ * `caller_uid` is the invoking user (SUDO_UID), and is what the
+ * effective-writability probe drops to - not `owner`, which is 0. §11.5 asks
+ * whether the CALLER can write a trusted object despite its mode bits; asking
+ * that about root is meaningless. Pass 0 to skip the probe.
+ */
 bool vu_exec_precheck(const char *openconnect_path, const char *script_path,
-                      uid_t owner, vu_closure_report *report, vu_err *e);
+                      uid_t owner, uid_t caller_uid,
+                      vu_closure_report *report, vu_err *e);
 
 #endif /* VU_EXEC_H */
