@@ -521,6 +521,18 @@ stdin: the session cookie — passed through unread
 The **fingerprint is not an option**: it comes from the registry, not the
 caller.
 
+### Repeated flags are refused — amended during step 9
+
+The closed schema accepts each recognised flag **at most once**, and the same
+tunable may not be named twice. Last-wins was the original behaviour, and Model
+B would still have caught an endpoint substitution at the policy check — but a
+request whose meaning cannot be read off the request is not a closed schema, and
+appending to a command line is a weaker capability than rewriting one.
+
+`--tunable mtu=1400 --tunable mtu=1500` is the clearest case: both values are
+individually valid, so nothing downstream objected, and which one took effect
+was OpenConnect's business rather than ours.
+
 ### stdin is not read
 
 The helper leaves stdin untouched and `execve`s OpenConnect, which reads the
@@ -773,6 +785,49 @@ writable. Our own directory is still required to be root-owned `0700`, so a
 squatted `/var/run/vpn-up` makes the helper **fail closed** rather than trust
 it. That is correct but is a denial-of-service vector, and `/var/db` is
 `root:wheel 0755`. Revisit the macOS state root at step 13.
+
+#### State verification on `stop` — amended during step 9
+
+The `/var/run` note above said a squatted `/var/run/vpn-up` makes the helper
+**fail closed**. That was true of `connect`, which builds the tree through
+`vu_dir_ensure` and therefore verifies every directory it uses. It was **not
+true of `stop`**, which read the pid file without checking the tree at all — the
+adversarial corpus found it.
+
+The consequence, on macOS specifically: a process in group `daemon` can create
+`/var/run/vpn-up` itself, plant a `pid` and a `started` file, and have root
+signal a process of its choosing. The executable-path and start-token checks
+narrow that to processes whose executable is the pinned OpenConnect, which is a
+real constraint but not a boundary — both values are readable from the process
+table by anyone.
+
+Two corrections, both narrowing:
+
+- **`stop` verifies the state chain before reading anything inside it**, using a
+  verify-only variant that does not create the tree. An absent tree means "no
+  tunnel recorded"; a tree that exists and is not ours is a refusal, and nothing
+  inside it is read.
+- **The state files themselves are checked for ownership and mode**, exactly as
+  registry records already were: a regular file, owned by root, with no group or
+  other access. Redundant while the containing directory is `0700` root-owned —
+  and that redundancy is the point, since `stop` reached those files without
+  having established the directory was.
+
+#### Standard descriptors — amended during step 9
+
+Added to §11.3's requirements: **descriptors 0, 1 and 2 must be confirmed open
+before the privileged process opens anything**, with `/dev/null` substituted for
+any that is not.
+
+Verified failure: invoked as `sudo vpn-up-helper connect ... 0<&-`, the lock file
+lands on descriptor 0, because `open()` returns the lowest free descriptor. The
+helper then `execve`s OpenConnect with `--cookie-on-stdin`, so **OpenConnect
+reads the lock file as the session cookie**. The same shape with stderr closed
+points the process's own diagnostics at a root-owned state file.
+
+Neither is a privilege escalation. Both make a privileged program's behaviour
+depend on how its caller arranged its descriptors, which is a property no
+privileged program should have.
 
 ### 11.5 Ownership and mode bits are not sufficient: the effective-writability test
 

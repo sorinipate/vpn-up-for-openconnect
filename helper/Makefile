@@ -42,10 +42,10 @@ CFLAGS  += $(CSTD) $(FEATURE) $(WARN) $(HARDEN) $(OPT) -Iinclude -It
 # Shared library sources: linked into the test binary AND into both privileged
 # executables. One copy of the validation logic, so the helper and the admin tool
 # cannot drift apart in what they consider acceptable.
-SRC       = src/validate.c src/authparse.c src/policy.c src/state.c src/proc.c \
-            src/registry.c src/exec.c
+SRC       = src/validate.c src/authparse.c src/policy.c src/request.c \
+            src/state.c src/proc.c src/registry.c src/exec.c
 TEST_SRC  = t/main.c t/harness.c t/test_policy.c t/test_state.c t/test_registry.c \
-            t/test_exec.c
+            t/test_exec.c t/test_adversarial.c
 TEST_BIN  = build/vu-test
 ADMIN_BIN  = build/vpn-up-admin
 HELPER_BIN = build/vpn-up-helper
@@ -83,6 +83,38 @@ test: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN)
 	@if ./$(HELPER_BIN) connect --profile-id x >/dev/null 2>&1; then \
 		echo "FAIL: vpn-up-helper connect succeeded without root"; exit 1; \
 	else echo "ok: vpn-up-helper refuses to connect unprivileged"; fi
+	# Privilege separation (§5, §18). The passwordless binary must not be able to
+	# grant approvals: a NOPASSWD binary that can approve endpoints is a NOPASSWD
+	# binary that can approve anything.
+	#
+	# Checked at the SOURCE, not by running the commands, because an unprivileged
+	# run cannot tell "refused: unknown command" from "refused: must be root" —
+	# both exit non-zero. What matters is that no code path exists, and that is a
+	# property of the file. This is the check that would catch someone adding a
+	# convenient `vpn-up-helper approve` later.
+	@for sym in vu_registry_put vu_registry_delete; do \
+		if grep -q "$$sym" src/helper_main.c; then \
+			echo "FAIL: helper_main.c calls $$sym — the NOPASSWD binary must never write the approval registry"; \
+			exit 1; \
+		fi; \
+	done
+	@echo "ok: vpn-up-helper cannot write the approval registry"
+	@for cmd in approve revoke list; do \
+		if ./$(HELPER_BIN) version | grep -qi "$$cmd"; then \
+			echo "FAIL: vpn-up-helper advertises '$$cmd'"; exit 1; \
+		fi; \
+		if ./$(HELPER_BIN) $$cmd >/dev/null 2>&1; then \
+			echo "FAIL: vpn-up-helper accepted '$$cmd'"; exit 1; \
+		fi; \
+	done
+	@echo "ok: vpn-up-helper offers no approval subcommand"
+	# The reverse direction: the admin tool must not establish tunnels.
+	@for cmd in connect stop; do \
+		if ./$(ADMIN_BIN) $$cmd >/dev/null 2>&1; then \
+			echo "FAIL: vpn-up-admin accepted '$$cmd'"; exit 1; \
+		fi; \
+	done
+	@echo "ok: vpn-up-admin offers no connect subcommand"
 
 # The corpus is mostly malformed input, which is exactly where a buffer or
 # overflow bug would hide, so the sanitizer runs matter more here than usual.

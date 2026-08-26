@@ -1,0 +1,46 @@
+Shared fixtures for the `openconnect --authenticate` output decoder.
+
+There are two decoders for this one format, and that is why this directory
+exists:
+
+  twophase.sh   parse_auth_output()   the PRODUCTION decoder — phase one runs
+                                      unprivileged, in the shell
+  helper/src/authparse.c
+                vu_parse_auth()       the reference implementation, and the one
+                                      with the harder test corpus
+
+The shell one is what actually runs. The C one exists because §4 of the design
+specifies the decoder as part of the policy engine, and because a compiled
+parser is where the byte-level rules are easiest to state and to sanitize. Two
+implementations of one security-relevant parser can drift; these fixtures are
+what stops that drift being invisible.
+
+Both suites read this directory:
+
+  helper/t/test_adversarial.c   (C corpus)
+  tests/twophase.bats           (bats)
+
+The filename carries the expected verdict:
+
+  accept-*   the decoder must accept it
+  refuse-*   the decoder must reject it
+
+SCOPE, deliberately narrow: these fixtures test the FORMAT — quoting,
+recognised keys, duplicates, blank lines, control bytes, trailing junk. They do
+not test value semantics (is CONNECT_URL a usable https URL, is FINGERPRINT long
+enough to pin anything), because the two implementations legitimately differ
+there:
+
+  - the C decoder validates values with the same validators the helper uses;
+  - the shell decoder does not, and should not grow a hand-rolled URL parser to
+    match it. In the shell path those values are validated where they are
+    consumed — the connect URL by vpn-up-helper, the fingerprint by
+    vpn-up-admin — both of which use the C validators.
+
+So: format rules are shared and must agree exactly. Value rules are tested
+per-implementation.
+
+accept-06-legacy-host-only.txt is worth a note. It DECODES — it is well-formed
+output from an older OpenConnect — and is then refused by the helper-mode
+contract check, which is a separate function. Decoding and admissibility are two
+different questions, and the fixture set only answers the first.

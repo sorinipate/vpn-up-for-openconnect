@@ -129,6 +129,48 @@ bool vu_proc_identity(pid_t pid, vu_proc *out, vu_err *e)
 
 /* ---------------------------------------------------------------- hygiene */
 
+bool vu_ensure_std_fds(vu_err *e)
+{
+    /*
+     * Runs before anything else opens a file, so that no descriptor this program
+     * later depends on can land on 0, 1 or 2. See the header for the verified
+     * failure: with stdin closed at exec time, the lock file becomes fd 0 and
+     * OpenConnect reads it as the --cookie-on-stdin cookie.
+     *
+     * O_RDWR for all three because we do not know which end a given descriptor
+     * will be used as, and /dev/null is happy either way.
+     */
+    for (int fd = 0; fd <= 2; ++fd) {
+        if (fcntl(fd, F_GETFD) >= 0) continue;      /* already open */
+        if (errno != EBADF) {
+            vu_err_set(e, "fds: cannot inspect descriptor %d: %s", fd, strerror(errno));
+            return false;
+        }
+        int got = open("/dev/null", O_RDWR | O_CLOEXEC);
+        if (got < 0) {
+            vu_err_set(e, "fds: cannot open /dev/null: %s", strerror(errno));
+            return false;
+        }
+        if (got != fd) {
+            /* open() returns the LOWEST free descriptor, so a mismatch means
+             * something reopened a lower one concurrently. Nothing here is
+             * threaded, so this cannot happen; refuse rather than paper over a
+             * state we do not understand. */
+            (void)close(got);
+            vu_err_set(e, "fds: /dev/null landed on %d, expected %d", got, fd);
+            return false;
+        }
+        /* Cleared deliberately: these must survive the execve into OpenConnect,
+         * which expects three usable standard descriptors. */
+        int flags = fcntl(fd, F_GETFD);
+        if (flags < 0 || fcntl(fd, F_SETFD, flags & ~FD_CLOEXEC) < 0) {
+            vu_err_set(e, "fds: cannot clear FD_CLOEXEC on %d: %s", fd, strerror(errno));
+            return false;
+        }
+    }
+    return true;
+}
+
 bool vu_harden_process(int keep_fd, vu_err *e)
 {
     umask(077);

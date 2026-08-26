@@ -10,6 +10,7 @@ int main(void)
     vu_test_state();
     vu_test_registry();
     vu_test_exec();
+    vu_test_adversarial();
 
     printf("%d checks, %d failures\n", vu_checks, vu_failures);
     return vu_failures == 0 ? 0 : 1;

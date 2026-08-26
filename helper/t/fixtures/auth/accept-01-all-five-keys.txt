@@ -1,0 +1,5 @@
+COOKIE='abc123'
+HOST='vpn.example.com'
+CONNECT_URL='https://vpn.example.com/portal'
+FINGERPRINT='1111111111111111111111111111111111111111'
+RESOLVE='vpn.example.com:203.0.113.9'
