@@ -49,8 +49,16 @@ MARKER="vu-cookie-must-never-be-visible-anywhere"
 
 checks=0
 fails=0
+failed_list=""
 ok()   { checks=$((checks+1)); printf '  [OK] %s\n' "$*"; }
-bad()  { checks=$((checks+1)); fails=$((fails+1)); printf '  [!!] %s\n' "$*"; }
+# Failures are echoed where they happen AND collected, because the useful line is
+# easy to lose in a long log - the first CI report of a failure here quoted the
+# summary count and not the message, which cost a round trip to find out which of
+# twenty-seven checks had failed.
+bad()  { checks=$((checks+1)); fails=$((fails+1))
+         printf '  [!!] %s\n' "$*"
+         failed_list="${failed_list}
+  - $*" ; }
 note() { printf '       %s\n' "$*"; }
 assert() { if [ "$1" = 0 ]; then ok "$2"; else bad "$2"; fi; }
 
@@ -149,11 +157,32 @@ rm -f /tmp/vu-fake-script
 # the roots are compile-time constants rather than environment variables is the
 # whole reason this is safe to do: a test build cannot become a runtime override.
 # No clean here: the stand-in above lives in the same build directory.
+# The loader configuration the closure check validates is the TEST's, not the
+# host's. Ubuntu's /etc/ld.so.conf.d lists /usr/local/lib, which on some CI images
+# is writable by the unprivileged runner user - so the closure check refuses, and
+# it is RIGHT to: a writable library directory means root loads what that user
+# put there. But that is a finding about the image, not about this code, and an
+# integration test whose verdict depends on the host's loader configuration cannot
+# distinguish the two.
+#
+# So the test supplies its own: an empty ld.so.conf, an empty conf.d, and no
+# preload file. The real paths are still what production uses, and the closure
+# logic itself is exercised against hostile fixtures by t/test_closure.c - which
+# covers a writable configured directory, a writable ld.so.conf, a writable
+# conf.d, and a preloaded library in a writable directory.
+sudo install -d -o 0 -g 0 -m 0755 -- "$PREFIX/ldso" "$PREFIX/ldso/conf.d"
+printf '# empty: the integration test supplies its own loader configuration\n' > /tmp/vu-ldso.conf
+sudo install -o 0 -g 0 -m 0644 /tmp/vu-ldso.conf "$PREFIX/ldso/ld.so.conf"
+rm -f /tmp/vu-ldso.conf
+
 make -C "$HERE" --no-print-directory build/vpn-up-helper build/vpn-up-admin \
   OPT="-O1 -DVU_OPENCONNECT='\"$PREFIX/bin/openconnect\"' \
        -DVU_VPNC_SCRIPT='\"$PREFIX/etc/vpnc-script\"' \
        -DVU_STATE_ROOT='\"$PREFIX/run\"' \
-       -DVU_REGISTRY_ROOT='\"$PREFIX/registry\"'" >/dev/null
+       -DVU_REGISTRY_ROOT='\"$PREFIX/registry\"' \
+       -DVU_LDSO_PRELOAD='\"$PREFIX/ldso/ld.so.preload\"' \
+       -DVU_LDSO_CONF='\"$PREFIX/ldso/ld.so.conf\"' \
+       -DVU_LDSO_CONF_DIR='\"$PREFIX/ldso/conf.d\"'" >/dev/null
 
 sudo install -o 0 -g 0 -m 0755 "$HERE/build/vpn-up-helper" "$PREFIX/bin/vpn-up-helper"
 sudo install -o 0 -g 0 -m 0755 "$HERE/build/vpn-up-admin"  "$PREFIX/bin/vpn-up-admin"
@@ -377,5 +406,9 @@ fi
 rm -f /tmp/vu-cookie /tmp/vu-report.txt /tmp/vu-report2.txt /tmp/vu-err.txt /tmp/vu-out.txt
 
 echo
+if [ "$fails" -ne 0 ]; then
+  echo "FAILED CHECKS:$failed_list"
+  echo
+fi
 echo "$checks checks, $fails failures"
 [ "$fails" -eq 0 ]

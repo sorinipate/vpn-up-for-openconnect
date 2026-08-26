@@ -21,9 +21,9 @@ void vu_closure_spec_default(vu_closure_spec *s, const char *openconnect,
     s->shell         = "/bin/sh";
     s->path_env      = VU_HELPER_PATH;
     s->hooks_root    = "/etc/vpnc";
-    s->ldso_preload  = "/etc/ld.so.preload";
-    s->ldso_conf     = "/etc/ld.so.conf";
-    s->ldso_conf_dir = "/etc/ld.so.conf.d";
+    s->ldso_preload  = VU_LDSO_PRELOAD;
+    s->ldso_conf     = VU_LDSO_CONF;
+    s->ldso_conf_dir = VU_LDSO_CONF_DIR;
     s->owner         = owner;
     /*
      * NOT owner. The probe asks "can the CALLER write this despite the mode

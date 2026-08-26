@@ -75,6 +75,21 @@
 #  endif
 #endif
 
+/*
+ * Loader-configuration paths, overridable at build time like the state and
+ * registry roots and for the same reason: a test build can point them at a
+ * fixture, and no RUNTIME input can. Production uses the real paths.
+ */
+#ifndef VU_LDSO_PRELOAD
+#  define VU_LDSO_PRELOAD "/etc/ld.so.preload"
+#endif
+#ifndef VU_LDSO_CONF
+#  define VU_LDSO_CONF "/etc/ld.so.conf"
+#endif
+#ifndef VU_LDSO_CONF_DIR
+#  define VU_LDSO_CONF_DIR "/etc/ld.so.conf.d"
+#endif
+
 #define VU_CLOSURE_MAX 128
 
 typedef struct {
