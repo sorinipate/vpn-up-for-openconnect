@@ -373,8 +373,14 @@ bool vu_parse_url(const char *in, vu_url *out, vu_err *e)
     if (!vu_canon_host(hostpart, out->host, sizeof out->host, &out->host_kind, e)) return false;
 
     if (portpart) {
-        if (!vu_parse_u16(portpart, 1, 65535, &out->port, e)) {
-            vu_err_set(e, "url: invalid port");
+        /* A scratch error, because vu_err_set keeps the EARLIEST message: the
+         * primitive would otherwise report "number: not a number" and this
+         * function's context would be thrown away. That matters for a value like
+         * https://vpn.example.com:443.evil.com/, where the useful thing to say
+         * is which part was not a port. */
+        vu_err scratch; vu_err_clear(&scratch);
+        if (!vu_parse_u16(portpart, 1, 65535, &out->port, &scratch)) {
+            vu_err_set(e, "url: '%s' is not a valid port (%s)", portpart, scratch.msg);
             return false;
         }
     } else {
@@ -575,7 +581,13 @@ bool vu_canon_proxy(const char *in, char *out, size_t out_cap, vu_err *e)
     char host[VU_HOST_MAX];
     if (!vu_canon_host(hostpart, host, sizeof host, NULL, e)) return false;
     uint16_t port;
-    if (!vu_parse_u16(portpart, 1, 65535, &port, e)) { vu_err_set(e, "proxy: invalid port"); return false; }
+    {
+        vu_err scratch; vu_err_clear(&scratch);
+        if (!vu_parse_u16(portpart, 1, 65535, &port, &scratch)) {
+            vu_err_set(e, "proxy: '%s' is not a valid port (%s)", portpart, scratch.msg);
+            return false;
+        }
+    }
 
     char full[VU_PROXY_MAX];
     if (snprintf(full, sizeof full, "%s://%s:%u", scheme, host, (unsigned)port) >= (int)sizeof full) {

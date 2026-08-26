@@ -1,0 +1,106 @@
+Environment assumptions the helper test corpus makes.
+
+Written after step 9, because three of the four CI failures during steps 5 to 7
+were Linux-only behaviour that is invisible on macOS, and each one cost a red
+build to rediscover. If you are reading this because of a failing test, the
+cause is probably below.
+
+------------------------------------------------------------------- the corpora
+
+  t/test_policy.c        validators, the phase-one decoder, Model B    (step 4)
+  t/test_state.c         paths, directories, locks, process identity   (step 5)
+  t/test_registry.c      approval records                              (step 6)
+  t/test_exec.c          the phase-two argv, element by element        (step 7)
+  t/test_adversarial.c   attacks on all of the above                   (step 9)
+  t/fixtures/auth/       fixtures shared with tests/twophase.bats      (step 9)
+
+The first four are organised by module and mostly assert that each piece does
+what it says. The fifth is organised by ATTACK and mostly asserts refusals; it
+is also where a test that failed against the implementation and produced a fix
+is recorded, next to the fix.
+
+Everything runs UNPRIVILEGED. That is a design property, not a limitation: the
+state root, the registry root and the expected owner are all parameters, so the
+code under test is byte-for-byte the code that runs as root. Nothing is a
+weakened copy.
+
+--------------------------------------------------------- fixtures live in $HOME
+
+Not /tmp. On both macOS and Linux /tmp is mode 1777, and vu_path_trusted
+correctly refuses any chain with a world-writable component — so a fixture there
+makes the trusted-path tests fail for a reason that has nothing to do with the
+code. The sticky bit does not help: the check is about write access to the
+directory, and 1777 grants it.
+
+Fixtures therefore go under $HOME with a pid in the name, and are removed with
+vu_rm_rf() (t/harness.c), which is a shell-free depth-first unlinkat walk. It is
+shell-free on purpose: building a shell command line out of a path is the
+pattern this project's design document spends pages arguing against.
+
+t/test_adversarial.c's test_environment() clobbers HOME and PATH deliberately,
+to prove neither survives into the exec'd environment, and restores both with
+strdup'd copies. The first version used a fixed buffer and aborted the whole run
+on a long PATH; the second forgot to restore HOME and broke every fixture
+created after it. Both are why the save/restore is explicit.
+
+------------------------------------------------------------- run from helper/
+
+`make test` runs the binary from the helper directory, and t/fixtures/auth is
+resolved relative to the working directory. Running ./build/vu-test from
+elsewhere fails with "cannot open t/fixtures/auth" rather than silently skipping
+the shared fixtures — a fixture set nobody loads is worse than no fixture set.
+
+--------------------------------------------------- platform differences to know
+
+Feature-test macros are set ONCE, in the Makefile, per platform:
+
+  Linux    -D_GNU_SOURCE       -std=c99 defines __STRICT_ANSI__, and glibc then
+                               hides mkdtemp, setenv, symlink and friends behind
+                               a feature macro. Implicit declarations plus
+                               -Werror is a broken build.
+  Darwin   -D_DARWIN_C_SOURCE  defining _POSIX_C_SOURCE here RESTRICTS the
+                               namespace instead of widening it: it hides flock,
+                               setgroups and O_NOFOLLOW, and makes <libproc.h>
+                               fail to compile.
+
+So the portable-looking choice (_POSIX_C_SOURCE everywhere) swaps a Linux
+failure for a macOS one. Do not add per-file #defines; the test files were
+forgotten last time, which is exactly the failure mode a per-file convention
+invites.
+
+Diagnostics that only exist in GCC, and therefore only fail in CI:
+
+  -Wformat-truncation   rejects snprintf(buf, sizeof buf, "%s/a", other) when
+                        buf and other are the same size. Every path join in the
+                        corpus goes through vu_path() (t/harness.h), which
+                        cannot truncate, instead of checking fifteen return
+                        values.
+  -Wsign-conversion     stricter than clang's about ssize_t used as an index.
+
+Symlinks:
+
+  /var is a symlink on macOS, so a blanket O_NOFOLLOW walk cannot even create
+  /var/run/vpn-up. The policy is leaf-only O_NOFOLLOW for directories we create,
+  and resolve-then-verify (realpath, then check every component of the real
+  path) for pinned paths. BSD returns ENOTDIR where Linux returns ELOOP for
+  O_NOFOLLOW|O_DIRECTORY on a link; both are handled.
+
+Sanitizers:
+
+  make ubsan   works on both platforms; CI runs it on both
+  make asan    Linux only. On macOS 26 the AddressSanitizer runtime spins
+               forever inside its own initialiser — a stack sample shows it
+               stuck in __asan::AsanInitFromRtl() under __malloc_init, before
+               main() is reached. Do not read a macOS asan hang as a finding in
+               this code.
+
+---------------------------------------------------------- what is NOT tested yet
+
+By design, because it needs something this corpus does not have:
+
+  the dynamic library closure, /etc/vpnc sourced hooks, PATH entries   (step 10)
+  lock survival across execve, cookie passthrough on a real tunnel     (step 11)
+  ACL-based write access on an otherwise root-owned file               (step 10)
+
+Until those exist the helper is not a finished boundary, and §11.7 of the design
+keeps macOS helper mode failing closed for exactly that reason.

@@ -52,6 +52,64 @@ check_dependencies() {
   command -v openssl >/dev/null 2>&1 || print_warning "Optional: 'openssl' for encrypted vault fallback.\n"
 }
 
+# ----------------------------------------------------- privilege boundary check
+#
+# PRIVILEGED-HELPER-DESIGN.md §5 rests on ONE invariant:
+#
+#     vpn-up-helper   connect | stop | version     <- the ONLY NOPASSWD binary
+#     vpn-up-admin    approve | revoke | list      <- NEVER NOPASSWD
+#
+# If the passwordless binary can also grant approvals, Model B means nothing: an
+# attacker holding the passwordless grant approves whatever endpoint it likes and
+# then connects there "legitimately".
+#
+# The check is on EFFECTIVE PASSWORDLESS REACHABILITY, not on whether a name
+# appears in a sudoers file. `sudo -n -l <command>` asks sudo's own policy
+# whether that exact command can run without a password, which is the question
+# that matters and is not answerable by grepping /etc/sudoers.d: rules can come
+# from LDAP, from includes, from Defaults targetpw, or from an alias.
+#
+# vpn-up-admin in an ORDINARY authenticated rule is legitimate administrator
+# policy and passes. Only passwordless reachability fails.
+doctor_privilege_boundary() {
+  local rc=0
+  echo
+  echo "Privilege boundary (helper mode):"
+
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "  [..] sudo not found; helper mode is unavailable on this machine"
+    return 0
+  fi
+
+  local h a
+  h="$(helper_bin)"; a="$(admin_bin)"
+
+  if [ -x "$h" ]; then
+    if sudo -n -l "$h" >/dev/null 2>&1; then
+      echo "  [OK] vpn-up-helper is reachable without a password (this is the intended rule)"
+    else
+      echo "  [..] vpn-up-helper is installed but not passwordless; helper mode will not"
+      echo "       run unattended. See SECURITY.md for the sudoers rule."
+    fi
+  else
+    echo "  [..] vpn-up-helper not installed at $h (prompt mode is in use)"
+  fi
+
+  # The invariant. Checked even when the binary is not installed at this path,
+  # because a rule naming a path that does not exist yet is still a rule.
+  if sudo -n -l "$a" >/dev/null 2>&1; then
+    echo "  [!!] vpn-up-admin IS REACHABLE WITHOUT A PASSWORD."
+    echo "       This breaks the approval boundary: anything holding the passwordless"
+    echo "       grant can approve an endpoint and then connect to it. Remove"
+    echo "       vpn-up-admin from every NOPASSWD rule; it is meant to be run as"
+    echo "       'sudo vpn-up-admin ...' with a real password prompt."
+    rc=1
+  else
+    echo "  [OK] vpn-up-admin is not reachable without a password"
+  fi
+  return "$rc"
+}
+
 doctor() {
   echo "=== vpn-up doctor ==="
   echo "- OS         : $(uname -a)"
@@ -102,6 +160,12 @@ doctor() {
   echo "Secret backend in use:"
   . "${PROGRAM_PATH}/encryption.sh"
   echo "  -> $(secrets_backend)"
+  # helper_bin/admin_bin come from twophase.sh, which vpn-up.command sources at
+  # startup. Sourced here only if something called doctor without it.
+  command -v helper_bin >/dev/null 2>&1 || . "${PROGRAM_PATH}/twophase.sh"
+  local boundary_rc=0
+  doctor_privilege_boundary || boundary_rc=$?
+
   echo
   echo "Config preview:"
   if [ -f "$CONFIGURATION_FILE" ]; then
@@ -109,4 +173,9 @@ doctor() {
   else
     echo "  (no config yet; run ./vpn-up.command setup)"
   fi
+
+  # A broken privilege boundary must make `doctor` FAIL, not merely mention it in
+  # a wall of otherwise-green output. This is the one check here whose failure
+  # means the security model is not holding.
+  return "$boundary_rc"
 }

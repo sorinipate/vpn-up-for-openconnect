@@ -58,6 +58,18 @@ static const char *next_value(int argc, char **argv, int *i, const char *flag)
     return v;
 }
 
+/* Refuse a repeated flag rather than letting the last one win. An approval is
+ * written once and then trusted indefinitely, so a command line whose meaning
+ * differs from its reading is worse here than anywhere else. */
+static bool once(const char *slot, const char *flag)
+{
+    if (slot) {
+        fprintf(stderr, "vpn-up-admin: %s was given more than once\n", flag);
+        return false;
+    }
+    return true;
+}
+
 static int cmd_approve(int argc, char **argv, uid_t uid)
 {
     const char *raw_id = NULL, *raw_proto = NULL, *raw_endpoint = NULL;
@@ -66,12 +78,15 @@ static int cmd_approve(int argc, char **argv, uid_t uid)
 
     for (int i = 0; i < argc; ++i) {
         const char *a = argv[i];
-        if      (strcmp(a, "--profile-id")  == 0) { if (!(raw_id       = next_value(argc, argv, &i, a))) return 2; }
-        else if (strcmp(a, "--protocol")    == 0) { if (!(raw_proto    = next_value(argc, argv, &i, a))) return 2; }
-        else if (strcmp(a, "--endpoint")    == 0) { if (!(raw_endpoint = next_value(argc, argv, &i, a))) return 2; }
-        else if (strcmp(a, "--fingerprint") == 0) { if (!(raw_fpr      = next_value(argc, argv, &i, a))) return 2; }
-        else if (strcmp(a, "--proxy")       == 0) { if (!(raw_proxy    = next_value(argc, argv, &i, a))) return 2; }
-        else if (strcmp(a, "--no-proxy")    == 0) { no_proxy = true; }
+        if      (strcmp(a, "--profile-id")  == 0) { if (!once(raw_id, a)) return 2; if (!(raw_id = next_value(argc, argv, &i, a))) return 2; }
+        else if (strcmp(a, "--protocol")    == 0) { if (!once(raw_proto, a)) return 2; if (!(raw_proto = next_value(argc, argv, &i, a))) return 2; }
+        else if (strcmp(a, "--endpoint")    == 0) { if (!once(raw_endpoint, a)) return 2; if (!(raw_endpoint = next_value(argc, argv, &i, a))) return 2; }
+        else if (strcmp(a, "--fingerprint") == 0) { if (!once(raw_fpr, a)) return 2; if (!(raw_fpr = next_value(argc, argv, &i, a))) return 2; }
+        else if (strcmp(a, "--proxy")       == 0) { if (!once(raw_proxy, a)) return 2; if (!(raw_proxy = next_value(argc, argv, &i, a))) return 2; }
+        else if (strcmp(a, "--no-proxy")    == 0) {
+            if (no_proxy) { fprintf(stderr, "vpn-up-admin: --no-proxy was given more than once\n"); return 2; }
+            no_proxy = true;
+        }
         else {
             /* No pass-through, here or anywhere: an argument we do not
              * understand is a mistake, not something to forward. */
@@ -150,6 +165,7 @@ static int cmd_revoke(int argc, char **argv, uid_t uid)
     const char *raw_id = NULL;
     for (int i = 0; i < argc; ++i) {
         if (strcmp(argv[i], "--profile-id") == 0) {
+            if (!once(raw_id, argv[i])) return 2;
             if (!(raw_id = next_value(argc, argv, &i, argv[i]))) return 2;
         } else {
             fprintf(stderr, "vpn-up-admin: unrecognised argument '%s'\n", argv[i]);
@@ -204,6 +220,17 @@ static int cmd_list(uid_t uid)
 
 int main(int argc, char **argv)
 {
+    /* Before any open() in this process — see vu_ensure_std_fds. This binary
+     * writes root-owned policy files, so a caller-closed descriptor must not be
+     * able to land on one of them. */
+    {
+        vu_err fds; vu_err_clear(&fds);
+        if (!vu_ensure_std_fds(&fds)) {
+            fprintf(stderr, "vpn-up-admin: %s\n", fds.msg);
+            return 1;
+        }
+    }
+
     if (argc < 2) { usage(); return 2; }
 
     const char *cmd = argv[1];

@@ -1,0 +1,43 @@
+# gitleaks configuration for VPN Up for OpenConnect.
+#
+# The default rule set is kept in full and extended, never replaced: this repo
+# had a credential in its history once, and the scanner that catches the next one
+# should be the stock one with everything enabled.
+[extend]
+useDefault = true
+
+# ---------------------------------------------------------------------------
+# One allowlisted value, and only one.
+#
+# `generic-api-key` flags this line in tests/twophase.bats:
+#
+#     [ "$AUTH_FINGERPRINT" = "469bb424ec8835944d30bc77c77e8fc1d8e23a42" ]
+#
+# It is a false positive, and the coincidence that produces it is worth writing
+# down: the rule needs a keyword near a high-entropy value, the variable is
+# AUTH_FINGERPRINT — which contains "auth" — and the value is 40 hex characters.
+# The same constant on the neighbouring lines does NOT trip it, because
+# `FINGERPRINT='...'` has no keyword the rule recognises.
+#
+# Why it is not a secret:
+#
+#   - It is a TLS certificate fingerprint. A fingerprint is a value you publish
+#     so that other people can pin against it; that is the entire purpose of
+#     `openconnect --servercert`. Treating one as confidential is a category
+#     error.
+#   - This particular one is upstream's own documentation example, from the
+#     OpenConnect man page's `--authenticate` output sample. It is not any real
+#     gateway's certificate. It appears about thirty-five times across the test
+#     corpora and in two comments, deliberately, because tests that assert "we
+#     parse what upstream documents" should use what upstream documents.
+#
+# The allowlist is a regex on the VALUE, not a path. That matters: a path-scoped
+# rule (`^tests/`, `^helper/t/`) would have been shorter and would have blinded
+# the scanner to a real credential pasted into a test file, which is one of the
+# commonest ways secrets get committed. This entry exempts exactly one published
+# constant and nothing else, anywhere.
+[allowlist]
+description = "OpenConnect's documented example certificate fingerprint (a public value, not a credential)"
+regexes = [
+  '''469bb424ec8835944d30bc77c77e8fc1d8e23a42''',
+]

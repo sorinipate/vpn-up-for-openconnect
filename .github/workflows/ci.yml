@@ -59,7 +59,25 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with:
+          # Full history: the point is to catch a credential in ANY commit, not
+          # just the tip.
           fetch-depth: 0
       - uses: gitleaks/gitleaks-action@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # gitleaks finds .gitleaks.toml in the scan root on its own; naming it
+          # here makes the dependency visible in the workflow instead of implicit,
+          # so a config that stops being read fails loudly rather than silently
+          # reverting to the stock rules.
+          GITLEAKS_CONFIG: .gitleaks.toml
+      # The report, whether or not the scan passed. A finding is a file and a
+      # line number, and without this the only way to see which is to install
+      # gitleaks and reproduce the scan locally — which is exactly what happened
+      # the first time this job failed.
+      - name: Upload the gitleaks report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: results.sarif
+          if-no-files-found: ignore

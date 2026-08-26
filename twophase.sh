@@ -1,0 +1,348 @@
+# twophase.sh - two-phase OpenConnect: unprivileged authentication, then a
+# privileged tunnel established by vpn-up-helper.
+#
+# See PRIVILEGED-HELPER-DESIGN.md §4 (two-phase), §5 (two binaries), §7 (Model B)
+# and §16 step 8. The split exists so that the password, TOTP seed, client
+# certificate, PKCS#11 PIN and SSO browser all stay OUTSIDE the privilege
+# boundary: phase one runs as you, and only a session cookie crosses over.
+#
+# Prompt mode (core.sh's run_openconnect) is unchanged and remains the
+# compatibility path for arbitrary extraArgs and split tunnelling.
+
+# ---------------------------------------------------------------- locating it
+
+# Installed location of the privileged binaries (§11.1). Both live on a
+# root-owned path outside any user-writable prefix.
+#
+# VPN_UP_HELPER_DIR may override this, and that is safe: this is an
+# UNPRIVILEGED process choosing which program to ask sudo about, and sudoers -
+# not this variable - decides what may actually run as root. Pointing it
+# somewhere else gets you a sudo refusal, not a privilege escalation.
+helper_dir() {
+  if [ -n "${VPN_UP_HELPER_DIR:-}" ]; then printf '%s' "${VPN_UP_HELPER_DIR}"; return; fi
+  if [ "$(uname)" = Darwin ]; then printf '%s' "/opt/vpn-up/bin"
+  else printf '%s' "/usr/local/libexec/vpn-up"; fi
+}
+
+helper_bin() { printf '%s/vpn-up-helper' "$(helper_dir)"; }
+admin_bin()  { printf '%s/vpn-up-admin'  "$(helper_dir)"; }
+
+# Is helper mode usable? Both halves have to hold:
+#   - the binary exists and is executable
+#   - sudoers permits it WITHOUT a password
+# The second is probed with `sudo -n`, because a rule that still prompts is no
+# use to a login service and would hang it.
+helper_mode_available() {
+  local h; h="$(helper_bin)"
+  [ -x "$h" ] || return 1
+  sudo -n "$h" version >/dev/null 2>&1
+}
+
+# ------------------------------------------------- phase-one output decoding
+
+# Strict decoder for `openconnect --authenticate` output.
+#
+# Upstream emits KEY='VALUE' lines so they can be eval'd. We do NOT eval, and we
+# do not parse shell either: we accept exactly the five known keys, single
+# quoted, with no escape interpretation. A backslash or `$` inside a value is a
+# literal byte, and anything unrecognised is a hard failure rather than a
+# skipped line - a future OpenConnect emitting something we do not understand
+# must be visible, not silently dropped.
+#
+# Reads stdin. On success sets AUTH_COOKIE / AUTH_HOST / AUTH_CONNECT_URL /
+# AUTH_FINGERPRINT / AUTH_RESOLVE. The cookie is left in a shell variable only:
+# never exported, never on a command line.
+#
+# SCOPE: this checks the FORMAT, not the meaning of the values. Whether
+# CONNECT_URL is a usable https URL and whether FINGERPRINT is long enough to
+# pin anything are decided by the C validators where those values are consumed -
+# the connect URL by vpn-up-helper, the fingerprint by vpn-up-admin. Growing a
+# hand-rolled URL parser here to duplicate them would be two implementations of
+# one rule, which is the thing helper/t/fixtures/auth exists to prevent.
+#
+# There are two decoders for this format: this one, which runs in production,
+# and vu_parse_auth() in helper/src/authparse.c, which is the reference with the
+# harder corpus. Both are driven by the shared fixtures in
+# helper/t/fixtures/auth (see its README), so a divergence in the format rules
+# fails a test instead of going unnoticed.
+parse_auth_output() {
+  AUTH_COOKIE=""; AUTH_HOST=""; AUTH_CONNECT_URL=""; AUTH_FINGERPRINT=""; AUTH_RESOLVE=""
+  local line key rest val
+  local seen_cookie=0 seen_host=0 seen_url=0 seen_fpr=0 seen_resolve=0
+  local lineno=0
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    lineno=$((lineno + 1))
+    if [ -z "$line" ]; then
+      print_danger "Authentication output: blank line %d.\n" "$lineno"
+      return 1
+    fi
+    case "$line" in
+      *=*) : ;;
+      *) print_danger "Authentication output: line %d is not KEY='VALUE'.\n" "$lineno"; return 1 ;;
+    esac
+
+    key="${line%%=*}"
+    rest="${line#*=}"
+
+    # The value must be wrapped in single quotes and end the line exactly.
+    case "$rest" in
+      "'"*"'") : ;;
+      *) print_danger "Authentication output: %s is not single-quoted.\n" "$key"; return 1 ;;
+    esac
+    val="${rest#\'}"; val="${val%\'}"
+
+    # A single-quoted shell string cannot contain a quote, so one here means the
+    # line is not what it claims to be.
+    case "$val" in
+      *"'"*) print_danger "Authentication output: %s contains a quote.\n" "$key"; return 1 ;;
+    esac
+    case "$val" in
+      *[[:cntrl:]]*) print_danger "Authentication output: %s contains a control byte.\n" "$key"; return 1 ;;
+    esac
+
+    case "$key" in
+      COOKIE)      [ "$seen_cookie"  -eq 1 ] && { print_danger "Authentication output: duplicate COOKIE.\n"; return 1; }; AUTH_COOKIE="$val";      seen_cookie=1 ;;
+      HOST)        [ "$seen_host"    -eq 1 ] && { print_danger "Authentication output: duplicate HOST.\n"; return 1; };   AUTH_HOST="$val";        seen_host=1 ;;
+      CONNECT_URL) [ "$seen_url"     -eq 1 ] && { print_danger "Authentication output: duplicate CONNECT_URL.\n"; return 1; }; AUTH_CONNECT_URL="$val"; seen_url=1 ;;
+      FINGERPRINT) [ "$seen_fpr"     -eq 1 ] && { print_danger "Authentication output: duplicate FINGERPRINT.\n"; return 1; }; AUTH_FINGERPRINT="$val"; seen_fpr=1 ;;
+      RESOLVE)     [ "$seen_resolve" -eq 1 ] && { print_danger "Authentication output: duplicate RESOLVE.\n"; return 1; }; AUTH_RESOLVE="$val";     seen_resolve=1 ;;
+      *)
+        print_danger "Authentication output: unrecognised key '%s' on line %d.\n" "$key" "$lineno"
+        return 1 ;;
+    esac
+  done
+
+  [ "$lineno" -gt 0 ] || { print_danger "Authentication produced no output.\n"; return 1; }
+  return 0
+}
+
+# Helper mode requires the CONNECT_URL contract. Older OpenConnect emits only a
+# numeric HOST, and Model B binds an origin - collapsing to an address would
+# discard exactly what is being bound. Detect the output contract rather than
+# guessing a version number.
+require_helper_auth_contract() {
+  if [ -z "$AUTH_COOKIE" ]; then
+    print_danger "Authentication did not produce a cookie.\n"; return 1
+  fi
+  if [ -z "$AUTH_FINGERPRINT" ]; then
+    print_danger "Authentication did not report a server fingerprint.\n"; return 1
+  fi
+  if [ -z "$AUTH_CONNECT_URL" ]; then
+    print_danger "OpenConnect is too old for hardened helper mode (--authenticate produced no CONNECT_URL). Use prompt mode.\n"
+    return 1
+  fi
+  return 0
+}
+
+# ------------------------------------------------------- extraArgs translation
+
+# Translate a profile's extraArgs into the helper's closed tunable table (§10).
+#
+# This is why existing profiles keep working in helper mode: `--no-dtls --mtu
+# 1400` becomes `--tunable no-dtls --tunable mtu=1400`, while anything that can
+# name a program to run is refused with the flag named. --useragent and --os are
+# not tunables - they belong to phase one (and --useragent to both) - so they are
+# routed, not rejected.
+#
+# Sets HELPER_TUNABLES (array), PHASE1_EXTRA (array). Returns 1 on anything
+# untranslatable.
+translate_extra_args() {
+  HELPER_TUNABLES=(); PHASE1_EXTRA=(); HELPER_USERAGENT=""
+  local raw="$1" tok value
+  [ -z "$raw" ] && return 0
+
+  local toks=() split rc
+  split="$(printf '%s\n' "$raw" | xargs -n1 2>/dev/null)"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    print_danger "extraArgs for this profile has malformed quoting.\n"; return 1
+  fi
+  mapfile -t toks <<< "$split"
+  [ "${#toks[@]}" -eq 1 ] && [ -z "${toks[0]}" ] && return 0
+
+  local i=0 n="${#toks[@]}"
+  while [ "$i" -lt "$n" ]; do
+    tok="${toks[$i]}"
+    i=$((i + 1))
+    [ -z "$tok" ] && continue
+
+    # Accept both --flag=value and --flag value.
+    case "$tok" in
+      *=*) value="${tok#*=}"; tok="${tok%%=*}" ;;
+      *)   value="" ;;
+    esac
+
+    case "$tok" in
+      --no-dtls|--no-http-keepalive|--disable-ipv6)
+        HELPER_TUNABLES+=("--tunable" "${tok#--}") ;;
+      --mtu|--base-mtu|--reconnect-timeout|--force-dpd)
+        if [ -z "$value" ]; then value="${toks[$i]:-}"; i=$((i + 1)); fi
+        if [ -z "$value" ]; then
+          print_danger "extraArgs: %s needs a value.\n" "$tok"; return 1
+        fi
+        HELPER_TUNABLES+=("--tunable" "${tok#--}=${value}") ;;
+      --useragent)
+        if [ -z "$value" ]; then value="${toks[$i]:-}"; i=$((i + 1)); fi
+        HELPER_USERAGENT="$value"
+        PHASE1_EXTRA+=("--useragent=${value}") ;;
+      --os)
+        if [ -z "$value" ]; then value="${toks[$i]:-}"; i=$((i + 1)); fi
+        PHASE1_EXTRA+=("--os=${value}") ;;
+      *)
+        print_danger "extraArgs contains '%s', which helper mode does not accept. Flags that can name a program to run are only available in prompt mode (type your sudo password), and the rest must be in the tunable table. See SECURITY.md.\n" "$tok"
+        return 1 ;;
+    esac
+  done
+  return 0
+}
+
+# ------------------------------------------------------------------ phase one
+
+# Authenticate as the invoking user and capture the session descriptor.
+#
+# Everything sensitive happens here, unprivileged: the password and TOTP code go
+# in on stdin, a client certificate or PKCS#11 token is read with the user's own
+# access, and an SSO browser opens in the user's own session - which also fixes
+# the long-standing Linux problem of a root-spawned browser never reaching the
+# desktop.
+#
+# Sets AUTH_* on success. Stdout of openconnect is captured; its stderr is left
+# attached to the terminal so prompts and progress remain visible.
+phase_one_authenticate() {
+  local args=() out rc
+
+  args+=(--authenticate)
+  args+=("--protocol=${PROTOCOL}")
+  args+=("--user=${VPN_USER}")
+  [ -n "${VPN_GROUP}" ] && args+=(--authgroup "${VPN_GROUP}")
+
+  # Pin during authentication too, not only at connect: otherwise phase one
+  # would trust the system store while phase two pins, and the fingerprint we
+  # bind would be whatever answered.
+  [ -n "${SERVER_CERTIFICATE}" ] && args+=("--servercert=${SERVER_CERTIFICATE}")
+  [ -n "${VPN_PROXY:-}" ] && args+=("--proxy=${VPN_PROXY}")
+
+  # Client certificate / PKCS#11: used HERE, with the user's own access to the
+  # token. Neither the path nor the PIN ever crosses the privilege boundary.
+  if [ -n "${VPN_CLIENT_CERT:-}" ]; then
+    args+=("--certificate=${VPN_CLIENT_CERT}")
+    [ -n "${VPN_CLIENT_KEY:-}" ] && args+=("--sslkey=${VPN_CLIENT_KEY}")
+  fi
+
+  [ "${VPN_TOKEN_MODE:-}" = totp ] && args+=(--token-mode=totp)
+  [ "${#PHASE1_EXTRA[@]}" -gt 0 ] && args+=("${PHASE1_EXTRA[@]}")
+
+  if [ "${VPN_AUTH_MODE:-password}" = sso ]; then
+    args+=("--external-browser=$(resolve_external_browser)")
+    args+=("${VPN_HOST}")
+    out="$(openconnect "${args[@]}")"; rc=$?
+  else
+    args+=(--passwd-on-stdin)
+    args+=("${VPN_HOST}")
+    local stdin_lines="$VPN_PASSWD"
+    local second="${VPN_SECOND_FACTOR:-$VPN_DUO2FAMETHOD}"
+    [ -n "$second" ] && stdin_lines+=$'\n'"$second"
+    out="$(printf '%s\n' "$stdin_lines" | openconnect "${args[@]}")"; rc=$?
+    unset stdin_lines second
+  fi
+
+  if [ "$rc" -ne 0 ]; then
+    print_danger "Authentication failed (openconnect exited %d).\n" "$rc"
+    return 1
+  fi
+
+  parse_auth_output <<< "$out" || return 1
+  unset out
+  require_helper_auth_contract || return 1
+  return 0
+}
+
+# ------------------------------------------------------------------ phase two
+
+# Hand the cookie to the privileged helper.
+#
+# The cookie goes on STDIN and nowhere else, so it never appears in the process
+# table. Note what is absent from this command line: no fingerprint (the helper
+# reads it from the approval registry, so a caller cannot substitute a gateway),
+# no password, no certificate, no script, and nothing that did not come from the
+# closed schema.
+run_openconnect_helper() {
+  local h; h="$(helper_bin)"
+  local args=(connect
+              "--profile-id" "${VPN_PROFILE_ID}"
+              "--protocol"   "${PROTOCOL}"
+              "--connect-url" "${AUTH_CONNECT_URL}")
+
+  # RESOLVE pins the gateway's address for this session. The helper checks that
+  # the host half names the approved endpoint, so a well-formed value pointing
+  # somewhere else is refused there rather than trusted here.
+  [ -n "${AUTH_RESOLVE}" ] && args+=("--resolve" "${AUTH_RESOLVE}")
+  [ -n "${VPN_PROXY:-}" ]  && args+=("--proxy" "${VPN_PROXY}")
+  [ -n "${HELPER_USERAGENT:-}" ] && args+=("--useragent" "${HELPER_USERAGENT}")
+  [ "${QUIET:-FALSE}" = TRUE ] && args+=("--quiet")
+  [ "${#HELPER_TUNABLES[@]}" -gt 0 ] && args+=("${HELPER_TUNABLES[@]}")
+
+  write_connection_state
+  # shellcheck disable=SC2024  # the log is opened by this user; the root child inherits the fd
+  printf '%s\n' "${AUTH_COOKIE}" | sudo -n "$h" "${args[@]}" 2>&1 | tee -a "$LOG_FILE_PATH"
+  local rc="${PIPESTATUS[1]}"
+
+  unset AUTH_COOKIE
+  rm -f "$PID_FILE_PATH" "$STATE_FILE_PATH"
+  notify "VPN Up" "Disconnected from ${VPN_NAME:-VPN}"
+  run_hooks disconnected "${VPN_NAME:-}" "${VPN_HOST:-}"
+  return "$rc"
+}
+
+# Full helper-mode connect: translate, authenticate, hand off.
+connect_via_helper() {
+  translate_extra_args "${VPN_EXTRA_ARGS:-}" || return 1
+
+  print_primary "Authenticating as %s (unprivileged) ...\n" "${USER:-$(id -un)}"
+  phase_one_authenticate || return 1
+
+  if [ -n "${AUTH_HOST}" ] && [ "${VPN_UP_VERBOSE:-FALSE}" = TRUE ]; then
+    print_warning "Gateway reported host %s\n" "${AUTH_HOST}"
+  fi
+
+  print_primary "Establishing the tunnel via %s ...\n" "$(helper_bin)"
+  run_openconnect_helper
+}
+
+# ------------------------------------------------------------------- stopping
+
+stop_via_helper() {
+  local h; h="$(helper_bin)"
+  # No pid is passed: the helper reads it from root-owned state and verifies the
+  # process identity before signalling, so a recycled pid is never touched.
+  sudo -n "$h" stop --profile-id "${VPN_PROFILE_ID}"
+}
+
+# ------------------------------------------------------------------ approval
+
+# Approve this profile's endpoint, which is an interactive, password-gated
+# operation by design (§5): vpn-up-admin is deliberately NOT in the passwordless
+# sudoers rule, so an attacker holding that rule cannot approve anything.
+approve_profile() {
+  local name="${1:-}"
+  [ -z "$name" ] && { print_danger "Usage: %s approve-profile <profile>\n" "${DISPLAY_NAME}"; return 1; }
+  load_profile_fields "$name" || return 1
+  profile_id_ensure "$name" || return 1
+
+  translate_extra_args "${VPN_EXTRA_ARGS:-}" || return 1
+  print_primary "Authenticating to record the endpoint and its certificate ...\n"
+  phase_one_authenticate || return 1
+
+  local a; a="$(admin_bin)"
+  local args=(approve
+              "--profile-id"  "${VPN_PROFILE_ID}"
+              "--protocol"    "${PROTOCOL}"
+              "--endpoint"    "${AUTH_CONNECT_URL}"
+              "--fingerprint" "${AUTH_FINGERPRINT}")
+  if [ -n "${VPN_PROXY:-}" ]; then args+=("--proxy" "${VPN_PROXY}")
+  else args+=("--no-proxy"); fi
+
+  unset AUTH_COOKIE
+  print_warning "This step needs your password: approving an endpoint must never be possible without one.\n"
+  sudo "$a" "${args[@]}"
+}

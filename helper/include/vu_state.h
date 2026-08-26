@@ -96,6 +96,20 @@ bool vu_state_paths_in(const char *root, uid_t uid, const char *profile_id,
 bool vu_dir_ensure(const char *path, uid_t expect_uid, mode_t mode, vu_err *e);
 
 /*
+ * The same verification, WITHOUT creating anything: *absent is set when the
+ * directory (or its parent) simply does not exist yet, which is a normal answer
+ * rather than a failure.
+ *
+ * Added in step 9. `connect` builds the state tree through vu_dir_ensure, so
+ * every directory it touches has been verified; `stop` did not, and went
+ * straight to reading the pid file. On Linux /run is root-only so that was
+ * academic, but macOS /var/run is drwxrwxr-x root:daemon, meaning a process in
+ * group daemon could create /var/run/vpn-up, plant a pid and start token, and
+ * have root signal a process of its choosing.
+ */
+bool vu_dir_verify(const char *path, uid_t expect_uid, bool *absent, vu_err *e);
+
+/*
  * Ownership and mode bits do not prove non-writability, because both platforms
  * support ACLs: a path can be root:wheel 0755 while an ACL grants the caller
  * write access. For a FIXED, TRUSTED path, fork a child, drop supplementary
@@ -195,7 +209,21 @@ typedef enum {
     VU_STATE_ABSENT     /* no record at all                              */
 } vu_state_status;
 
-bool vu_state_check(const vu_state_paths *p, const char *expect_exe,
+/*
+ * Verify the whole state chain for this profile before anything inside it is
+ * believed. *present is false when no directory exists yet (nothing has
+ * connected); a false RETURN means a directory exists and is not ours, and the
+ * caller must then read nothing from it.
+ */
+bool vu_state_verify(const vu_state_paths *p, uid_t expect_uid, bool *present, vu_err *e);
+
+/*
+ * expect_uid is the uid that must own the pid and start-token files — 0 in
+ * production, the caller's own under test. A state file with any other owner,
+ * or with group or other access, is refused rather than parsed: its contents
+ * decide which pid root signals.
+ */
+bool vu_state_check(const vu_state_paths *p, const char *expect_exe, uid_t expect_uid,
                     vu_state_status *status, vu_proc *found, vu_err *e);
 
 bool vu_state_prune(const vu_state_paths *p, vu_err *e);
@@ -214,6 +242,24 @@ bool vu_state_prune(const vu_state_paths *p, vu_err *e);
  * core dumps matters because this process holds the session cookie.
  */
 bool vu_harden_process(int keep_fd, vu_err *e);
+
+/*
+ * Guarantee that descriptors 0, 1 and 2 are open, pointing any that are not at
+ * /dev/null. Must run before this program opens ANYTHING.
+ *
+ * Not hygiene — a correctness requirement, and step 9's most concrete finding.
+ * A caller may invoke the helper with stdin closed (`sudo vpn-up-helper connect
+ * ... 0<&-`), and the kernel then hands the lowest free descriptor to the next
+ * open() — which is the LOCK FILE. The helper execve's OpenConnect with
+ * --cookie-on-stdin, so OpenConnect would read the lock file as the session
+ * cookie. Verified: with stdin closed, vu_lock_acquire returns fd 0.
+ *
+ * The same shape with stderr closed points the process's own diagnostics at a
+ * root-owned state file. Neither is a privilege escalation, but both make a
+ * privileged program's behaviour depend on how its caller arranged its
+ * descriptors, which is a property no privileged program should have.
+ */
+bool vu_ensure_std_fds(vu_err *e);
 
 /*
  * A minimal, explicitly constructed environment for the exec'd child. Nothing

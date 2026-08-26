@@ -7,7 +7,10 @@
  *
  * The connect sequence, in order, because the order is the design:
  *
+ *   0. confirm fds 0,1,2 are open                -- before ANY open() in this
+ *                                                   process; see below
  *   1. parse argv against the closed schema      -- no pass-through, ever
+ *                                                   (vu_request_from_argv)
  *   2. resolve SUDO_UID                          -- refuse if absent
  *   3. look up the approval                      -- refuse if absent
  *   4. policy check                              -- protocol/origin/proxy/resolve
@@ -18,10 +21,22 @@
  *                                                   OpenConnect pid
  *   9. execve                                    -- one call, no fork
  *
- * stdin is never read. The cookie flows through untouched to
- * `openconnect --cookie-on-stdin`; reading it here to validate it would consume
- * the bytes OpenConnect needs, and there is nothing for validation to protect
- * since the helper never interprets it.
+ * `stop` verifies the state tree it is about to read (step 9 of §16 found that
+ * it did not), then re-verifies the process identity before every signal.
+ *
+ * Step 0 is not hygiene. A caller who closes stdin gets the lowest free
+ * descriptor handed to the next open() — which is the lock file — and
+ * OpenConnect, run with --cookie-on-stdin, would read the lock file as the
+ * session cookie. Verified, not theoretical.
+ *
+ * stdin is never read HERE. The cookie flows through untouched to
+ * `openconnect --cookie-on-stdin`; reading it to validate it would consume the
+ * bytes OpenConnect needs, and there is nothing for validation to protect since
+ * the helper never interprets it.
+ *
+ * The argv schema itself lives in src/request.c, not in this file: main()
+ * refuses to run as anything but root before it looks at argv, so a parser in
+ * here could not be attacked by an unprivileged test at all.
  */
 
 #include "vu_exec.h"
@@ -51,98 +66,12 @@ static void usage(void)
         stderr);
 }
 
-static const char *next_value(int argc, char **argv, int *i, const char *flag)
-{
-    if (*i + 1 >= argc) {
-        fprintf(stderr, "vpn-up-helper: %s needs a value\n", flag);
-        return NULL;
-    }
-    const char *v = argv[++(*i)];
-    if (v[0] == '-') {
-        fprintf(stderr, "vpn-up-helper: %s was given '%s', which looks like a flag\n", flag, v);
-        return NULL;
-    }
-    return v;
-}
-
-/* Parse and validate the closed schema (§8). Every field goes through the
- * policy engine; nothing is copied across unchecked. */
-static bool parse_connect(int argc, char **argv, vu_request *req, vu_err *e)
-{
-    memset(req, 0, sizeof *req);
-
-    const char *raw_id = NULL, *raw_proto = NULL, *raw_url = NULL;
-    const char *raw_resolve = NULL, *raw_proxy = NULL, *raw_ua = NULL;
-    const char *raw_tunables[VU_TUNABLE_MAX];
-    size_t n_tun = 0;
-
-    for (int i = 0; i < argc; ++i) {
-        const char *a = argv[i];
-        if      (strcmp(a, "--profile-id")  == 0) { if (!(raw_id      = next_value(argc, argv, &i, a))) return false; }
-        else if (strcmp(a, "--protocol")    == 0) { if (!(raw_proto   = next_value(argc, argv, &i, a))) return false; }
-        else if (strcmp(a, "--connect-url") == 0) { if (!(raw_url     = next_value(argc, argv, &i, a))) return false; }
-        else if (strcmp(a, "--resolve")     == 0) { if (!(raw_resolve = next_value(argc, argv, &i, a))) return false; }
-        else if (strcmp(a, "--proxy")       == 0) { if (!(raw_proxy   = next_value(argc, argv, &i, a))) return false; }
-        else if (strcmp(a, "--useragent")   == 0) { if (!(raw_ua      = next_value(argc, argv, &i, a))) return false; }
-        else if (strcmp(a, "--quiet")       == 0) { req->quiet = true; }
-        else if (strcmp(a, "--tunable")     == 0) {
-            const char *v = next_value(argc, argv, &i, a);
-            if (!v) return false;
-            if (n_tun >= VU_TUNABLE_MAX) {
-                vu_err_set(e, "at most %d tunables", VU_TUNABLE_MAX);
-                return false;
-            }
-            raw_tunables[n_tun++] = v;
-        } else {
-            /* No pass-through. An argument we do not understand is a mistake,
-             * and forwarding it is exactly how the old extraArgs hole worked. */
-            vu_err_set(e, "unrecognised argument '%s'", a);
-            return false;
-        }
-    }
-
-    if (!raw_id || !raw_proto || !raw_url) {
-        vu_err_set(e, "connect needs --profile-id, --protocol and --connect-url");
-        return false;
-    }
-
-    if (!vu_canon_profile_id(raw_id, req->profile_id, sizeof req->profile_id, e)) return false;
-    if (!vu_valid_protocol(raw_proto, e)) return false;
-    if (strlen(raw_proto) + 1 > sizeof req->protocol) {
-        vu_err_set(e, "protocol: too long"); return false;
-    }
-    memcpy(req->protocol, raw_proto, strlen(raw_proto) + 1);
-
-    if (!vu_parse_url(raw_url, &req->url, e)) return false;
-
-    if (raw_resolve) {
-        if (!vu_canon_resolve(raw_resolve, &req->resolve, e)) return false;
-        req->has_resolve = true;
-    }
-    if (raw_proxy) {
-        if (!vu_canon_proxy(raw_proxy, req->proxy, sizeof req->proxy, e)) return false;
-    }
-    if (raw_ua) {
-        if (!vu_valid_useragent(raw_ua, e)) return false;
-        if (strlen(raw_ua) + 1 > sizeof req->useragent) {
-            vu_err_set(e, "useragent: too long"); return false;
-        }
-        memcpy(req->useragent, raw_ua, strlen(raw_ua) + 1);
-    }
-    for (size_t i = 0; i < n_tun; ++i) {
-        if (!vu_render_tunable(raw_tunables[i], req->tunables[i],
-                               VU_TUNABLE_LEN, e)) return false;
-    }
-    req->n_tunables = n_tun;
-    return true;
-}
-
 static int cmd_connect(int argc, char **argv, uid_t uid)
 {
     vu_err e; vu_err_clear(&e);
     vu_request req;
 
-    if (!parse_connect(argc, argv, &req, &e)) goto bad;
+    if (!vu_request_from_argv(argc, argv, &req, &e)) goto bad;
 
     /* The approval, and the fingerprint that comes with it. A missing record is
      * the common case for a first run, so say what to do about it. */
@@ -186,7 +115,7 @@ static int cmd_connect(int argc, char **argv, uid_t uid)
      */
     vu_state_status status;
     vu_err scratch; vu_err_clear(&scratch);
-    if (vu_state_check(&paths, VU_OPENCONNECT, &status, NULL, &scratch) &&
+    if (vu_state_check(&paths, VU_OPENCONNECT, 0, &status, NULL, &scratch) &&
         status == VU_STATE_STALE) {
         (void)vu_state_prune(&paths, &scratch);
     }
@@ -221,10 +150,26 @@ static int cmd_stop(int argc, char **argv, uid_t uid)
 {
     vu_err e; vu_err_clear(&e);
 
+    /* stop's schema is one flag, so it is scanned here rather than through
+     * vu_request_from_argv. Same rules: no pass-through, no repeats, and never a
+     * pid on argv. */
     const char *raw_id = NULL;
     for (int i = 0; i < argc; ++i) {
         if (strcmp(argv[i], "--profile-id") == 0) {
-            if (!(raw_id = next_value(argc, argv, &i, argv[i]))) return 2;
+            if (raw_id) {
+                fprintf(stderr, "vpn-up-helper: --profile-id was given more than once\n");
+                return 2;
+            }
+            if (i + 1 >= argc) {
+                fprintf(stderr, "vpn-up-helper: --profile-id needs a value\n");
+                return 2;
+            }
+            raw_id = argv[++i];
+            if (raw_id[0] == '-') {
+                fprintf(stderr, "vpn-up-helper: --profile-id was given '%s', "
+                                "which looks like a flag\n", raw_id);
+                return 2;
+            }
         } else {
             fprintf(stderr, "vpn-up-helper: unrecognised argument '%s'\n", argv[i]);
             return 2;
@@ -245,6 +190,24 @@ static int cmd_stop(int argc, char **argv, uid_t uid)
     }
 
     /*
+     * Verify the state tree BEFORE reading anything out of it. connect builds it
+     * with vu_dir_ensure, so it arrives verified; stop used to walk straight to
+     * the pid file, which meant that on any platform where the state root's
+     * parent is not root-only (macOS /var/run is drwxrwxr-x root:daemon) another
+     * user could plant the pid that root then signals.
+     */
+    bool state_present = false;
+    if (!vu_state_verify(&paths, 0, &state_present, &e)) {
+        fprintf(stderr, "vpn-up-helper: %s\n", e.msg);
+        fprintf(stderr, "vpn-up-helper: refusing to act on state this program does not own\n");
+        return 1;
+    }
+    if (!state_present) {
+        printf("no tunnel recorded for %s\n", id);
+        return 0;
+    }
+
+    /*
      * No pid is ever accepted on argv. The pid comes from root-owned state and
      * is only signalled if the executable path AND the start token still match,
      * so a recycled pid is never touched. That is the hole `sudo kill "$pid"`
@@ -252,7 +215,7 @@ static int cmd_stop(int argc, char **argv, uid_t uid)
      */
     vu_state_status status;
     vu_proc found;
-    if (!vu_state_check(&paths, VU_OPENCONNECT, &status, &found, &e)) {
+    if (!vu_state_check(&paths, VU_OPENCONNECT, 0, &status, &found, &e)) {
         fprintf(stderr, "vpn-up-helper: %s\n", e.msg);
         return 1;
     }
@@ -284,7 +247,7 @@ static int cmd_stop(int argc, char **argv, uid_t uid)
         struct timespec ts = { 0, 100 * 1000 * 1000 };   /* 100ms */
         (void)nanosleep(&ts, NULL);
         vu_err_clear(&e);
-        if (!vu_state_check(&paths, VU_OPENCONNECT, &status, NULL, &e) ||
+        if (!vu_state_check(&paths, VU_OPENCONNECT, 0, &status, NULL, &e) ||
             status != VU_STATE_LIVE) {
             vu_err_clear(&e);
             (void)vu_state_prune(&paths, &e);
@@ -294,7 +257,7 @@ static int cmd_stop(int argc, char **argv, uid_t uid)
     }
 
     vu_err_clear(&e);
-    if (vu_state_check(&paths, VU_OPENCONNECT, &status, &found, &e) && status == VU_STATE_LIVE) {
+    if (vu_state_check(&paths, VU_OPENCONNECT, 0, &status, &found, &e) && status == VU_STATE_LIVE) {
         if (kill(found.pid, SIGKILL) != 0 && errno != ESRCH) {
             fprintf(stderr, "vpn-up-helper: cannot kill pid %ld: %s\n",
                     (long)found.pid, strerror(errno));
@@ -309,6 +272,19 @@ static int cmd_stop(int argc, char **argv, uid_t uid)
 
 int main(int argc, char **argv)
 {
+    /*
+     * FIRST, before any open() in this process: a caller who closes stdin gets
+     * the lock file on descriptor 0, and OpenConnect then reads the lock file as
+     * the --cookie-on-stdin cookie. See vu_ensure_std_fds.
+     */
+    {
+        vu_err fds; vu_err_clear(&fds);
+        if (!vu_ensure_std_fds(&fds)) {
+            fprintf(stderr, "vpn-up-helper: %s\n", fds.msg);
+            return 1;
+        }
+    }
+
     if (argc < 2) { usage(); return 2; }
     const char *cmd = argv[1];
 
