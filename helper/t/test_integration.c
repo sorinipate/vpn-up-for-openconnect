@@ -65,9 +65,8 @@ static char g_base[VU_PATH_MAX];
 
 static void make_base(const char *tag)
 {
-    const char *home = getenv("HOME");
-    if (!home || !*home) home = ".";
-    vu_path(g_base, sizeof g_base, "%s/.vpn-up-integration-%s-%ld", home, tag, (long)getpid());
+    vu_path(g_base, sizeof g_base, "%s/.vpn-up-integration-%s-%ld",
+            vu_test_base(), tag, (long)getpid());
     vu_rm_rf(g_base);
     CHECK(mkdir(g_base, 0700) == 0, "cannot create %s: %s", g_base, strerror(errno));
 }
