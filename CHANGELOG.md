@@ -53,19 +53,6 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
   target even with a password prompt, since a process running as the user can
   replace the binary and wait for the next legitimate `sudo openconnect`.
 
-- **The TOTP seed no longer reaches a command line.** `SECURITY.md` claims
-  secrets are never passed on command lines, but `generate_totp` and the
-  `add-profile` validation both passed the base32 seed as an `oathtool`
-  argument, where it was visible to every user on the machine through `ps`.
-  Both call sites now pipe it on stdin (`oathtool --totp -b -`), which
-  `oathtool`'s own help recommends over an argv key on multi-user systems. The
-  seed still never reaches `openconnect`; only the short-lived code transits.
-- **Prompt mode is documented as the safer default, not "safe".** It avoids
-  passwordless root becoming *ambient*, but it is a compatibility mode rather
-  than a hardened boundary: a user-writable `openconnect` is a poor `sudo`
-  target even with a password prompt, since a process running as the user can
-  replace the binary and wait for the next legitimate `sudo openconnect`.
-
 ### Fixed
 
 - **The encrypted vault could report a write that never happened.**
