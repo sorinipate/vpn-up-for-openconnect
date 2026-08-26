@@ -41,12 +41,44 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
   guardrail, **not** a security boundary: while the sudoers rule permits
   `openconnect` itself, no client-side filtering can enforce anything.
 
+- **The TOTP seed no longer reaches a command line.** `SECURITY.md` claims
+  secrets are never passed on command lines, but `generate_totp` and the
+  `add-profile` validation both passed the base32 seed as an `oathtool`
+  argument, where it was visible to every user on the machine through `ps`.
+  Both call sites now pipe it on stdin (`oathtool --totp -b -`), which
+  `oathtool`'s own help recommends over an argv key on multi-user systems. The
+  seed still never reaches `openconnect`; only the short-lived code transits.
+- **Prompt mode is documented as the safer default, not "safe".** It avoids
+  passwordless root becoming *ambient*, but it is a compatibility mode rather
+  than a hardened boundary: a user-writable `openconnect` is a poor `sudo`
+  target even with a password prompt, since a process running as the user can
+  replace the binary and wait for the next legitimate `sudo openconnect`.
+
 ### Fixed
 
+- **Deleting a profile left its other secrets behind.** `remove-profile`
+  cleared only the `password`, so a profile's `token_secret` (TOTP seed) and
+  `key_password` (PKCS#11 PIN) stayed in the keychain or vault with nothing
+  referencing them. A new `secrets_delete_profile` clears every field from one
+  `SECRET_FIELDS` list, and a test cross-checks that list against every field
+  the codebase actually stores.
 - **Stale macOS `openconnect` path in the sudoers examples.** They named
   `/opt/homebrew/sbin/openconnect`; current Homebrew installs to
   `/opt/homebrew/bin/openconnect`, so the documented rule silently did nothing.
   All examples now tell you to confirm the path with `command -v openconnect`.
+- **Stale instruction for finding the default `vpnc-script`.** `SECURITY.md`
+  said `openconnect --version`; it is printed by `openconnect --help`, under
+  "VPN configuration script".
+
+### Known issues
+
+- **The encrypted vault can report a successful write that did not happen.**
+  `_vault_encrypt` does not check `openssl`'s exit status and ends in
+  `chmod … || true`, so `secrets_set` reports success even when encryption
+  failed. Tracked separately; it needs an atomic write-then-rename and its own
+  tests. **Unattended operation (the login service, and any passwordless mode)
+  must not be recommended until this is fixed**, since it depends on stored
+  credentials actually being stored.
 
 ---
 
