@@ -30,10 +30,10 @@ static void make_root(void)
     const char *tmp = getenv("TMPDIR");
     if (!tmp || !*tmp) tmp = "/tmp";
     char base[VU_PATH_MAX];
-    snprintf(base, sizeof base, "%s", tmp);
+    vu_path(base, sizeof base, "%s", tmp);
     size_t bn = strlen(base);
     while (bn > 1 && base[bn - 1] == '/') base[--bn] = '\0';
-    snprintf(g_root, sizeof g_root, "%s/vu-reg-test-XXXXXX", base);
+    vu_path(g_root, sizeof g_root, "%s/vu-reg-test-XXXXXX", base);
     if (!mkdtemp(g_root)) {
         fprintf(stderr, "cannot create temp registry root: %s\n", strerror(errno));
         exit(2);
@@ -222,7 +222,7 @@ static void test_operations(void)
     /* A stray .tmp left by an interrupted write must not appear as an approval. */
     {
         char tmp[VU_PATH_MAX];
-        snprintf(tmp, sizeof tmp, "%s.tmp", rp.record);
+        vu_path(tmp, sizeof tmp, "%s.tmp", rp.record);
         int fd = open(tmp, O_CREAT | O_WRONLY, 0600);
         CHECK(fd >= 0, "made a stray temp file");
         close(fd);
@@ -302,7 +302,7 @@ static void test_tampering(void)
      * an attacker choose what root treats as policy. */
     {
         char decoy[VU_PATH_MAX];
-        snprintf(decoy, sizeof decoy, "%s/decoy", g_root);
+        vu_path(decoy, sizeof decoy, "%s/decoy", g_root);
         char text[VU_URL_MAX];
         vu_approval other = sample(ID_A);
         snprintf(other.origin, sizeof other.origin, "https://attacker.example.com:443");
