@@ -6,6 +6,29 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 ---
 
 ## [Unreleased]
+### Added
+
+- **Two-phase OpenConnect plumbing (not yet switchable on).** `vpn-up` can now
+  authenticate *unprivileged* with `openconnect --authenticate`, parse the
+  resulting session descriptor without `eval`, and hand only the cookie to a
+  privileged helper that establishes the tunnel. The password, TOTP seed, client
+  certificate, PKCS#11 PIN and SSO browser therefore never cross the privilege
+  boundary — and on Linux the SSO browser now opens in your own session rather
+  than root's, which fixes a long-standing annoyance as a side effect.
+  - Profiles gain an immutable `<profileId>`, generated and persisted on first
+    use. It is the stable identity an endpoint approval is keyed to, so renaming
+    a profile no longer silently changes which endpoint is authorised.
+  - `vpn-up approve-profile <profile>` records an endpoint and its certificate
+    as approved. It deliberately asks for your password: approving an endpoint
+    must never be possible without one.
+  - Existing `<extraArgs>` keep working in helper mode where they can be
+    translated to the closed tunable table (`--no-dtls`, `--mtu`, …). Flags that
+    can name a program to run (`--script`, `--csd-wrapper`, …) are refused with
+    the flag named and a pointer to prompt mode.
+  - **Helper mode is inert until the privileged binaries are installed**, and
+    there is no installer yet. Nothing changes for existing users: without the
+    helper, `vpn-up` takes exactly the path it always has.
+
 ### Security
 
 - **Retracted the claim that a `NOPASSWD` sudoers rule for `openconnect` is

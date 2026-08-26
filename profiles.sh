@@ -52,7 +52,8 @@ load_profile_fields() {
       -v "extraArgs | extraargs" -n \
       -v "clientCertificate | clientcertificate" -n \
       -v "clientKey | clientkey" -n \
-      -v "proxy | proxyUrl" -n "${PROFILES_FILE}"
+      -v "proxy | proxyUrl" -n \
+      -v "profileId | profileid" -n "${PROFILES_FILE}"
   )
   VPN_NAME="${fields[0]:-}"
   PROTOCOL="${fields[1]:-}"
@@ -77,10 +78,62 @@ load_profile_fields() {
   # Optional HTTP/SOCKS proxy URL (e.g. http://proxy:8080, socks5://127.0.0.1:1080)
   # passed to openconnect. An identifier, not a secret — avoid embedding credentials.
   VPN_PROXY="${fields[13]:-}"
+  # Stable identity for the approval registry (Model B). Deliberately NOT the
+  # profile name: the name is display identity and may be renamed or reused,
+  # while an approval must key off something immutable. Generated on first use
+  # by profile_id_ensure.
+  VPN_PROFILE_ID="${fields[14]:-}"
 
   # Intentionally NOT exported: these are read only by functions in this
   # shell, and exporting would copy the password into the environment of
   # every child process (curl, ping, awk, ...).
+}
+
+# Ensure a profile has an immutable profile id, generating and persisting one on
+# first use. Existing profiles are migrated silently the first time they are
+# used with helper mode; nothing else depends on the field, so a profile that
+# never uses helper mode never grows one.
+#
+# The id is only an identifier: it is not secret, and it confers nothing by
+# itself. What it does is name which approval record applies, so renaming a
+# profile no longer silently changes which endpoint is authorised.
+profile_id_ensure() {
+  local name="$1"
+  if [ -n "${VPN_PROFILE_ID:-}" ]; then
+    printf '%s' "${VPN_PROFILE_ID}"
+    return 0
+  fi
+
+  local id=""
+  if command -v uuidgen >/dev/null 2>&1; then
+    id="$(uuidgen 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  fi
+  if [ -z "$id" ] && [ -r /proc/sys/kernel/random/uuid ]; then
+    id="$(cat /proc/sys/kernel/random/uuid 2>/dev/null)"
+  fi
+  if [ -z "$id" ] && command -v openssl >/dev/null 2>&1; then
+    # 32 hex characters is the other form the helper accepts.
+    id="$(openssl rand -hex 16 2>/dev/null)"
+  fi
+  if [ -z "$id" ]; then
+    print_danger "Cannot generate a profile id (need uuidgen or openssl).\n"
+    return 1
+  fi
+
+  local name_lit; name_lit="$(xpath_literal "$name")"
+  local tmp="${PROFILES_FILE}.tmp"
+  # Update if the element exists, otherwise add it.
+  if xmlstarlet sel -t -v "count(//VPN[name=${name_lit}]/profileId)" "${PROFILES_FILE}" 2>/dev/null | grep -q '^[1-9]'; then
+    xmlstarlet ed -u "//VPN[name=${name_lit}]/profileId" -v "$id" "${PROFILES_FILE}" > "${tmp}" || return 1
+  else
+    xmlstarlet ed -s "//VPN[name=${name_lit}]" -t elem -n profileId -v "$id" "${PROFILES_FILE}" > "${tmp}" || return 1
+  fi
+  mv "${tmp}" "${PROFILES_FILE}" || return 1
+  chmod 600 "${PROFILES_FILE}" 2>/dev/null || true
+
+  VPN_PROFILE_ID="$id"
+  printf '%s' "$id"
+  return 0
 }
 
 # Blank the <password> element for a profile so plaintext doesn't linger in

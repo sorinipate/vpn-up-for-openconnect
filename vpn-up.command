@@ -45,6 +45,7 @@ unset _legacy_file
 . "${PROGRAM_PATH}/network.sh"
 . "${PROGRAM_PATH}/profiles.sh"
 . "${PROGRAM_PATH}/core.sh"
+. "${PROGRAM_PATH}/twophase.sh"
 . "${PROGRAM_PATH}/setup.sh"
 . "${PROGRAM_PATH}/service.sh"
 
@@ -64,6 +65,8 @@ Commands:
   logs [-f] [profile]  Show the connection log (-f to follow)
   setup                Run setup wizard (regenerate config)
   add-profile          Add a VPN profile interactively (incl. secret + pin)
+  approve-profile      Approve a profile's endpoint for passwordless connects
+                       (requires your password; needs the privileged helper)
   remove-profile <p>   Remove a profile (XML, secret, logs, service)
   service install <p>  Connect at login + auto-reconnect (launchd/systemd)
   service uninstall <p> Remove the login service for a profile
@@ -93,6 +96,7 @@ case "${1:-}" in
   logs)       shift; show_logs "$@" ;;
   setup)      setup_wizard ;;
   add-profile) add_profile_wizard ;;
+  approve-profile) approve_profile "${2:-}" ;;
   remove-profile) remove_profile "${2:-}" ;;
   service)    shift; sub="${1:-}"
               case "$sub" in
