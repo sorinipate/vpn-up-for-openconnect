@@ -59,7 +59,32 @@ setup() {
   # between two implementations, and with only one present there is nothing to
   # compare. The shell half above still runs.
   command -v cc >/dev/null 2>&1 || skip "no C compiler"
-  ( cd "$BATS_TEST_DIRNAME/../helper" && make -s all >/dev/null 2>&1 && ./build/vu-test >/dev/null 2>&1 )
+
+  # Output is CAPTURED and printed on failure, not discarded.
+  #
+  # The first version sent both streams to /dev/null, so when this failed in CI
+  # the entire report was "failed with status 2" against the line above - bats
+  # attributes a failing subshell to the preceding line, and 2 is GNU make's
+  # error code. A test that hides the reason it failed costs a round trip every
+  # time it fires, which is worse than the test is worth.
+  local build_log run_log
+  build_log="$BATS_TEST_TMPDIR/build.log"
+  run_log="$BATS_TEST_TMPDIR/run.log"
+
+  if ! ( cd "$BATS_TEST_DIRNAME/../helper" && make -s all ) >"$build_log" 2>&1; then
+    echo "the C reference did not build:"
+    sed 's/^/    /' "$build_log"
+    return 1
+  fi
+  if ! ( cd "$BATS_TEST_DIRNAME/../helper" && ./build/vu-test ) >"$run_log" 2>&1; then
+    echo "the C reference corpus failed:"
+    sed 's/^/    /' "$run_log"
+    return 1
+  fi
+  # And it must actually have run something, for the same reason the shell half
+  # asserts a fixture count.
+  grep -qE '^[0-9]+ checks, 0 failures$' "$run_log" || {
+    echo "no clean summary line from the C corpus:"; sed 's/^/    /' "$run_log"; return 1; }
 }
 
 # --- extraArgs: the flags that made this whole exercise necessary ----------

@@ -1030,9 +1030,9 @@ static void test_acl_detection(void)
          * restoring the bug and watching the corpus stay green.
          */
         vu_closure_spec fresh;
-        vu_closure_spec_default(&fresh, file, file, 4242);
+        vu_closure_spec_default(&fresh, file, file, (uid_t)4242);
         CHECK(!fresh.probe, "the default spec must leave the probe off");
-        CHECK(fresh.probe_uid != 4242,
+        CHECK(fresh.probe_uid != (uid_t)4242,
               "the default must not adopt the owner as the probe uid: the probe "
               "asks about the CALLER, and owner is 0 in production");
     }
