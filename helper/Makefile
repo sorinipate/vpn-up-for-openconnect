@@ -11,6 +11,25 @@
 
 CC      ?= cc
 CSTD    ?= -std=c99
+
+# Feature-test macros, set ONCE here rather than per file.
+#
+# -std=c99 defines __STRICT_ANSI__, and glibc then hides every POSIX
+# declaration behind a feature macro — so on Linux mkdtemp, setenv, symlink and
+# friends become implicit declarations, which -Werror turns into a broken build.
+# Per-file #define _GNU_SOURCE fixed the sources but was forgotten in the test
+# files, which is exactly the failure mode a per-file convention invites.
+#
+# The macro has to differ by platform. On Darwin, defining _POSIX_C_SOURCE
+# RESTRICTS the namespace instead of widening it: it hides flock, setgroups and
+# O_NOFOLLOW, and makes <libproc.h> fail to compile. So the portable-looking
+# choice would swap a Linux failure for a macOS one.
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+  FEATURE = -D_DARWIN_C_SOURCE
+else
+  FEATURE = -D_GNU_SOURCE
+endif
 # Warnings are errors: this code will run as root, and "probably fine" is not a
 # standard we can apply to it later by remembering to look.
 WARN     = -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion \
@@ -18,13 +37,13 @@ WARN     = -Wall -Wextra -Werror -Wshadow -Wconversion -Wsign-conversion \
            -Wstrict-prototypes -Wold-style-definition -Wvla
 HARDEN   = -D_FORTIFY_SOURCE=2 -fstack-protector-strong
 OPT     ?= -O2
-CFLAGS  += $(CSTD) $(WARN) $(HARDEN) $(OPT) -Iinclude
+CFLAGS  += $(CSTD) $(FEATURE) $(WARN) $(HARDEN) $(OPT) -Iinclude -It
 
-SRC      = src/validate.c src/authparse.c src/policy.c
-TEST_SRC = t/test.c
+SRC      = src/validate.c src/authparse.c src/policy.c src/state.c src/proc.c
+TEST_SRC = t/main.c t/harness.c t/test_policy.c t/test_state.c
 TEST_BIN = build/vu-test
 
-SAN_FLAGS = $(CSTD) $(WARN) -g -O1 -fno-omit-frame-pointer -Iinclude
+SAN_FLAGS = $(CSTD) $(FEATURE) $(WARN) -g -O1 -fno-omit-frame-pointer -Iinclude -It
 
 .PHONY: all test clean ubsan asan sanitize
 
@@ -33,7 +52,7 @@ all: $(TEST_BIN)
 build:
 	mkdir -p build
 
-$(TEST_BIN): $(SRC) $(TEST_SRC) include/vu.h | build
+$(TEST_BIN): $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h | build
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(TEST_SRC)
 
 test: $(TEST_BIN)
@@ -48,11 +67,11 @@ test: $(TEST_BIN)
 # so `make asan` cannot run there. UndefinedBehaviorSanitizer does not intercept
 # malloc and works on both platforms. CI therefore runs ubsan everywhere and asan
 # on Linux only; do not read a macOS asan hang as a finding in this code.
-ubsan: $(SRC) $(TEST_SRC) include/vu.h | build
+ubsan: $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h | build
 	$(CC) $(SAN_FLAGS) -fsanitize=undefined -o build/vu-test-ubsan $(SRC) $(TEST_SRC)
 	UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 ./build/vu-test-ubsan
 
-asan: $(SRC) $(TEST_SRC) include/vu.h | build
+asan: $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h | build
 	$(CC) $(SAN_FLAGS) -fsanitize=address -o build/vu-test-asan $(SRC) $(TEST_SRC)
 	ASAN_OPTIONS=detect_leaks=1 ./build/vu-test-asan
 
