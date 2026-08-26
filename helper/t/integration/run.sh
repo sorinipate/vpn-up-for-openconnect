@@ -69,9 +69,13 @@ cleanup() { sudo rm -rf -- "$PREFIX"; }
 trap cleanup EXIT
 
 sudo rm -rf -- "$PREFIX"
-sudo mkdir -p -- "$PREFIX/bin" "$PREFIX/etc"
-sudo chown -R 0:0 -- "$PREFIX"
-sudo chmod 755 -- "$PREFIX" "$PREFIX/bin" "$PREFIX/etc"
+# `install -d` sets owner and mode as it creates each directory, the same way the
+# file installs below do. The alternative - mkdir, then chown -R, then chmod -
+# needs three passes over a privileged path, and a recursive chown in a root
+# script is the kind of line a reviewer has to stop and think about.
+for d in "$PREFIX" "$PREFIX/bin" "$PREFIX/etc"; do
+  sudo install -d -o 0 -g 0 -m 0755 -- "$d"
+done
 
 # ------------------------------------------------------------------- the pieces
 
