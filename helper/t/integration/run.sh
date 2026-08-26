@@ -5,8 +5,10 @@
 #   /tmp and belong to the invoking user, so a root-owned file is never created
 #   outside $PREFIX. Having sudo do the redirect would be the bug.
 # shellcheck disable=SC2009
-#   `ps | grep` is the point, not an accident: the claim under test is that the
-#   cookie is not visible in ps output, and pgrep cannot answer that.
+#   Reading ps output is the point, not an accident: the claim under test is that
+#   the cookie is not visible in ps, and pgrep cannot answer that. Note that the
+#   check does NOT pipe ps into grep - see the comment at the check itself for
+#   why that shape reports a false leak.
 # run.sh — the real vpn-up-helper binary, as root, end to end.
 #
 # Step 11 of PRIVILEGED-HELPER-DESIGN.md §16. t/test_integration.c already
@@ -298,12 +300,38 @@ else
   ok "the cookie is nowhere in argv, the environment, or the process table"
 fi
 
-# ps is what a person would actually look at.
-if ps -ww -eo args 2>/dev/null | grep -q -- "$MARKER"; then
+# ps is what a person would actually look at, so it is worth checking directly
+# rather than trusting /proc/self/cmdline alone.
+#
+# SEQUENCED, not piped, and the pattern comes from a FILE. Both matter, and the
+# first version got it wrong in a way that produced a false alarm in CI:
+#
+#     ps -ww -eo args | grep -q -- "$MARKER"     # always FOUND
+#
+# ps and grep in a pipeline run CONCURRENTLY, so ps snapshots the process table
+# while the grep is in it - and that grep's own argv contains the marker. The
+# check detected itself and reported the cookie as leaked while the adjacent
+# check, reading the stand-in's own /proc/self/cmdline, correctly said it had not.
+#
+# Taking the snapshot first fixes it, because the snapshot predates the grep.
+# Reading the pattern from a file as well means the marker never appears in ANY
+# argv, so the check stays correct even if someone reintroduces a pipeline.
+# Verified both ways with a standalone probe: pipelined FOUND, sequenced did not.
+ps_snapshot="/tmp/vu-ps-snapshot.txt"
+ps_pattern="/tmp/vu-ps-pattern.txt"
+ps -ww -eo args > "$ps_snapshot" 2>/dev/null || true
+printf '%s\n' "$MARKER" > "$ps_pattern"
+
+if [ ! -s "$ps_snapshot" ]; then
+  # A failed ps would make the grep below find nothing, and the check would
+  # "pass" without having looked at anything.
+  bad "could not read the process table, so the ps check proved nothing"
+elif grep -q -f "$ps_pattern" "$ps_snapshot"; then
   bad "the cookie is visible in ps output"
 else
   ok "the cookie is not visible in ps"
 fi
+rm -f "$ps_snapshot" "$ps_pattern"
 
 grep -q '^cwd=/$' /tmp/vu-report.txt
 assert $? "the exec'd process runs from /"
