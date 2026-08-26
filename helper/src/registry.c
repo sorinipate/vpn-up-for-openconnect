@@ -147,8 +147,18 @@ bool vu_approval_parse(const char *text, vu_approval *out, vu_err *e)
             have_version = true;
         } else if (klen == 5 && memcmp(p, "proxy", 5) == 0) {
             if (have_proxy) { vu_err_set(e, "approval: duplicate proxy"); return false; }
-            /* "NONE" is the explicit spelling for no proxy, so an empty value
-             * cannot be mistaken for a deliberate one. */
+            /*
+             * "NONE" is the ONLY spelling for no proxy. An empty value used to
+             * be accepted here and silently became NONE — a second spelling of
+             * the most security-relevant field in the record, in a parser whose
+             * stated rule is one spelling per record. Found by the step 9
+             * corpus; a hand-edited or truncated `proxy=` line now fails loudly
+             * instead of authorising a direct connection.
+             */
+            if (vlen == 0) {
+                vu_err_set(e, "approval: proxy is empty; write 'NONE' to approve without one");
+                return false;
+            }
             if (strcmp(value, "NONE") == 0) {
                 out->proxy[0] = '\0';
             } else if (strlen(value) + 1 > sizeof out->proxy) {
@@ -338,9 +348,16 @@ bool vu_registry_put(const char *root, uid_t owner, uid_t uid,
     char text[VU_URL_MAX];
     if (!vu_approval_serialise(a, text, sizeof text, e)) return false;
     vu_approval check;
-    if (!vu_approval_parse(text, &check, e)) {
-        vu_err_set(e, "registry: refusing to store a record that will not parse");
-        return false;
+    {
+        /* A scratch error, then compose: vu_err_set keeps the EARLIEST message,
+         * so writing the summary after the parse failure would have discarded
+         * the actual reason and reported nothing useful. */
+        vu_err inner; vu_err_clear(&inner);
+        if (!vu_approval_parse(text, &check, &inner)) {
+            vu_err_set(e, "registry: refusing to store a record that will not parse (%s)",
+                       inner.msg);
+            return false;
+        }
     }
 
     vu_registry_paths rp;

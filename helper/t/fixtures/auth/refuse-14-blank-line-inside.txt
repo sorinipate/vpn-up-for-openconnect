@@ -1,0 +1,3 @@
+COOKIE='a'
+
+CONNECT_URL='https://vpn.example.com/'

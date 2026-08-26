@@ -219,6 +219,21 @@ typedef struct {
  */
 bool vu_policy_check(const vu_request *req, const vu_approval *appr, vu_err *e);
 
+/*
+ * Parse `vpn-up-helper connect`'s argv into a validated request (§8).
+ *
+ * Lives here, with the rest of the pure validation layer, because that is what
+ * it is: no I/O, no privilege, no globals. It was originally static inside
+ * helper_main.c, where the root check ran first and the grammar could therefore
+ * never be attacked by an unprivileged test — see request.c for why that was
+ * the wrong place for it.
+ *
+ * The schema is closed: every recognised flag may appear at most once, an
+ * unrecognised one is a hard failure rather than something forwarded, and no
+ * field is copied across without going through its own validator.
+ */
+bool vu_request_from_argv(int argc, char **argv, vu_request *req, vu_err *e);
+
 /* Extract the host component of a canonical origin, for the resolve binding. */
 bool vu_origin_host(const char *origin, char *out, size_t out_cap);
 

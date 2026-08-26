@@ -117,8 +117,10 @@ bool vu_state_paths_for(uid_t uid, const char *profile_id, vu_state_paths *out, 
  * walk: the set of directories this program will create is visible at the call
  * site.
  */
-bool vu_dir_ensure(const char *path, uid_t expect_uid, mode_t mode, vu_err *e)
+static bool dir_check(const char *path, uid_t expect_uid, mode_t mode, bool create,
+                      bool *absent, vu_err *e)
 {
+    if (absent) *absent = false;
     if (!path || path[0] != '/') { vu_err_set(e, "state: path must be absolute"); return false; }
     size_t n = strlen(path);
     while (n > 1 && path[n - 1] == '/') n--;          /* tolerate a trailing slash */
@@ -148,12 +150,25 @@ bool vu_dir_ensure(const char *path, uid_t expect_uid, mode_t mode, vu_err *e)
 
     int parent = open(parent_path, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (parent < 0) {
+        if (!create && errno == ENOENT) {
+            if (absent) *absent = true;
+            return false;
+        }
         vu_err_set(e, "state: parent '%s' unavailable: %s", parent_path, strerror(errno));
         return false;
     }
 
     int fd = openat(parent, leaf, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
     if (fd < 0 && errno == ENOENT) {
+        if (!create) {
+            /* Verify-only callers (stop) must not bring the directory into
+             * existence: "there is no state" is a legitimate answer, and
+             * creating the tree to discover that would leave root-owned
+             * directories behind on every failed teardown. */
+            close(parent);
+            if (absent) *absent = true;
+            return false;
+        }
         if (mkdirat(parent, leaf, mode) != 0 && errno != EEXIST) {
             vu_err_set(e, "state: cannot create '%s': %s", path, strerror(errno));
             close(parent);
@@ -191,6 +206,30 @@ bool vu_dir_ensure(const char *path, uid_t expect_uid, mode_t mode, vu_err *e)
     }
     close(fd);
     return ok;
+}
+
+bool vu_dir_ensure(const char *path, uid_t expect_uid, mode_t mode, vu_err *e)
+{
+    return dir_check(path, expect_uid, mode, true, NULL, e);
+}
+
+/*
+ * Verify without creating — added in step 9, after the adversarial corpus found
+ * that `stop` trusted the state tree without ever checking it.
+ *
+ * `connect` builds the tree through vu_dir_ensure, so every directory it uses
+ * has been verified as root-owned and 0700. `stop` did not: it went straight to
+ * reading the pid file. On Linux that is academic, because /run is writable only
+ * by root. On macOS it is not: /var/run is drwxrwxr-x root:daemon, so a process
+ * in group daemon can create /var/run/vpn-up itself, plant a pid and a start
+ * token, and have root signal a process of its choosing. The exe-path and
+ * start-token checks narrow that to processes whose executable is the pinned
+ * OpenConnect, which is a real constraint but not a boundary — both values are
+ * readable from the process table by anyone.
+ */
+bool vu_dir_verify(const char *path, uid_t expect_uid, bool *absent, vu_err *e)
+{
+    return dir_check(path, expect_uid, 0, false, absent, e);
 }
 
 bool vu_writable_by(const char *path, uid_t as_uid, bool *writable, vu_err *e)
@@ -333,11 +372,46 @@ static bool write_small(const char *path, const char *text, vu_err *e)
     return true;
 }
 
-static bool read_small(const char *path, char *out, size_t cap, vu_err *e)
+/*
+ * Read one small state file, refusing anything that is not a regular file owned
+ * by expect_uid with no group or other access.
+ *
+ * The ownership check is step 9's other correction. It was absent because the
+ * containing directory is created 0700 and owned by root, which makes the check
+ * redundant — right up to the moment some other path reaches these files
+ * without having verified the directory, which is exactly what `stop` did. A
+ * file whose contents decide which pid root signals is worth checking twice;
+ * this mirrors read_record() in registry.c, which has checked ownership from
+ * the start.
+ */
+static bool read_small(const char *path, uid_t expect_uid, char *out, size_t cap, vu_err *e)
 {
     int fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
     if (fd < 0) {
         if (errno != ENOENT) vu_err_set(e, "state: cannot read %s: %s", path, strerror(errno));
+        return false;
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        vu_err_set(e, "state: cannot stat %s: %s", path, strerror(errno));
+        close(fd);
+        return false;
+    }
+    if (!S_ISREG(st.st_mode)) {
+        vu_err_set(e, "state: %s is not a regular file", path);
+        close(fd);
+        return false;
+    }
+    if (st.st_uid != expect_uid) {
+        vu_err_set(e, "state: %s is owned by uid %lu, expected %lu", path,
+                   (unsigned long)st.st_uid, (unsigned long)expect_uid);
+        close(fd);
+        return false;
+    }
+    if (st.st_mode & (S_IRWXG | S_IRWXO)) {
+        vu_err_set(e, "state: %s grants group or other access (mode %04o)", path,
+                   (unsigned)(st.st_mode & 07777));
+        close(fd);
         return false;
     }
     ssize_t r = read(fd, out, cap - 1);
@@ -371,14 +445,35 @@ bool vu_state_record(const vu_state_paths *p, const vu_proc *self,
     return true;
 }
 
-bool vu_state_check(const vu_state_paths *p, const char *expect_exe,
+bool vu_state_verify(const vu_state_paths *p, uid_t expect_uid, bool *present, vu_err *e)
+{
+    if (!p || !present) { vu_err_set(e, "state: null argument"); return false; }
+    *present = false;
+
+    const char *dirs[] = { p->root, p->uid_dir, p->profile_dir };
+    for (size_t i = 0; i < sizeof dirs / sizeof *dirs; ++i) {
+        bool absent = false;
+        if (!vu_dir_verify(dirs[i], expect_uid, &absent, e)) {
+            /* Absent is a normal answer: nothing has connected for this profile
+             * (or at all) since boot. A directory that EXISTS but is not ours is
+             * a refusal, and the caller must not fall back to reading anything
+             * inside it. */
+            if (absent) return true;
+            return false;
+        }
+    }
+    *present = true;
+    return true;
+}
+
+bool vu_state_check(const vu_state_paths *p, const char *expect_exe, uid_t expect_uid,
                     vu_state_status *status, vu_proc *found, vu_err *e)
 {
     if (!p || !status) { vu_err_set(e, "state: null argument"); return false; }
     *status = VU_STATE_ABSENT;
 
     char pid_text[64], started_text[64];
-    if (!read_small(p->pid, pid_text, sizeof pid_text, e)) {
+    if (!read_small(p->pid, expect_uid, pid_text, sizeof pid_text, e)) {
         /* No record is a normal state, not an error. */
         return e->msg[0] == '\0';
     }
@@ -391,7 +486,8 @@ bool vu_state_check(const vu_state_paths *p, const char *expect_exe,
     }
 
     uint64_t want_token = 0;
-    bool have_token = read_small(p->started, started_text, sizeof started_text, &scratch);
+    bool have_token = read_small(p->started, expect_uid, started_text,
+                                 sizeof started_text, &scratch);
     if (have_token) {
         errno = 0;
         char *end = NULL;

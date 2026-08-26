@@ -337,7 +337,7 @@ static void test_identity_and_record(void)
     vu_state_status status;
     vu_proc found;
     vu_err_clear(&e);
-    CHECK(vu_state_check(&p, self.exe, &status, &found, &e), "check ran: %s", e.msg);
+    CHECK(vu_state_check(&p, self.exe, getuid(), &status, &found, &e), "check ran: %s", e.msg);
     CHECK(status == VU_STATE_LIVE, "own process reads back as live");
 
     /*
@@ -351,7 +351,7 @@ static void test_identity_and_record(void)
         CHECK(f != NULL, "rewrite started");
         if (f) { fprintf(f, "%llu\n", (unsigned long long)(self.start_token + 1)); fclose(f); }
         vu_err_clear(&e);
-        CHECK(vu_state_check(&p, self.exe, &status, &found, &e), "check ran");
+        CHECK(vu_state_check(&p, self.exe, getuid(), &status, &found, &e), "check ran");
         CHECK(status == VU_STATE_STALE, "start-token mismatch is stale, not live");
     }
 
@@ -359,7 +359,7 @@ static void test_identity_and_record(void)
     vu_err_clear(&e);
     CHECK(vu_state_record(&p, &self, NULL, &e), "re-recorded");
     vu_err_clear(&e);
-    CHECK(vu_state_check(&p, "/usr/bin/definitely-not-us", &status, &found, &e), "check ran");
+    CHECK(vu_state_check(&p, "/usr/bin/definitely-not-us", getuid(), &status, &found, &e), "check ran");
     CHECK(status == VU_STATE_STALE, "executable mismatch is stale");
 
     /* Garbage in the pid file is stale by definition — never signalled. */
@@ -367,7 +367,7 @@ static void test_identity_and_record(void)
         FILE *f = fopen(p.pid, "w");
         if (f) { fprintf(f, "not-a-pid\n"); fclose(f); }
         vu_err_clear(&e);
-        CHECK(vu_state_check(&p, self.exe, &status, &found, &e), "check ran");
+        CHECK(vu_state_check(&p, self.exe, getuid(), &status, &found, &e), "check ran");
         CHECK(status == VU_STATE_STALE, "unparseable pid is stale");
     }
 
@@ -375,7 +375,7 @@ static void test_identity_and_record(void)
     vu_err_clear(&e);
     CHECK(vu_state_prune(&p, &e), "pruned: %s", e.msg);
     vu_err_clear(&e);
-    CHECK(vu_state_check(&p, self.exe, &status, &found, &e), "check ran on empty state: %s", e.msg);
+    CHECK(vu_state_check(&p, self.exe, getuid(), &status, &found, &e), "check ran on empty state: %s", e.msg);
     CHECK(status == VU_STATE_ABSENT, "no record reads as absent");
     vu_err_clear(&e);
     CHECK(vu_state_prune(&p, &e), "prune is idempotent: %s", e.msg);

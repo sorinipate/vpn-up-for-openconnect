@@ -140,6 +140,35 @@ bool vu_parse_auth(const char *text, vu_auth *out, vu_err *e)
         if (!vu_canon_fingerprint(out->fingerprint, canon, sizeof canon, e)) return false;
         memcpy(out->fingerprint, canon, strlen(canon) + 1);
     }
+
+    /*
+     * CONNECT_URL and RESOLVE are checked here too, for the same reason and by
+     * the same validators the helper uses.
+     *
+     * Step 9 found the asymmetry: the fingerprint was validated on the way in
+     * while a CONNECT_URL of 'vpn.example.com' or 'http://vpn.example.com/' was
+     * carried along and only rejected later, by the privileged binary, as
+     * "unrecognised argument"-adjacent noise. Validating here means a gateway
+     * that returns something malformed is reported against the gateway, in the
+     * unprivileged process that read it, before any of it is passed to sudo.
+     *
+     * Validated, NOT rewritten: the path and query are session data and must
+     * reach OpenConnect as the server sent them.
+     */
+    if (out->have_connect_url) {
+        vu_url u;
+        if (!vu_parse_url(out->connect_url, &u, e)) {
+            vu_err_set(e, "auth output: CONNECT_URL is not a usable https URL");
+            return false;
+        }
+    }
+    if (out->have_resolve) {
+        vu_resolve r;
+        if (!vu_canon_resolve(out->resolve, &r, e)) {
+            vu_err_set(e, "auth output: RESOLVE is not HOST:IP");
+            return false;
+        }
+    }
     return true;
 }
 

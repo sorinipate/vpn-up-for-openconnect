@@ -52,6 +52,19 @@ helper_mode_available() {
 # Reads stdin. On success sets AUTH_COOKIE / AUTH_HOST / AUTH_CONNECT_URL /
 # AUTH_FINGERPRINT / AUTH_RESOLVE. The cookie is left in a shell variable only:
 # never exported, never on a command line.
+#
+# SCOPE: this checks the FORMAT, not the meaning of the values. Whether
+# CONNECT_URL is a usable https URL and whether FINGERPRINT is long enough to
+# pin anything are decided by the C validators where those values are consumed -
+# the connect URL by vpn-up-helper, the fingerprint by vpn-up-admin. Growing a
+# hand-rolled URL parser here to duplicate them would be two implementations of
+# one rule, which is the thing helper/t/fixtures/auth exists to prevent.
+#
+# There are two decoders for this format: this one, which runs in production,
+# and vu_parse_auth() in helper/src/authparse.c, which is the reference with the
+# harder corpus. Both are driven by the shared fixtures in
+# helper/t/fixtures/auth (see its README), so a divergence in the format rules
+# fails a test instead of going unnoticed.
 parse_auth_output() {
   AUTH_COOKIE=""; AUTH_HOST=""; AUTH_CONNECT_URL=""; AUTH_FINGERPRINT=""; AUTH_RESOLVE=""
   local line key rest val

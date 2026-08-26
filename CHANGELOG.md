@@ -28,8 +28,65 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
   - **Helper mode is inert until the privileged binaries are installed**, and
     there is no installer yet. Nothing changes for existing users: without the
     helper, `vpn-up` takes exactly the path it always has.
+  - An adversarial test corpus for the privileged half (`helper/t/test_adversarial.c`)
+    and the unprivileged half (`tests/twophase_adversarial.bats`), organised by
+    attack rather than by function. The phase-one output format has two decoders
+    — the shell one that runs in production and the C reference — so both are now
+    driven by one shared fixture set (`helper/t/fixtures/auth/`), and a
+    divergence between them fails a test.
+  - `helper/t/README` records the environment the corpus assumes: why fixtures
+    live in `$HOME` rather than `/tmp` (mode 1777 fails the trusted-path walk),
+    which compiler diagnostics only exist on GCC and therefore only fail in CI,
+    and why `make asan` is Linux-only.
 
 ### Security
+
+- **`vpn-up doctor` now checks the privilege boundary, and fails when it is
+  broken.** The whole point of two privileged binaries is that `vpn-up-admin`
+  (which grants approvals) is never reachable without a password, while
+  `vpn-up-helper` (which only establishes an already-approved tunnel) is. Doctor
+  asks `sudo` itself — `sudo -n -l <command>` — rather than grepping
+  `/etc/sudoers.d`, because rules can arrive from LDAP, includes, aliases or
+  `Defaults targetpw`, none of which a grep sees. `vpn-up-admin` appearing in an
+  ordinary *authenticated* rule is legitimate administrator policy and passes;
+  only passwordless reachability fails, and it makes `doctor` exit non-zero
+  rather than printing a warning in a wall of green.
+
+- **Fixed: `vpn-up-helper stop` trusted state it had never verified.** `connect`
+  builds its state directories and verifies each one is root-owned `0700`;
+  `stop` read the recorded pid without checking the tree at all. On Linux that
+  was academic — `/run` is writable only by root — but macOS `/var/run` is
+  `drwxrwxr-x root:daemon`, so a process in group `daemon` could create
+  `/var/run/vpn-up`, plant a pid, and have root signal a process of its
+  choosing. `stop` now verifies the chain before reading anything inside it, and
+  the pid and start-token files are themselves checked for ownership and mode.
+  Found by the new adversarial corpus; helper mode is not yet switchable on, so
+  no released configuration was affected.
+
+- **Fixed: the privileged binaries depended on how their caller arranged file
+  descriptors.** Invoked with stdin closed (`sudo vpn-up-helper connect … 0<&-`),
+  the lock file landed on descriptor 0 — `open()` returns the lowest free one —
+  and OpenConnect, run with `--cookie-on-stdin`, would then read the lock file
+  as the session cookie. Both binaries now confirm descriptors 0, 1 and 2 are
+  open before opening anything else.
+
+- **Fixed: an empty `proxy=` line in an approval record was read as "no
+  proxy".** That made a truncated or hand-edited record silently authorise a
+  direct connection, in a parser whose stated rule is one spelling per record.
+  `NONE` is now the only spelling accepted.
+
+- **The helper's closed argv schema refuses a repeated flag.** Previously the
+  last one won, so `--connect-url` could be named twice and the request would
+  not mean what a reader of the command line would expect. Model B still refused
+  a substituted endpoint at the policy check; this closes the gap one level
+  earlier. The same tunable may no longer be given twice either — `--tunable
+  mtu=1400 --tunable mtu=1500` used to reach OpenConnect as both.
+
+- **The phase-one decoder now validates `CONNECT_URL` and `RESOLVE`** with the
+  same validators the helper uses, as it already did the fingerprint. A gateway
+  returning something malformed is now reported against the gateway, by the
+  unprivileged process that read it, instead of surfacing later as a refusal
+  from the privileged one.
 
 - **Retracted the claim that a `NOPASSWD` sudoers rule for `openconnect` is
   safely "scoped to one binary."** It is not: sudoers constrains the *command*,

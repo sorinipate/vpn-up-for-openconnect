@@ -1,0 +1,2 @@
+COOKIE='abc' junk
+CONNECT_URL='https://vpn.example.com/'
