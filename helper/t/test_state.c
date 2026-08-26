@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>   /* getrlimit, struct rlimit, RLIMIT_CORE */
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -41,13 +42,6 @@ static void make_root(void)
     /* The production contract is 0700 with no group/other bits; match it so the
      * checks under test are the real ones. */
     chmod(g_root, 0700);
-}
-
-static void rm_rf(const char *path)
-{
-    char cmd[VU_PATH_MAX + 32];
-    snprintf(cmd, sizeof cmd, "rm -rf '%s'", path);
-    (void)system(cmd);
 }
 
 static const char *PROFILE = "a7d1bb99-538c-4db4-b357-0123456789ab";
@@ -436,5 +430,5 @@ void vu_test_state(void)
     test_locking();
     test_identity_and_record();
     test_harden();
-    rm_rf(g_root);
+    vu_rm_rf(g_root);
 }

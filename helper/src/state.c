@@ -1,6 +1,7 @@
 /* state.c — state paths, safe directory creation, locking, record/verify. */
 
-#define _GNU_SOURCE
+/* Feature-test macros come from the Makefile (see FEATURE there), so a new
+ * translation unit cannot forget them. */
 
 #include "vu_state.h"
 
@@ -342,7 +343,7 @@ static bool read_small(const char *path, char *out, size_t cap, vu_err *e)
     ssize_t r = read(fd, out, cap - 1);
     close(fd);
     if (r < 0) { vu_err_set(e, "state: cannot read %s: %s", path, strerror(errno)); return false; }
-    out[r] = '\0';
+    out[(size_t)r] = '\0';   /* explicit: GCC's -Wsign-conversion flags ssize_t indices */
     /* Trim exactly one trailing newline; anything else stays, so junk is visible
      * to the parser rather than silently tolerated. */
     size_t n = strlen(out);

@@ -7,7 +7,8 @@
  * number now. Matching the executable path AND a start token closes that.
  */
 
-#define _GNU_SOURCE
+/* Feature-test macros come from the Makefile (see FEATURE there), so a new
+ * translation unit cannot forget them. */
 
 #include "vu_state.h"
 
@@ -71,7 +72,7 @@ bool vu_proc_identity(pid_t pid, vu_proc *out, vu_err *e)
         vu_err_set(e, "proc: pid %ld is not running", (long)pid);
         return false;
     }
-    out->exe[n] = '\0';
+    out->exe[(size_t)n] = '\0';
 
     char statpath[64];
     snprintf(statpath, sizeof statpath, "/proc/%ld/stat", (long)pid);
@@ -81,7 +82,7 @@ bool vu_proc_identity(pid_t pid, vu_proc *out, vu_err *e)
     ssize_t r = read(fd, buf, sizeof buf - 1);
     close(fd);
     if (r <= 0) { vu_err_set(e, "proc: cannot read %s", statpath); return false; }
-    buf[r] = '\0';
+    buf[(size_t)r] = '\0';
 
     /*
      * Field 22 is the start time. Fields cannot simply be split on spaces: the
