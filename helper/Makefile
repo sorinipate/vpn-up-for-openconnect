@@ -62,7 +62,7 @@ FAKE_BIN   = build/fake-openconnect
 
 SAN_FLAGS = $(CSTD) $(FEATURE) $(WARN) -g -O1 -fno-omit-frame-pointer -Iinclude -It
 
-.PHONY: all test clean ubsan asan sanitize test-elf-closure
+.PHONY: all test clean ubsan asan sanitize test-elf-closure gcc-check
 
 all: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN) $(FAKE_BIN)
 
@@ -81,7 +81,7 @@ $(ADMIN_BIN): $(SRC) src/admin_main.c include/vu.h include/vu_state.h include/vu
 $(HELPER_BIN): $(SRC) src/helper_main.c include/vu.h include/vu_state.h include/vu_registry.h include/vu_exec.h | build
 	$(CC) $(CFLAGS) -o $@ $(SRC) src/helper_main.c
 
-test: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN) $(FAKE_BIN) test-elf-closure
+test: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN) $(FAKE_BIN) test-elf-closure gcc-check
 	./$(TEST_BIN)
 	# The admin tool must refuse to run without privilege, and must not need
 	# privilege merely to report its own version.
@@ -128,6 +128,28 @@ test: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN) $(FAKE_BIN) test-elf-closure
 		fi; \
 	done
 	@echo "ok: vpn-up-admin offers no connect subcommand"
+
+# A build with a REAL gcc, when one is present.
+#
+# clang and gcc do not agree about which mistakes are errors, and CI builds with
+# both. Four of the failures in this project's history were gcc-only diagnostics
+# invisible on a macOS development machine: implicit declarations from glibc's
+# feature macros, -Wformat-truncation, stricter -Wsign-conversion, and an
+# int-to-uint16_t conversion out of a conditional expression.
+#
+# `gcc` on macOS is Apple clang, so the search below skips anything whose version
+# string says clang. Skips loudly rather than silently when there is no real gcc:
+# a check that quietly does nothing is worse than one that is absent.
+#
+# Honest limit, learned the hard way and worth reading before trusting a green
+# result here: gcc 16 does NOT reproduce the conditional-expression conversion
+# warning that Ubuntu's gcc 13/14 emits, because its range propagation improved.
+# A clean local gcc build is necessary, not sufficient. See t/README.
+GCC_REAL := $(shell for g in gcc-16 gcc-15 gcc-14 gcc-13 gcc; do                       if command -v $$g >/dev/null 2>&1 &&                          ! $$g --version 2>/dev/null | head -1 | grep -qi clang; then                         echo $$g; break;                       fi;                     done)
+
+.PHONY: gcc-check
+gcc-check: | build
+	@if [ -z "$(GCC_REAL)" ]; then 		echo "gcc-check: SKIPPED - no real gcc found (macOS 'gcc' is Apple clang)."; 		echo "gcc-check: install one with 'brew install gcc'; see t/README for what"; 		echo "gcc-check: it catches and what it does not."; 	else 		echo "gcc-check: $$($(GCC_REAL) --version | head -1)"; 		$(GCC_REAL) $(CFLAGS) -o build/vu-test-gcc $(SRC) $(TEST_SRC) && 		./build/vu-test-gcc; 	fi
 
 # The ELF/ld.so library closure is compiled in on Linux only, because macOS needs
 # dyld and Mach-O instead (design step 13) and until then §11.7 requires helper

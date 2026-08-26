@@ -71,6 +71,21 @@ failure for a macOS one. Do not add per-file #defines; the test files were
 forgotten last time, which is exactly the failure mode a per-file convention
 invites.
 
+`make gcc-check` builds and runs the corpus with a REAL gcc when one is present,
+and is part of `make test`. It skips loudly otherwise, because macOS `gcc` is
+Apple clang and a check that quietly does nothing is worse than an absent one.
+Install one with `brew install gcc`.
+
+TWO LIMITS ON THAT, both learned by getting it wrong:
+
+  - A clean gcc-check is necessary, not sufficient. gcc 16 does NOT reproduce the
+    conditional-expression conversion warning that Ubuntu's gcc 13/14 emits,
+    because its range propagation improved. The failure that prompted adding this
+    target would still not reproduce locally. To match CI exactly you need the
+    CI compiler version (brew install gcc@13).
+  - clang cannot substitute for it at all. The int-out-of-a-conditional case is
+    not diagnosed by clang under ANY warning set, including -Weverything.
+
 Diagnostics that only exist in GCC, and therefore only fail in CI:
 
   -Wformat-truncation   rejects snprintf(buf, sizeof buf, "%s/a", other) when
@@ -79,6 +94,25 @@ Diagnostics that only exist in GCC, and therefore only fail in CI:
                         cannot truncate, instead of checking fifteen return
                         values.
   -Wsign-conversion     stricter than clang's about ssize_t used as an index.
+  -Wconversion          on a CONDITIONAL EXPRESSION. This one is worth
+                        understanding rather than pattern-matching, because the
+                        obvious fix does not work:
+
+                            *out = le ? (uint16_t)a : (uint16_t)b;   /* still int */
+
+                        A conditional whose operands are both uint16_t has type
+                        INT - the usual arithmetic conversions promote both, AFTER
+                        the casts inside them - so the assignment is still
+                        int-to-uint16_t. Verified with _Generic rather than read
+                        off the standard:
+
+                            _Generic((le ? x : y), int: ...)          -> int
+                            _Generic((uint16_t)(x | y), uint16_t: ...) -> uint16_t
+
+                        The cast has to go OUTSIDE the conditional. gcc warns
+                        because it does not propagate value ranges across one and
+                        so cannot prove the result fits, which is also why the
+                        warning is version-dependent.
 
 Symlinks:
 
