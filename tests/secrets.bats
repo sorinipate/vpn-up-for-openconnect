@@ -102,3 +102,63 @@ setup() {
   command() { [ "$2" = "secret-tool" ]; }
   [ "$(secrets_backend)" = "secret-tool" ]
 }
+
+# --- profile-wide deletion (every secret field, not just the password) ---
+#
+# These pin the backend to the plaintext file explicitly. Note that
+# ENCRYPTION_ENABLED=FALSE is NOT sufficient: secrets_backend() checks for the
+# macOS keychain before it looks at that variable, so on Darwin these tests
+# would otherwise read and write the developer's real login keychain.
+
+_use_file_backend() { secrets_backend() { echo file; }; }
+
+@test "secrets_delete_profile clears password, token_secret and key_password" {
+  _use_file_backend
+  secrets_set "Work VPN" password      "pw"
+  secrets_set "Work VPN" token_secret  "JBSWY3DPEHPK3PXP"
+  secrets_set "Work VPN" key_password  "1234"
+  [ "$(secrets_get "Work VPN" password)"     = "pw" ]
+  [ "$(secrets_get "Work VPN" token_secret)" = "JBSWY3DPEHPK3PXP" ]
+  [ "$(secrets_get "Work VPN" key_password)" = "1234" ]
+
+  secrets_delete_profile "Work VPN"
+
+  [ -z "$(secrets_get "Work VPN" password)" ]
+  [ -z "$(secrets_get "Work VPN" token_secret)" ]
+  [ -z "$(secrets_get "Work VPN" key_password)" ]
+}
+
+@test "secrets_delete_profile leaves other profiles' secrets alone" {
+  _use_file_backend
+  secrets_set "Work VPN" token_secret "seed-work"
+  secrets_set "Home VPN" token_secret "seed-home"
+
+  secrets_delete_profile "Work VPN"
+
+  [ -z "$(secrets_get "Work VPN" token_secret)" ]
+  [ "$(secrets_get "Home VPN" token_secret)" = "seed-home" ]
+}
+
+@test "secrets_delete_profile is a no-op (not an error) when nothing is stored" {
+  _use_file_backend
+  run secrets_delete_profile "Never Used"
+  [ "$status" -eq 0 ]
+}
+
+@test "SECRET_FIELDS covers every field the codebase stores" {
+  # Guards the list in encryption.sh against a new secrets_set field being
+  # added elsewhere without being added to SECRET_FIELDS.
+  local found f
+  found="$(grep -rhoE 'secrets_set +"[^"]+" +"?[a-z_]+"?' \
+             "$BATS_TEST_DIRNAME/../setup.sh" "$BATS_TEST_DIRNAME/../vpn-up.command" 2>/dev/null \
+           | grep -oE '(password|token_secret|key_password|sudo_password)' | sort -u)"
+  [ -n "$found" ]   # the grep itself must still match something
+  for f in $found; do
+    # sudo_password is legacy cleanup only; it is never stored any more.
+    [ "$f" = "sudo_password" ] && continue
+    case " $SECRET_FIELDS " in
+      *" $f "*) : ;;
+      *) echo "field '$f' is stored somewhere but missing from SECRET_FIELDS"; return 1 ;;
+    esac
+  done
+}

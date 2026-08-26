@@ -227,8 +227,8 @@ remove_profile() {
     service_uninstall "$name"
   fi
 
-  # stored secret
-  secrets_delete "$name" "password"
+  # stored secrets (password, TOTP seed, PKCS#11 PIN — all of them)
+  secrets_delete_profile "$name"
 
   # XML block
   local name_lit; name_lit="$(xpath_literal "$name")"
