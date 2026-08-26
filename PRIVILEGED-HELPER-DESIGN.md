@@ -742,6 +742,38 @@ Concretely, all of these are checked:
 Each is verified root-owned and not group/world-writable, along with every
 parent directory, at install time and again before every `execve`.
 
+#### Symlink policy — amended during step 5
+
+An earlier draft of this section said "every component opened with
+`O_NOFOLLOW`". **That cannot work, and the implementation corrected it.** On
+macOS `/var` is itself a symlink (`-> private/var`), so a blanket no-follow walk
+refuses `/var/run/vpn-up` before it starts. (BSD returns `ENOTDIR` rather than
+`ELOOP` for `O_NOFOLLOW|O_DIRECTORY` on a link, which is how it surfaced.)
+
+The policy is narrower, and the distinction is security-relevant:
+
+- **A symlink at the leaf is refused.** The leaf is the component we create, and
+  following it would mean root writing wherever the link points. Every
+  directory and file the helper creates — the state root, the per-uid directory,
+  the per-profile directory, the lock — is the leaf of exactly one such check.
+- **A symlink in the parent chain is followed.** For directories we own this is
+  safe, because each was already verified as a real root-owned `0700` directory
+  by its own check, so no unprivileged party can plant a link inside the chain.
+  Above the state root the prefix is system infrastructure; if that is
+  subverted, nothing here helps.
+
+Callers therefore build the chain one owned directory at a time rather than
+recursing, which also keeps the complete set of directories this program will
+ever create visible at the call site.
+
+#### macOS state root
+
+Also found while verifying paths: `/var/run` is `drwxrwxr-x root:daemon` — group
+writable. Our own directory is still required to be root-owned `0700`, so a
+squatted `/var/run/vpn-up` makes the helper **fail closed** rather than trust
+it. That is correct but is a denial-of-service vector, and `/var/db` is
+`root:wheel 0755`. Revisit the macOS state root at step 13.
+
 ### 11.5 Ownership and mode bits are not sufficient: the effective-writability test
 
 Root ownership plus `0755` does not prove non-writability, because both macOS and
