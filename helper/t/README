@@ -117,6 +117,46 @@ Forcing that macro on cannot weaken production: against a REAL macOS install the
 ELF parse of a Mach-O binary reports "not an ELF binary" and the check still
 refuses. Only the synthetic fixtures get past it.
 
+------------------------------------------- fixture paths in failure messages
+
+Every fixture message in this corpus prints the full path it was working on:
+
+    CHECK(fd >= 0, "cannot create %s: %s", path, strerror(errno));
+
+CodeQL flags that as cpp/system-data-exposure (CWE-497), because `path` is
+derived from $HOME or $TMPDIR and the rule tracks environment data reaching an
+output. It is a false positive here, and the reasoning is worth keeping so the
+next alert does not have to be re-litigated:
+
+  - The rule is about data reaching a REMOTE user - its own example sends the
+    value over a socket. This is a test binary writing to its own stderr, read by
+    whoever ran it, and they set $HOME.
+  - The path is what makes a failure diagnosable. "cannot create: No such file or
+    directory" does not say which fixture, and the /tmp-versus-$HOME behaviour
+    documented above was diagnosed precisely by reading a path out of a failure
+    message.
+
+What matters is that the SHIPPED code does not have the same shape, and it does
+not, by construction rather than by luck:
+
+  - There is exactly one getenv in src/ - SUDO_UID, in vu_sudo_uid - and its
+    value is never echoed. Both refusals are fixed strings ("SUDO_UID is not
+    set", "SUDO_UID is not a plausible uid"), which is already this rule's own
+    recommendation. It was written that way for an unrelated reason: telling a
+    caller whether its value looked plausible is feedback it does not need.
+  - Neither privileged binary performs any network I/O at all. No socket,
+    connect, send or recv appears anywhere in src/. That is not incidental -
+    two-phase exists so the privileged side never talks to the network - so
+    there is no remote consumer for the rule to be about.
+
+Everything the closure report prints (ownership, modes, resolved paths) is
+obtainable by any user with ls -l and readlink -f, so it crosses no privilege
+boundary even though root produced it.
+
+If this alert recurs, the disposition is "used in tests", not a code change. And
+it will recur: test_adversarial.c, test_exec.c, test_registry.c and test_state.c
+all build fixture paths from the environment the same way.
+
 ---------------------------------------------------------- what is NOT tested yet
 
 By design, because it needs something this corpus does not have:
