@@ -1,13 +1,26 @@
 # Privileged Helper — Security Design
 
-**Status:** draft for review. No implementation yet.
+**Status:** draft, revision 2. No implementation yet.
 **Supersedes:** the current `sudo openconnect` invocation model.
 **Context:** [SECURITY.md → Known limitations](SECURITY.md#known-limitations).
 
-This document has to be reviewed and agreed before `vpn-up-helper` is written,
-because the helper *is* the application's root trust boundary. Everything below
-is a proposal; open questions are collected in §12 and at least two of them
-(§12.1, §12.2) can invalidate the whole approach on macOS if answered badly.
+Revision 2 changes three things from revision 1, all narrowing the privileged
+surface rather than hardening it in place:
+
+- **Two-phase OpenConnect.** Authentication happens unprivileged; the helper
+  receives a session cookie and establishes only the tunnel. Password, TOTP,
+  client certificates, PKCS#11 PINs, and the SSO browser leave the boundary
+  entirely (§4, §6).
+- **Compiled helper (C), not shell.** The remaining work is POSIX primitives,
+  and a shell interpreter is itself attack surface — including `BASH_ENV`, which
+  is evaluated *before* the script body runs, so no in-script mitigation is
+  early enough (§8.2).
+- **A root-owned OpenConnect is required on every platform.** Homebrew is
+  unsupported for helper mode rather than being accommodated with a weakened
+  claim (§8.4).
+
+Open questions are in §14. Two of them (§14.1, §14.2) can still change the
+shape of the implementation and should be settled first.
 
 ---
 
@@ -24,476 +37,689 @@ That rule is equivalent to passwordless root for the account, for three
 independent reasons:
 
 1. **sudoers does not constrain arguments.** A rule naming a command with no
-   arguments permits any arguments. `openconnect --script`, `--script-tun`,
-   `--csd-wrapper` execute a program as root; `--config`/`--xmlconfig` can name
+   arguments permits any arguments. `openconnect` executes a program as root via
+   `--script`/`-s`, `--script-tun`/`-S`, `--csd-wrapper`, `--external-browser`
+   (the SSO opener), and `--csd-user` (which enables the gateway-supplied CSD
+   binary; `=root` runs it as root); `--config` and `--xmlconfig`/`-x` can name
    those from a file.
-2. **The permitted binary may be user-writable.** Homebrew's prefix is owned by
-   the installing user, so the binary can simply be replaced.
+2. **The permitted binary may be user-writable.** Homebrew installs with the
+   installing user as owner, so the binary can be replaced.
 3. **The default `vpnc-script` may be user-writable.** `openconnect` has a
-   compiled-in default script, executed as root on every connect. On Homebrew
-   that is `/opt/homebrew/etc/vpnc/vpnc-script`, owned by the installing user.
-   No unusual arguments are needed at all.
+   compiled-in default script, executed as root on every connect, and the
+   Homebrew formula points it inside the Homebrew prefix. No unusual arguments
+   are needed at all.
 
-Point 3 is the reason this design cannot be only an argument filter.
-
-### Non-goal: protecting against the calling user
-
-The helper is invoked via `sudo` by an unprivileged user who *is* the person the
-tunnel is for. Nothing here tries to stop that user from having root by other
-means (they may be an admin; they may know their own password). What it stops is
-the **rule itself** becoming a general-purpose root primitive, usable by:
-
-- any process running as that user — a compromised shell, a malicious npm
-  postinstall, a stolen SSH session — without the user's participation;
-- anything that can write the profile store (`~/.config/vpn-up`), which today
-  reaches root at the next connect via `<extraArgs>`;
-- the login service's unattended, no-human-present execution path.
-
-"Passwordless VPN" should cost the user passwordless-VPN privilege, not
-passwordless-root privilege.
+Point 3 is why this design cannot be only an argument filter, and why §8.4 is
+a hard requirement rather than a recommendation.
 
 ---
 
-## 2. The invariant
+## 2. Threat model
 
-> **For every possible input the helper accepts, from any caller, the privileged
-> actions it performs are confined to bringing up or tearing down a VPN tunnel.**
+### Caller identity is not trusted or authenticated; arbitrary-caller safety is required
 
-Corollaries that constrain the rest of the design:
+The helper is invoked via `sudo` by an unprivileged user, and **any** process
+running as that user can invoke it exactly as `vpn-up` does. There is no
+distinguishable "real `vpn-up`" to authenticate: request signing, shared
+secrets, and parent-process inspection are all defeated by an attacker calling
+the helper the same way. Caller authentication is therefore not attempted.
 
-- **Caller authentication buys nothing and will not be attempted.** Any process
-  running as the user can invoke the helper directly, so there is no
-  distinguishable "real `vpn-up`" to authenticate. Request signing, shared
-  secrets, and parent-process checks are all defeated by the attacker simply
-  calling the helper the same way `vpn-up` does. Strictness of the accepted
-  input is the entire security property; authentication is theatre. *(Noting
-  this explicitly because "authenticated/strict request" was the phrasing in the
-  review that prompted this document — the strict half is load-bearing, the
-  authenticated half is not.)*
-- **Therefore the profile store needs no integrity protection.** Editing
-  `profiles.xml` can only produce inputs the helper already had to be safe
-  against.
-- **The helper must not depend on `vpn-up` having validated anything.**
-  Every field is re-validated inside the boundary, or it is not accepted.
+The requirement that replaces it is stronger, not weaker:
+
+> **The helper must remain safe when invoked maliciously, with arbitrary
+> arguments and arbitrary stdin, by any process running as the calling user.**
+
+### The invariant
+
+> **For every input the helper accepts, from any caller, the privileged actions
+> it performs are confined to establishing or tearing down a VPN tunnel.**
+
+What that protects: the *rule* must not become a general-purpose root primitive
+usable by a compromised shell, a malicious package postinstall, a stolen SSH
+session, or anything that can write `~/.config/vpn-up` — none of which involve
+the user's participation. It does not attempt to stop the user themselves from
+obtaining root by other legitimate means (they may be an admin; they know their
+own password). Passwordless VPN should cost passwordless-VPN privilege, not
+passwordless-root privilege.
+
+### What the profile store's integrity does and does not affect
+
+> **The profile store does not need to be trusted by the privileged helper for
+> privilege-boundary safety.**
+
+Editing `profiles.xml` can only produce inputs the helper already has to be safe
+against, so it cannot yield root. That is a narrow claim, and deliberately so —
+profile integrity still matters for **credential theft** (a rewritten `<host>`
+harvests the password at phase-one authentication), **server redirection**, and
+**VPN configuration integrity**. Those remain real concerns, addressed by the
+existing ownership/permission checks on `~/.config/vpn-up` and, if adopted, by
+§14.6's endpoint authorization. They are simply not root-escalation concerns.
+
+### Corollary
+
+The helper must not depend on `vpn-up` having validated anything. Every field is
+re-validated inside the boundary, or it is not accepted.
 
 ---
 
 ## 3. Trust boundary
 
 ```
-        ┌───────────────────────────── unprivileged (uid = user) ──────────────┐
-        │  vpn-up            reads ~/.config/vpn-up/profiles.xml (xmlstarlet)  │
-        │                    reads secrets from keychain / vault               │
-        │                    opens the log file as itself                      │
-        └──────────────────────────────────┬───────────────────────────────────┘
-                                           │ argv: typed request, closed schema
-                                           │ stdin: secrets only
-                                           │ fd 1/2: caller-opened log
-                                           ▼
-                                    sudo (env_reset)
-        ┌───────────────────────────── privileged (uid 0) ──────────────────────┐
-        │  vpn-up-helper     validates EVERY argv field against a grammar       │
-        │                    reads NO user-writable file                        │
-        │                    verifies openconnect + vpnc-script ownership       │
-        │                    owns its own pid/state dir                         │
-        │                    builds the openconnect argv itself                 │
-        └──────────────────────────────────┬───────────────────────────────────┘
-                                           ▼
-                                      openconnect
+   ┌──────────────────────── unprivileged (uid = user) ─────────────────────┐
+   │ vpn-up                                                                 │
+   │   reads ~/.config/vpn-up/profiles.xml (xmlstarlet)                     │
+   │   reads secrets from keychain / vault                                   │
+   │   PHASE ONE: openconnect --authenticate                                │
+   │     · password / TOTP entered here                                      │
+   │     · client certificate + PKCS#11 PIN used here                        │
+   │     · SSO browser opened here, as the user, in the user's session        │
+   │   parses the authentication output as untrusted data (never eval)        │
+   │   opens the log file as itself                                          │
+   └────────────────────────────────┬───────────────────────────────────────┘
+                                    │ argv: COOKIE-less session descriptor
+                                    │ stdin: cookie only
+                                    │ fd 1/2: caller-opened log
+                                    ▼
+                             sudo (env_reset)
+   ┌──────────────────────────── privileged (uid 0) ────────────────────────┐
+   │ vpn-up-helper (compiled)                                               │
+   │   validates every argv field against a grammar                          │
+   │   reads NO user-writable file                                           │
+   │   ownership-walks the pinned openconnect + vpnc-script                   │
+   │   writes its own pid to root-owned state, then execve                    │
+   │                                                                         │
+   │ PHASE TWO: openconnect --cookie-on-stdin  (foreground, no daemonize)     │
+   └────────────────────────────────┬───────────────────────────────────────┘
+                                    ▼
+                                 tunnel
 ```
 
-Inputs that cross the boundary — all untrusted, all validated: **argv**,
-**stdin**, **environment** (neutralised by `env_reset`, see §7.3), **inherited
-fds** (harmless: opened by the caller, so they name only what the caller could
-already write). Inputs that deliberately **do not** cross it: the profile XML,
-the secrets backend, `~/.config/vpn-up/config`, hooks, and `$PATH`.
+Inputs crossing the boundary — all untrusted, all validated: **argv**,
+**stdin** (a cookie, treated as an opaque byte string), **environment**
+(neutralised by `env_reset`, §8.3), **inherited fds** (harmless: opened by the
+caller, so they name only what the caller could already write). Inputs that
+deliberately do **not** cross it: the profile XML, the secrets backend,
+`~/.config/vpn-up/config`, hooks, `$PATH`, and every credential.
 
 ### Why the helper does not read the profile XML
 
-Rejected outright. It would mean parsing an attacker-controlled XML document as
-root, with `xmlstarlet` (a third-party dependency, and a whole XML parser with
-entity handling) inside the boundary. Parsing stays unprivileged; the helper
-receives already-extracted scalars and validates them as simple strings.
+Rejected outright: it would mean parsing an attacker-controlled XML document as
+root, with `xmlstarlet` and a full XML parser inside the boundary. Parsing stays
+unprivileged and the helper receives already-extracted scalars.
 
-This costs nothing, precisely because of §2: since the helper must be safe for
-arbitrary argv anyway, having `vpn-up` do the parsing gives up no security and
-removes an entire parser from the trust boundary.
+This costs nothing. Because the helper must be safe for arbitrary argv anyway
+(§2), moving the parse outside gives up no security and removes an entire parser
+from the boundary.
 
 ---
 
-## 4. Operations
+## 4. Two-phase OpenConnect — the central design decision
 
-Three verbs, nothing else.
+OpenConnect separates authentication from tunnel establishment, and upstream
+[documents this as the way to keep authentication unprivileged][oc-nonroot] —
+specifically citing PKCS#11 token access and SAML/browser flows as reasons.
+`--authenticate` performs the whole login and prints a session descriptor;
+`--cookie-on-stdin` then establishes the tunnel from it. Both are present in
+OpenConnect 9.21 (verified: `--authenticate`, `--cookie-on-stdin`, `--resolve`,
+`-C/--cookie`).
+
+[oc-nonroot]: https://www.infradead.org/openconnect/nonroot.html
+
+**Phase one, unprivileged**, as the user, in the user's session:
+
+```
+openconnect --authenticate --protocol=… --user=… [--authgroup=…]
+            [--certificate=… --sslkey=…] [--token-mode=…] [--external-browser=…] host
+```
+
+emitting `COOKIE`, `HOST`, `CONNECT_URL`, `FINGERPRINT`, and `RESOLVE`.
+
+**Phase two, privileged**, the helper's entire job:
+
+```
+openconnect --cookie-on-stdin --protocol=… --servercert=<FINGERPRINT>
+            [--resolve=<HOST:IP>] [--script "<pinned vpn-slice> …"] <CONNECT_URL>
+```
+
+### What this deletes from the privileged surface
+
+Gone from the root schema: `--user`, `--authgroup`, `--certificate`, `--sslkey`,
+`--pin-source`, `--token-mode`, `--sso`, `--external-browser`.
+
+Consequently:
+
+- **Revision 1's §5.1 path logic largely disappears.** No certificate or key
+  path is read as root, so there is no confused-deputy risk to mitigate with
+  `SUDO_UID` read-tests, symlink resolution, and mode checks. The only remaining
+  root-side path handling is the ownership walk on two *pinned* paths (§8.4),
+  which is a fixed check rather than caller-driven validation.
+- **The PKCS#11 PIN never crosses the boundary.** No transient `pin-source`
+  file, no shredding, no `0600` dance inside root.
+- **Revision 1's §9 dissolves.** There is no external-browser executable inside
+  the privileged boundary at all. The Linux "root-spawned browser cannot reach
+  the user's session" caveat also disappears — the browser now runs as the user
+  by construction, which is a functional improvement, not just a security one.
+
+### Parsing phase one's output
+
+Upstream's example uses `eval $( … )`. **Do not.** The output is a network-facing
+program's stdout; treat it as untrusted data. Read it line by line, accept only
+the five expected `KEY=value` names, reject duplicates and anything else, and
+validate each value against §6's grammar before it is used or forwarded. The
+cookie is a bearer credential: it goes to the helper on **stdin**, never argv,
+and must never be logged (phase two runs with `-q` where the profile requests
+quiet, and the helper never echoes stdin).
+
+### What two-phase does *not* fix, and makes more important
+
+The helper no longer validates any server identity of its own. It pins whatever
+`FINGERPRINT` the caller hands it, to whatever `CONNECT_URL` the caller hands
+it. Under the §2 threat model the caller is untrusted, so **a compromised
+user-level process can bring up a root-configured tunnel to a gateway of its
+choosing.** That is not code execution, but it is privileged control of routing,
+DNS, and interface configuration.
+
+This is exactly §14.6, and two-phase raises its priority: with authentication
+outside the boundary, endpoint approval is the only remaining place where "which
+VPN may this account establish without a password" could be constrained. It also
+means **`--profile-id` is a label for state, not an authorization** — nothing
+should be built on the assumption that it proves a configured profile was used.
+
+One genuine strengthening: `FINGERPRINT` is the certificate phase one actually
+authenticated against, so phase two is bound to the same endpoint rather than to
+a value copied out of a profile. Where the profile has no pin, phase one still
+validates against the system trust store and phase two inherits that decision.
+
+---
+
+## 5. Operations
+
+Three verbs.
 
 | Verb | Privileged action |
 |---|---|
-| `connect` | `execve` a validated `openconnect` argv, foreground, in the caller's process group |
-| `stop` | `SIGTERM`/`SIGKILL` **one** pid, read from the helper's own root-owned state, verified to be an `openconnect` the helper started |
-| `version` | print the helper's version and its pinned paths; no privileged effect (used by `doctor`) |
+| `connect` | write own pid to root-owned state, then `execve` a validated foreground `openconnect` |
+| `stop` | signal **one** pid, read from root-owned state, verified still to be that `openconnect` |
+| `version` | print version and pinned paths; no privileged effect (for `doctor`) |
 
-Explicitly **not** offered: reading logs (they are user-owned already), editing
-profiles, installing services, running hooks, arbitrary `kill`.
+Not offered: reading logs (user-owned already), editing profiles, installing
+services, running hooks, arbitrary `kill`.
 
-`stop` fixes an existing hole in passing: `core.sh` currently does
+### No `--background`
+
+Backgrounding is removed from the helper. `openconnect`'s daemonization is tied
+to `--pid-file` and brings pid-transfer complexity the design does not need.
+The helper always `execve`s a **foreground** `openconnect`, so:
+
+- **the helper's pid becomes the `openconnect` pid** — `execve` replaces the
+  image, it does not fork — which means the helper can write `getpid()` into
+  root-owned state *before* exec'ing and the recorded pid is exactly right, with
+  no race, no `--pid-file`, and no scanning the process table (which `core.sh`
+  does today via `_openconnect_pid_for_pid_file`);
+- interactive `vpn-up` backgrounds and supervises the helper process itself if
+  the user asked for background;
+- launchd/systemd supervises the helper directly, which is what they want.
+
+### `stop`, and why it still needs root
+
+An unprivileged parent cannot signal its own root child, so `stop` cannot be
+"the caller kills what it forked" — it stays a helper verb. The helper never
+accepts a pid on argv. It reads the pid from its own root-owned state and, before
+signalling, verifies the process is still the same one: the pinned `openconnect`
+path (`/proc/<pid>/exe` on Linux, `proc_pidpath` on macOS) **and** a recorded
+start time, so a recycled pid is never signalled. Then `SIGTERM`, wait, `SIGKILL`.
+
+This closes an existing hole in passing: `core.sh:325`/`336` currently run
 `sudo kill "$pid"` with a pid from a user-writable file, which under a broad
-sudoers rule is arbitrary-signal-to-any-pid-as-root. The helper never accepts a
-pid on argv.
+sudoers rule is arbitrary-signal-as-root.
+
+### Root-owned state
+
+```
+/run/vpn-up/<SUDO_UID>/<profile-id>/{pid,started,endpoint}      # Linux
+/var/run/vpn-up/<SUDO_UID>/<profile-id>/{pid,started,endpoint}  # macOS
+```
+
+Root-owned, `0700` per-uid directory. The `SUDO_UID` component matters: without
+it, if more than one user is granted the helper rule, user A could address user
+B's identically-named profile. `SUDO_UID` is trustworthy here precisely because
+`env_reset` holds — sudo strips the caller's copy and sets its own from the real
+invoking uid — and the helper refuses to run if it is absent or unparseable
+rather than defaulting to anything.
 
 ---
 
-## 5. Request schema
+## 6. Request schema
 
-`connect` accepts exactly these options. Anything unrecognised is a hard error —
-no pass-through, ever. Empty values are rejected rather than silently dropped,
-and **no value may begin with `-`** (so a validated value can never be
-mistaken for a flag).
+`connect` accepts exactly this. Anything unrecognised is a hard error; no
+pass-through, ever. Empty values are rejected rather than silently dropped, and
+**no value may begin with `-`**.
 
-| Option | Type / grammar | Becomes |
-|---|---|---|
-| `--profile` | `^[A-Za-z0-9._-]{1,64}$`, and not `.`/`..` | state/pid filename only |
-| `--host` | `^[A-Za-z0-9][A-Za-z0-9.-]{0,253}(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]{0,256})?$` | positional arg |
-| `--protocol` | closed enum: `anyconnect nc gp pulse f5 fortinet array` | `--protocol=` |
-| `--user` | `^[A-Za-z0-9._@+-]{1,256}$` (not leading `-`) | `--user=` |
-| `--authgroup` | `^[A-Za-z0-9 ._@-]{1,128}$` | `--authgroup` |
-| `--servercert` | `^(pin-sha256:[A-Za-z0-9+/=]{20,100}\|sha1:[0-9a-fA-F:]{20,100})$` | `--servercert=` |
-| `--proxy` | `^(http\|https\|socks5)://[A-Za-z0-9._:@-]{1,256}$` | `--proxy=` |
-| `--certificate` | absolute path **or** `pkcs11:` URI — see §5.1 | `--certificate=` |
-| `--sslkey` | same as above | `--sslkey=` |
-| `--pin-source` | absolute path under the caller's own state dir — see §5.1 | appended to the PKCS#11 URI |
-| `--token-mode` | closed enum: `totp hotp` | `--token-mode=` |
-| `--sso` | boolean | `--external-browser=<pinned>` (§9) |
-| `--background` | boolean | `--background` |
-| `--quiet` | boolean | `-q` |
-| `--route` | repeatable; vpn-slice token grammar — see §8 | folded into one `--script` |
-| `--tunable K=V` | closed table of safe flags — see §6 | the corresponding flag |
+```
+vpn-up-helper connect
+    --profile-id <UUID>
+    --protocol <enum>
+    --connect-url <URL>
+    --fingerprint <pin>
+    [--resolve <HOST:IP>]
+    [--route <token> ...]
+    [--tunable <K=V> ...]
+    [--quiet]
+stdin: the session cookie
+```
 
-Secrets (password, second factor, PKCS#11 PIN) arrive on **stdin**, newline
-separated, exactly as today — never on argv, so never in the process table.
+| Option | Validation |
+|---|---|
+| `--profile-id` | RFC 4122 UUID, or 32 hex chars. Used only as a state directory name; canonicalised and length-checked, never path-joined from raw input |
+| `--protocol` | closed enum: `anyconnect nc gp pulse f5 fortinet array` |
+| `--connect-url` | `https://` only; host per §7 hostname rules; optional `:port` 1–65535; path restricted to `[A-Za-z0-9._~/%+-]{0,512}`; no userinfo, no fragment, no control bytes |
+| `--fingerprint` | `pin-sha256:` + base64 of exactly 32 bytes, or `sha1:` + 20 hex-byte pairs. Decoded and length-checked, not merely regex-matched |
+| `--resolve` | `HOST:IP`; host per §7; IP parsed with `inet_pton` (AF_INET/AF_INET6) |
+| `--route` | repeatable; §7 grammar; folded into one `--script` |
+| `--tunable` | closed table, §9 |
+| `--quiet` | boolean → `-q` |
+| stdin | cookie: opaque bytes, length-capped (≤ 8 KiB), no NUL, no newline beyond a single trailing one; forwarded verbatim, never parsed, never logged |
 
-Note the absences: no `--script`, no `--csd-wrapper`, no `--script-tun`, no
-`--config`, no `--xmlconfig`, no `--external-browser` value, no `--pid-file`, no
-`extraArgs`.
-
-### 5.1 Path arguments
-
-A path on argv is read *as root*, which is a confused-deputy risk (`--certificate
-/etc/shadow` — root reads a file the caller cannot, and parse failures could
-surface content into the log). Every accepted path is therefore:
-
-1. absolute, no `..` component, and **not** a symlink at any component
-   (resolved with `realpath`, compared, and `lstat`-checked);
-2. a regular file;
-3. **readable by the calling uid** — checked by the helper with the caller's
-   real uid (from `SUDO_UID`) via `access(2)` semantics, i.e. dropping to that
-   uid in a forked child to test. If the caller could not read it unaided, the
-   helper will not read it for them;
-4. for `--pin-source`, additionally confined to the caller's own state directory
-   and required to be mode `0600` and owned by the caller.
-
-This makes path arguments a no-op privilege-wise: root reads only what the
-caller could already read.
+**Absent by construction:** every credential, every path, every flag that names
+a program, `--pid-file`, `--background`, `extraArgs`.
 
 ---
 
-## 6. `extraArgs`, and the policy that resolves the tension
+## 7. Validation is semantic, not regular
 
-Today `extraArgs` is a documented feature (`--no-dtls`, `--os=win`, MTU,
-`--reconnect-timeout`, CSD wrappers, vpn-slice). Under this design it cannot be
-passed through — that would recreate the vulnerability with extra steps.
+Revision 1 leaned on regular expressions. Several of those grammars accept
+nonsense that a parser rejects — `999.999.999.999/99` matched revision 1's IPv4
+pattern. Since the helper is compiled (§8.2), validation uses the libc parsers
+that already get this right:
 
-**Proposed policy, and the core idea of this document:**
+| Kind | Method |
+|---|---|
+| IPv4 / IPv6 literal | `inet_pton`; prefix length range-checked against the family (0–32 / 0–128) |
+| Hostname | per-label: 1–63 bytes, `[A-Za-z0-9-]`, no leading/trailing `-`; total ≤ 253; at least one label; not all-numeric (that is an address, and must go through `inet_pton`) |
+| Port | `strtol`, 1–65535, no trailing garbage |
+| Base64 fingerprint | decode, then assert exact digest length |
+| Integer tunables | `strtol` with explicit range, `errno` checked, no trailing garbage |
 
-> **Arbitrary `openconnect` arguments require interactive `sudo`. Passwordless
-> operation requires the helper, and the helper's closed schema.**
-
-This is coherent rather than a compromise: typing your sudo password *is* the
-authorisation for doing something arbitrary as root. What must never happen is
-arbitrary root becoming *ambient* and available to any process running as you.
-
-So `vpn-up` keeps two modes:
-
-- **prompt mode** (default, unchanged) — `sudo openconnect`, `extraArgs` honoured
-  verbatim, sudo prompts. Users who need an exotic flag keep working exactly as
-  today, at the cost of typing a password.
-- **helper mode** — `sudo -n vpn-up-helper`, closed schema, no `extraArgs`.
-  Required for the login service.
-
-A profile using `extraArgs` in helper mode gets a clear error naming the
-offending flag and the two ways forward (drop it, or use prompt mode).
-
-To keep helper mode useful, a **tunable table** covers the genuinely harmless
-flags, each typed inside the helper:
-
-| Tunable | Type | Flag emitted |
-|---|---|---|
-| `no-dtls` | boolean | `--no-dtls` |
-| `no-http-keepalive` | boolean | `--no-http-keepalive` |
-| `disable-ipv6` | boolean | `--disable-ipv6` |
-| `mtu` | integer 576–9000 | `--mtu=N` |
-| `base-mtu` | integer 576–9000 | `--base-mtu=N` |
-| `reconnect-timeout` | integer 1–3600 | `--reconnect-timeout=N` |
-| `dpd` | integer 0–3600 | `--dpd=N` |
-| `os` | enum `linux linux-64 win mac-intel android apple-ios` | `--os=` |
-| `useragent` | `^[A-Za-z0-9 ._/()-]{1,128}$` | `--useragent=` |
-
-Booleans and bounded integers cannot express a program to run. The table lives
-in the helper (root-owned) — never in the profile — and grows only by review.
+Every accepted value is additionally required to be printable ASCII with no
+shell metacharacter, no whitespace, no control byte, and no leading `-`. That
+last rule is what makes it impossible for a validated value to be re-read as a
+flag by `openconnect`.
 
 ---
 
-## 7. Filesystem ownership, install location, and language
+## 8. Implementation, ownership, and install location
 
-### 7.1 The install path is a security requirement, not a convention
+### 8.1 The install path is a security requirement
 
 The helper is worthless if it, or any directory above it, is writable by the
-unprivileged user. That **rules out the Homebrew prefix**, which is where a
-brew-tap tool would naturally install — including `/usr/local` on Intel macOS,
-where Homebrew's prefix *is* the conventional `/usr/local`.
-
-Proposed:
+unprivileged user. That rules out the Homebrew prefix — including `/usr/local`
+on Intel macOS, where Homebrew's prefix *is* the conventional `/usr/local`.
 
 | Platform | Path |
 |---|---|
 | macOS | `/opt/vpn-up/bin/vpn-up-helper` (`/opt` is root-owned; `/opt/homebrew` being a sibling is irrelevant) |
 | Linux | `/usr/local/libexec/vpn-up/vpn-up-helper` |
 
-Modes: helper `0755 root:wheel` (macOS) / `root:root` (Linux); every parent
-directory `0755` root-owned, no group/other write bit.
+The load-bearing part is not the path but the **check**: the installer walks from
+`/` to the target and refuses if any component is not root-owned or is
+group/world-writable. The helper repeats the walk on its own path at startup.
+Path choice is then only a default that passes the check.
 
-The load-bearing part is not the path but the **check**: the installer walks
-from `/` to the target and refuses to install if any component is not root-owned
-or is group/world-writable. The helper repeats the same walk on its own path at
-startup and refuses to run if it fails. Path choice is then merely a default
-that passes the check.
+### 8.2 Compiled, in C
 
-### 7.2 Shell script, and the bash 3.2 constraint
+Revision 1 proposed a root-owned shell script. That is now rejected, for two
+reasons.
 
-A root-owned shell script is acceptable if it is unwritable and the environment
-is sanitised — but it must be interpreted by a **root-owned interpreter**. On
-macOS the only one guaranteed root-owned and SIP-protected is `/bin/bash`, which
-is **3.2.57**. A Homebrew `bash` is inside a user-writable prefix and is
-therefore disqualified as the helper's shebang.
+**The work is POSIX primitives.** `lstat`/`fstat`, `realpath`, `openat`,
+`inet_pton`, `strtol`, `getpwuid`, `kill`, `execve`, `fcntl`, `proc_pidpath` —
+the C versions are correct and direct; the shell versions are string manipulation
+around subprocesses. Revision 1's own §5.1 wanted "dropping to that uid in a
+forked child to test", which is a native `fork`/`setuid`/`access` sequence, not a
+shell operation. §7's semantic validation is the same story.
 
-Consequence: **the helper must be bash 3.2 compatible.** No `mapfile`, no
-associative arrays, no `${var^^}`, no `&>>`. The rest of the codebase targets
-bash 4+ and can continue to; the helper is a separate, small, deliberately
-boring program with its own compatibility floor and its own tests. (`/bin/sh`
-POSIX is the fallback if 3.2 proves awkward.)
+**The interpreter is attack surface, and `BASH_ENV` cannot be fixed from
+inside.** Bash evaluates `BASH_ENV` for a non-interactive shell *before* running
+the script body, so "unset it as the first act" — revision 1's plan — is too
+late by construction. `#!/bin/bash -p` (privileged mode) suppresses it, but
+needing an obscure interpreter flag to close a startup-file hole is itself the
+argument: a shell brings startup files, `IFS`, globbing, word splitting, and
+`$PATH` into the boundary, and none of that is needed here.
 
-### 7.3 Environment
+Two-phase (§4) makes this cheaper, not more expensive: the helper that remains
+is validation of about five scalars, two ownership walks, one state write, and
+one `execve`. That is a small, auditable C program with no XML library, no crypto
+library, no networking, and no extensible configuration.
 
-The sudoers rule must not use `setenv`, and `Defaults env_reset` (the default)
-must hold. The helper additionally, as its first act: `unset` `BASH_ENV`, `ENV`,
-`SHELLOPTS`, `BASHOPTS`, `CDPATH`, `IFS`, `LD_*`, `DYLD_*`, `PS4`; sets
-`PATH=/usr/bin:/bin:/usr/sbin:/sbin`; and invokes every external command by
-absolute path. It reads only `SUDO_UID`/`SUDO_USER` from the environment, and
-treats them as untrusted integers/strings used solely for the §5.1 read check
-and for locating the caller's state directory (both of which only ever *reduce*
-what the helper will do).
+The cost is real and belongs in §14.2: a pure-shell project installed by
+`git clone` / brew tap gains a build step and per-architecture artefacts.
 
-### 7.4 Pinned executables — and the check that must not be skipped
+### 8.3 Environment
 
-The helper invokes `openconnect` by an absolute path baked in at install time,
-and **before every `execve`** verifies that the binary and every parent
-directory are root-owned and not group/world-writable, refusing otherwise. Same
-check for the default `vpnc-script`, which the helper always passes explicitly
-rather than relying on the compiled-in default (see §1.3 and §8).
+The sudoers rule must not use `setenv`, and `Defaults env_reset` must hold. A
+compiled helper does not execute startup files, but it still: reads only
+`SUDO_UID`/`SUDO_USER`, refusing to run if `SUDO_UID` is missing or unparseable;
+builds phase two's environment explicitly rather than inheriting (`PATH`,
+`IFS`, `LD_*`, `DYLD_*` never forwarded); and invokes `openconnect` by absolute
+path. `openconnect` and `vpnc-script` receive a minimal, helper-constructed
+environment.
 
-The uncomfortable consequence is §12.1: on macOS, a Homebrew `openconnect` fails
-this check.
+### 8.4 A root-owned OpenConnect is required — decision on revision 1's §12.1
+
+Revision 1 left this open and leaned toward "Linux-first, macOS honestly
+downgraded". **Rejected.** The claim is preserved instead of weakened:
+
+> **Helper mode requires a root-owned OpenConnect installation on every
+> platform. Homebrew OpenConnect is explicitly unsupported for helper mode.
+> Homebrew remains fully supported for prompt mode.**
+
+Rationale: handing root to a binary the calling user can replace accomplishes
+nothing, so "helper mode on Homebrew" would be a security claim that isn't true.
+Better to refuse the configuration than to describe the boundary as merely
+"narrowing the argument surface".
+
+Before every `execve`, and again at install time, the helper verifies that the
+`openconnect` binary, the `vpnc-script` it passes explicitly (never the
+compiled-in default), and every parent directory of both are root-owned and not
+group/world-writable — and refuses otherwise. The same check applies to
+`vpn-slice` when `--route` is used (§10), which matters because the usual
+`pip install --user` vpn-slice is user-writable.
+
+MacPorts is the candidate supported macOS source: it carries OpenConnect 9.21,
+installs under a root-owned `/opt/local` via `sudo port install`, and is
+package-managed, so security updates keep arriving — unlike copying a binary at
+install time, which would trade a privilege bug for a patching bug. The helper
+must still run its own ownership checks rather than trusting the package manager;
+"MacPorts" is a recommendation for how to obtain a passing installation, not an
+exemption from the check. Verifying a real MacPorts install against the checks is
+an implementation prerequisite (§14.1).
+
+Resulting support matrix:
+
+| OpenConnect installation | Prompt mode | Helper mode |
+|---|---|---|
+| Linux distro package, checks pass | yes | **yes** |
+| macOS MacPorts, checks pass | yes | **yes** |
+| Manually installed root-owned, checks pass | yes | **yes** |
+| macOS Homebrew | yes | **no** |
+| Any user-writable installation | yes, with the §1 caveat understood | **no** |
+
+`vpn-up doctor` reports which cell the machine is in, and why.
 
 ---
 
-## 8. Split tunnelling without reopening the hole
+## 9. `extraArgs`, and the policy that resolves the tension
 
-`--script` must never take a caller-supplied path. But split tunnelling is a
-real, documented feature, so it needs a narrow mechanism rather than removal.
+`extraArgs` cannot be passed through the helper — that would recreate the
+vulnerability with extra steps. The policy:
 
-**Two dangers, both easy to miss:**
+> **Arbitrary OpenConnect arguments require interactive `sudo`. Passwordless
+> operation requires the helper's closed schema.**
 
-1. **`--script` is shell-evaluated.** `openconnect` passes the value to
-   `/bin/sh -c`, so a validated *path* is not enough — the whole assembled
-   string must be incapable of expressing anything else. Every route token
-   therefore comes from a grammar containing no shell metacharacter at all: no
-   space, quote, `$`, backtick, `;`, `|`, `&`, `(`, `)`, `<`, `>`, `\`, newline.
-2. **`vpn-slice` must itself be root-owned.** It is a program the helper runs as
-   root. A `pip install --user` vpn-slice is user-writable and disqualified, by
-   the §7.4 check.
+Typing the sudo password *is* the authorisation for doing something arbitrary as
+root. The bug is arbitrary root becoming *ambient*. So `vpn-up` keeps two modes:
 
-Proposed interface — the caller passes routes, never a script:
+- **prompt mode** (default, unchanged) — `sudo openconnect`, `extraArgs`
+  honoured verbatim, single-phase, sudo prompts. Anyone needing an exotic flag
+  keeps working exactly as today, at the cost of a password per connect.
+- **helper mode** — `sudo -n vpn-up-helper`, two-phase, closed schema, no
+  `extraArgs`. Required for the login service.
+
+A profile using `extraArgs` in helper mode gets a clear error naming the flag and
+the two ways forward. To keep helper mode useful, a **tunable table**, defined in
+the helper and grown only by review, covers flags that cannot express a program:
+
+| Tunable | Type | Emits |
+|---|---|---|
+| `no-dtls` | boolean | `--no-dtls` |
+| `no-http-keepalive` | boolean | `--no-http-keepalive` |
+| `disable-ipv6` | boolean | `--disable-ipv6` |
+| `mtu` | int 576–9000 | `--mtu=N` |
+| `base-mtu` | int 576–9000 | `--base-mtu=N` |
+| `reconnect-timeout` | int 1–3600 | `--reconnect-timeout=N` |
+| `dpd` | int 0–3600 | `--dpd=N` |
+
+`--os` and `--useragent` move to **phase one**, where they belong — they affect
+authentication, not the tunnel, and outside the boundary they need no grammar at
+all.
+
+---
+
+## 10. Split tunnelling without reopening the hole
+
+Two dangers, both easy to miss:
+
+1. **`--script` is shell-evaluated.** OpenConnect runs it as
+   `execl("/bin/sh", "/bin/sh", "-c", script, NULL)` ([`script.c`][ocscript]), so
+   validating a *path* is insufficient — the whole assembled string must be
+   incapable of expressing anything else.
+2. **`vpn-slice` runs as root**, so it must be root-owned. A
+   `pip install --user` vpn-slice is disqualified by §8.4's check.
+
+[ocscript]: https://gitlab.com/openconnect/openconnect/blob/master/script.c
+
+Interface — the caller passes routes, never a script:
 
 ```
 --route 10.0.0.0/8  --route %192.168.99.0/24  --route wiki=wiki.corp=192.168.1.5
 ```
 
-Token grammar (each token validated independently, then joined with single
-spaces):
+Each token is validated independently and semantically (§7): address or CIDR via
+`inet_pton` with a family-checked prefix; hostname per label; `%` prefix for
+exclusion; `alias=host[=ip]` with each component validated by its own rule. No
+token may contain a space, quote, `$`, backtick, `;`, `|`, `&`, `(`, `)`, `<`,
+`>`, `\`, or newline — so no token can alter the command.
 
-- `^[0-9.]{7,15}(/[0-9]{1,2})?$` — IPv4 / CIDR
-- `^[0-9A-Fa-f:]{2,39}(/[0-9]{1,3})?$` — IPv6 / CIDR
-- `^[A-Za-z0-9][A-Za-z0-9.-]{0,253}$` — hostname
-- `^%` + any of the above — exclusion
-- `^[A-Za-z0-9_-]{1,64}=[A-Za-z0-9.-]{1,253}(=[0-9.]{7,15})?$` — alias
+The `vpn-slice` path is **fixed and VPN Up-controlled** rather than configurable,
+which removes any question of shell-significant characters in the path itself:
+`/opt/vpn-up/libexec/vpn-slice` (macOS), `/usr/local/libexec/vpn-up/vpn-slice`
+(Linux), ownership-checked like any other pinned executable. The helper emits
+`--script "<fixed path> <validated tokens>"` and nothing else can appear in that
+string.
 
-The helper then emits `--script "<pinned vpn-slice> <tokens>"`, with the pinned
-path from §7.4. Nothing else can appear in that string.
+For the "keep the gateway's `vpnc-script` and adjust routes afterwards" recipe in
+`docs/split-tunnel.md`, the helper-mode answer is the existing **hooks**
+mechanism, which runs unprivileged and is already ownership-checked. The docs
+will need to say which recipe belongs to which mode.
 
-For the "keep the gateway's `vpnc-script` and adjust routes afterwards" recipe
-in `docs/split-tunnel.md`, the answer in helper mode is the existing **hooks**
-mechanism, which runs unprivileged and is already ownership-checked — not
-`--script`. The docs will need to say which recipe belongs to which mode.
-
-A future `--route-script NAME` (resolving `NAME` inside a root-owned
-`scripts.d`, `^[A-Za-z0-9._-]+$`, ownership-checked, symlinks refused) is a
-possible extension. It is deliberately **not** in v1: it hands root to a file the
-user cannot write, which is safe, but it is also the feature most likely to be
-mis-installed by a user with `sudo`, and it is not needed for vpn-slice.
-
----
-
-## 9. SSO interaction — a vector the argument list misses
-
-`resolve_external_browser()` (`core.sh:388`) picks an opener from `PATH`, or from
-`$VPN_UP_EXTERNAL_BROWSER`, and `openconnect` **runs it as root** via
-`--external-browser`. Under a passwordless rule that is a root-execution path
-just as direct as `--script`, and it exists today with no unusual configuration.
-
-In helper mode: `--sso` is a boolean. The helper resolves the opener itself, from
-a closed set of absolute, ownership-checked paths (`/usr/bin/open` on macOS,
-`/usr/bin/xdg-open` on Linux, or a root-owned `openconnect-external-browser`),
-and `VPN_UP_EXTERNAL_BROWSER` is **ignored** inside the boundary. Overriding the
-opener remains available in prompt mode.
-
-(The existing Linux caveat — a root-spawned browser may not reach the user's
-session — is unchanged and orthogonal. Longer term the right fix is for the
-helper to drop to `SUDO_UID` for the browser step; out of scope for v1, but the
-reason `--sso` is a boolean rather than a path is to keep that door open.)
+A future `--route-script NAME` resolved inside a root-owned `scripts.d` is
+deliberately **not** in v1: it is safe in principle but is the feature most
+likely to be mis-installed by a user with `sudo`, and vpn-slice does not need it.
 
 ---
 
-## 10. Installation, migration, uninstall
+## 11. CSD / trojan execution — why the invariant holds
+
+Worth recording because it could have invalidated the invariant: OpenConnect
+deliberately does **not** execute a gateway-downloaded Cisco Secure Desktop
+trojan unless `--csd-user` or `--csd-wrapper` is supplied, precisely for this
+reason ([upstream CSD notes][ocsd]). Allowing `--protocol=anyconnect` therefore
+does not hand a malicious gateway an automatic root execution mechanism.
+
+[ocsd]: https://www.infradead.org/openconnect/csd.html
+
+That property is conditional on those two flags being absent, which is why
+neither is in the schema (§6) and why both are now flagged in prompt mode's
+`extraArgs` warning. CSD support in helper mode is out of scope for v1; a profile
+needing it uses prompt mode.
+
+---
+
+## 12. Installation, migration, uninstall
 
 `vpn-up install-helper` — interactive `sudo`, once:
 
-1. Walk and verify the target directory chain (§7.1); create it root-owned if
+1. Walk and verify the target directory chain (§8.1); create root-owned if
    absent; refuse on any user-writable component.
 2. Install the helper `0755` root-owned.
-3. Verify the `openconnect` and `vpnc-script` paths to be pinned (§7.4) and
-   **refuse to install** if they are user-writable, printing exactly what is
-   wrong and how to get a root-owned `openconnect`.
-4. Write `/etc/sudoers.d/vpn-up` containing only the helper rule, mode `0440`,
+3. Verify the `openconnect` and `vpnc-script` paths to be pinned (§8.4) and
+   **refuse to install** if they fail, naming what is wrong and how to obtain a
+   passing installation (MacPorts on macOS, distro package on Linux).
+4. Write `/etc/sudoers.d/vpn-up` containing only the helper rule, `0440`,
    validated with `visudo -cf` **before** being moved into place.
-5. **Remove the legacy `openconnect` NOPASSWD line** — leaving it makes the
-   helper pointless, since the old primitive still exists. Report any *other*
-   rule that grants `openconnect` (or `ALL`) and explain that it must go too.
+5. Remove the legacy `openconnect` grant — **conservatively**, see below.
 
-`vpn-up doctor` gains: legacy-rule detection, ownership check on the pinned
-paths, and the default-`vpnc-script` check from §1.3 — as findings, whether or
-not the helper is installed.
+### Conservative sudoers migration
 
-`vpn-up uninstall-helper` removes the sudoers file and the helper, and reports
+Leaving the legacy rule in place makes the helper pointless, since the old
+primitive still exists. But rewriting an administrator's policy is not VPN Up's
+business. So:
+
+- **Remove only** a rule VPN Up can identify as its own with certainty: the file
+  `/etc/sudoers.d/vpn-up`, matching the exact single-line form this project has
+  documented. Anything else in that file, or any deviation, means hands off.
+- **Detect and report** equivalent grants elsewhere — other `sudoers.d` includes,
+  `/etc/sudoers` itself, `ALL` grants, group- or alias-based rules — and then
+  **refuse to declare the installation secure**, rather than attempting to edit
+  them. `doctor` reports the same finding independently.
+
+That distinction matters: silently deleting lines from `/etc/sudoers` during a
+"security fix" is a worse failure mode than telling the user their old grant is
+still open.
+
+`vpn-up doctor` gains: legacy-grant detection, the §8.4 ownership checks, the
+default-`vpnc-script` check from §1.3, and the support-matrix verdict — whether
+or not the helper is installed.
+
+`vpn-up uninstall-helper` removes the sudoers file and the helper and reports
 what it removed. `setup.sh --uninstall` calls it.
 
-Note that the sudoers rule for the helper still cannot constrain arguments — and
-that is fine, by §2. The helper is the argument filter; sudoers only has to name
-a program that is safe for all inputs.
+Note that the sudoers rule for the helper still cannot constrain arguments, and
+that is fine by §2: the helper *is* the argument filter, and sudoers only has to
+name a program that is safe for all inputs.
 
 ---
 
-## 11. Service behaviour
+## 13. Service behaviour
 
-Unchanged in shape: the launchd agent / systemd user unit supervises a foreground
-`openconnect` and restarts it on drop. Only the invocation changes, to
-`sudo -n /opt/vpn-up/bin/vpn-up-helper connect --profile … --host …`.
+Shape unchanged: the launchd agent / systemd user unit supervises a foreground
+process and restarts it on drop. What it supervises becomes `vpn-up` in helper
+mode, which performs phase one and then execs `sudo -n vpn-up-helper connect …`;
+with `--background` gone (§5) there is no daemonization anywhere in the chain.
 
-`service install` preflight gains: helper installed, helper rule present,
-`sudo -n` works against the helper, and the profile is expressible in the closed
-schema (no `extraArgs`). Failing that last check is a clear error at install
-time rather than a silent failure at login. Once the helper is the service's
-path, the "not recommended" warning added to the docs can be lifted for
-helper-mode services.
+Each restart re-runs phase one, so it needs the stored password or a TOTP seed —
+already the case today, and already unprivileged. (Duo `push` profiles issue a
+new push per reconnect. That is today's behaviour too, not a regression, but it
+is worth documenting for flapping links.)
 
----
-
-## 12. Open questions — decide these before implementing
-
-### 12.1 macOS `openconnect` is user-writable. This is the blocker.
-
-Homebrew's `openconnect` fails §7.4, so on the most common macOS setup the helper
-would refuse to run — and if it did not refuse, it would hand root to a binary
-the user can replace, achieving nothing. Options:
-
-- **(a) Require a root-owned `openconnect` for helper mode.** Honest and simple;
-  but there is no obvious root-owned source on macOS, so it means building or
-  hand-installing, and most users will not.
-- **(b) Have `install-helper` copy `openconnect` (and `vpnc-script`, and its
-  dylib closure) to a root-owned location.** Works, but forks the install:
-  security updates via `brew upgrade` would no longer reach the copy — trading a
-  privilege bug for a patching bug, arguably worse.
-- **(c) Accept the Homebrew binary and document the residual risk.** Then helper
-  mode's honest claim shrinks to "narrows the argument surface", not "closes the
-  root path" — a real but much smaller win, and it must be described that way.
-- **(d) Ship helper mode as Linux-first**, where distro `openconnect` is
-  root-owned, and treat macOS as (c) with a loud caveat until a better answer
-  exists.
-
-I lean **(d) with (c)'s honesty**, and would not claim more than the design
-delivers on macOS. This needs an explicit decision, because it determines what
-the README is allowed to promise.
-
-### 12.2 Is a root-owned bash 3.2 script an acceptable boundary?
-
-The alternative is a small compiled helper (C or Go), which removes shell
-quoting/`IFS`/glob hazards and the 3.2 constraint, but adds a build toolchain and
-per-arch artefacts to a project that is currently pure shell and installs by
-`git clone`. My inclination is shell for v1 — the logic is validation and one
-`execve`, which shell can do safely if written defensively — with the option
-open.
-
-### 12.3 Does prompt mode keep `extraArgs`?
-
-§6 says yes. It means the vulnerability described in SECURITY.md still exists for
-anyone who keeps the legacy sudoers rule. Since `install-helper` removes that
-rule, and prompt mode without it requires a password per connect, this seems
-right — but it is a deliberate decision to leave a sharp edge available.
-
-### 12.4 Migration for existing service users
-
-Installing the helper and deleting the legacy rule breaks any currently
-installed service that was configured against `openconnect`. Does
-`install-helper` offer to reinstall affected services, or refuse until the user
-does? Refusing is safer and noisier; reinstalling is friendlier and touches
-launchd/systemd during a security operation.
-
-### 12.5 Scope of v1
-
-Proposed cut: `connect` + `stop` + `version`, password and SSO auth, client
-certificates, the §6 tunable table, and `--route` for vpn-slice. Deferred:
-`--route-script`, dropping to `SUDO_UID` for the browser, and any CSD/trojan
-wrapper support (`--csd-wrapper` has no safe narrow form yet — prompt mode only).
+`service install` preflight gains: helper installed; helper rule present;
+`sudo -n` works against the helper; §8.4 checks pass; and the profile is
+expressible in the closed schema (no `extraArgs`). Failing the last one is a
+clear error at install time rather than a silent failure at login. Once the
+service runs through the helper, the "not recommended" warning added in PR 1 can
+be lifted for helper-mode services — and only for those.
 
 ---
 
-## 13. Test plan sketch
+## 14. Open questions
 
-- **Grammar tests, per field**: accept the valid forms; reject empty, leading
-  `-`, embedded whitespace/newline, shell metacharacters, `..`, unicode
-  lookalikes, over-length, and every rejected flag from §5.
+### 14.1 Verify a real MacPorts OpenConnect against the §8.4 checks
+
+§8.4 makes MacPorts the recommended macOS source on the strength of its
+documented root-owned `/opt/local` prefix. Before that goes in a README, an
+actual install needs checking: the binary, its parent chain, the `vpnc-script`
+MacPorts configures, and the dylib closure — the last because a root-owned binary
+loading a user-writable library is the same bug wearing a hat. If MacPorts fails,
+macOS helper mode has no packaged source and the decision returns to the table.
+
+### 14.2 Build and distribution for a compiled helper
+
+C is decided (§8.2); how it ships is not. Compile at install time (needs a
+toolchain — Xcode CLT on macOS, `cc` on Linux) or ship prebuilt per-architecture
+artefacts (needs signing, notarization on macOS, and a release pipeline this
+project does not have)? Compiling from source at `install-helper` time is my
+inclination: the source is small and auditable, the user is already running an
+interactive `sudo` operation, and it avoids shipping binaries. But it makes the
+toolchain a hard dependency of helper mode.
+
+### 14.3 Does any protocol need the client certificate at connect, not just auth?
+
+Two-phase assumes the cookie alone suffices for phase two, which is what
+upstream's non-root example does. If some gateway configuration requires the
+client certificate for the tunnel connection as well (mutual TLS at connect, not
+only at authentication), then client-certificate profiles in helper mode would
+need certificate path handling back inside the boundary — the one piece of
+revision 1's §5.1 that would return. This needs checking per protocol before v1
+scope is fixed, because it is the only identified case where §4's simplification
+might not fully hold.
+
+### 14.4 Cookie lifetime versus service restarts
+
+Phase one's cookie may have a short server-side validity. For interactive use
+this is invisible. For a service that restarts on drop it is fine too, since each
+restart re-authenticates. The question is whether any protocol's cookie is
+single-use in a way that makes a fast restart loop fail confusingly — and whether
+`vpn-up` should back off rather than re-authenticating in a tight loop.
+
+### 14.5 Migration for existing service users
+
+Installing the helper and removing the legacy grant breaks any service configured
+against `openconnect`. Decision: **refuse and explain, do not silently
+reinstall.** A security migration should not mutate launchd/systemd state behind
+the user's back; `install-helper` lists affected services and the exact commands
+to reinstall them. Recorded here as settled unless someone objects.
+
+### 14.6 Endpoint authorization — which VPN may be established without a password?
+
+The invariant permits any caller to ask the helper for a tunnel to any endpoint
+that satisfies the schema. Not code execution, but it grants any process running
+as the user passwordless, privileged, system-wide route/DNS/interface changes
+through a gateway of its choosing. §4 makes this the most significant remaining
+exposure, since server identity now comes from the caller.
+
+- **Model A — generic VPN privilege.** Any process as this user may establish any
+  tunnel satisfying the closed schema. Simple; no root-owned registry.
+- **Model B — approved VPN privilege.** Only endpoints previously approved
+  interactively and recorded in root-owned state. A small registry keyed by
+  `(SUDO_UID, profile-id) → (host, fingerprint)`, written during an interactive
+  `sudo` approval, checked at connect. Turns `--profile-id` into a real
+  capability key and reduces a compromised user process to "reconnect the VPN you
+  already approved".
+
+Proposal: **v1 ships Model A, with the registry designed for but not
+implemented**, and the threat model states the exposure plainly. Model B is the
+natural v2. What must not happen is shipping Model A while describing the
+boundary as though it were Model B.
+
+### 14.7 v1 scope
+
+Proposed cut: `connect` + `stop` + `version`; two-phase authentication for
+password, TOTP, SSO, and client-certificate/PKCS#11 profiles (all handled in
+phase one, so all "free" from the helper's perspective); §9's tunable table;
+`--route` for vpn-slice; Model A. Deferred: `--route-script`, CSD/trojan support
+in helper mode, Model B, and any privilege-dropping inside the boundary (no
+longer needed, since nothing that needed it remains).
+
+---
+
+## 15. Test plan sketch
+
+- **Grammar, per field**: accept valid forms; reject empty, leading `-`,
+  whitespace, newline, NUL, control bytes, shell metacharacters, `..`,
+  over-length, `999.999.999.999/99`, `10.0.0.1/33`, all-numeric hostnames,
+  non-`https` connect URLs, userinfo in URLs, fingerprints of the wrong decoded
+  length, and every flag deleted from the schema in §4 and §6.
 - **`--route` injection corpus**: `; rm -rf /`, `$(id)`, backticks, `|`, `&&`,
-  newline, `--script=`, quotes — each must be refused, and the assembled
-  `--script` string asserted character-exact.
-- **Path handling**: symlink to `/etc/shadow` refused; file unreadable by the
-  caller refused; `..` refused; directory refused; `pin-source` outside the
-  caller's dir refused.
-- **Ownership checks**: a temporary tree with a group-writable parent must make
-  both `install-helper` and the helper's own startup check refuse.
-- **`stop`**: a pid from a user-writable file is never honoured; a pid that is
-  not an `openconnect` the helper started is never signalled.
-- **Environment**: `BASH_ENV`/`IFS`/`PATH` set hostile at the call site must not
-  change behaviour.
-- **Argv assertion**: the emitted `openconnect` argv is compared element-by-
-  element against a fixture for each profile shape (password, SSO, client cert,
-  PKCS#11, background, routes) — the same technique `tests/extraargs.bats`
-  already uses.
-- **bash 3.2**: the helper's tests run under `/bin/bash` on macOS CI, not the
-  Homebrew bash used for the rest of the suite.
+  newline, `--script=`, quotes, unicode lookalikes — each refused, and the
+  assembled `--script` string asserted byte-exact.
+- **Ownership checks**: a fixture tree with a user-owned component, a
+  group-writable parent, and a symlinked component must make both
+  `install-helper` and the helper's startup check refuse. Explicitly: a Homebrew
+  `openconnect` path must be refused in helper mode (§8.4) and accepted in prompt
+  mode.
+- **`stop`**: a pid from a user-writable file is never honoured; a recycled pid
+  (same number, different process, different start time) is never signalled; a
+  pid belonging to another `SUDO_UID`'s state is never reachable.
+- **Environment**: `BASH_ENV`, `IFS`, `PATH`, `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`
+  set hostile at the call site must not change behaviour. Missing or garbage
+  `SUDO_UID` must refuse.
+- **Phase-one parsing**: an `--authenticate` output fixture containing extra
+  keys, duplicate keys, shell substitutions, a newline-injected `COOKIE`, and
+  `KEY=value; rm -rf /` must be rejected field-by-field and must never reach a
+  shell.
+- **Cookie handling**: never appears in argv, in any log, or in `ps` output;
+  over-length and NUL-containing cookies refused.
+- **Argv assertion**: phase two's argv compared element-by-element against a
+  fixture per profile shape (password, SSO, client cert, PKCS#11, routes, each
+  tunable) — the technique `tests/extraargs.bats` already uses.
+- **Prompt mode unchanged**: the existing suite must still pass, since prompt
+  mode is the compatibility path for `extraArgs`.
