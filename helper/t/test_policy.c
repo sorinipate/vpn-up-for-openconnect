@@ -1,5 +1,6 @@
 /*
- * test.c — hostile-input corpus for the policy engine.
+ * test_policy.c — hostile-input corpus for the validators, the phase-one
+ * parser, and Model B.
  *
  * Per PRIVILEGED-HELPER-DESIGN.md §16, the engine is built and broken as an
  * ordinary process before any root execution exists. So this harness runs
@@ -11,22 +12,10 @@
  */
 
 #include "vu.h"
+#include "harness.h"
 
 #include <stdio.h>
 #include <string.h>
-
-static int failures = 0;
-static int checks   = 0;
-
-#define CHECK(cond, ...) do {                                               \
-        checks++;                                                           \
-        if (!(cond)) {                                                      \
-            failures++;                                                     \
-            fprintf(stderr, "FAIL %s:%d: ", __FILE__, __LINE__);            \
-            fprintf(stderr, __VA_ARGS__);                                   \
-            fputc('\n', stderr);                                            \
-        }                                                                   \
-    } while (0)
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -478,9 +467,9 @@ static void test_policy(void)
     CHECK(vu_policy_check(&req, &appr, &e), "changed IP for the approved host passes: %s", e.msg);
 }
 
-/* --------------------------------------------------------------------- main */
+/* ------------------------------------------------------------------- entry */
 
-int main(void)
+void vu_test_policy(void)
 {
     test_hosts();
     test_urls();
@@ -489,7 +478,4 @@ int main(void)
     test_tunables();
     test_auth_parse();
     test_policy();
-
-    printf("%d checks, %d failures\n", checks, failures);
-    return failures == 0 ? 0 : 1;
 }
