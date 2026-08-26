@@ -41,12 +41,33 @@ typedef struct {
     bool                 is64, le;
 } img;
 
-/* Bounds-checked little/big-endian reads. Every caller checks the return. */
+/*
+ * Bounds-checked little/big-endian reads. Every caller checks the return.
+ *
+ * The cast is OUTSIDE the ternary, and that placement is the whole point. A
+ * conditional expression whose two operands are both uint16_t has type INT: the
+ * usual arithmetic conversions promote both operands, after any cast inside them.
+ * So the previous version, which cast each branch to uint16_t separately, still
+ * assigned an int to a uint16_t - and GCC's -Wconversion rejected it, because it
+ * does not propagate value ranges across a conditional and so cannot prove the
+ * result fits.
+ *
+ * Confirmed with _Generic rather than read off the standard:
+ *
+ *     _Generic((le ? x : y), int: ..., uint16_t: ...)        ->  int
+ *     _Generic((uint16_t)(x | y), int: ..., uint16_t: ...)   ->  uint16_t
+ *
+ * Clang does not implement this warning at all, not even under -Weverything, so
+ * the class is invisible on a macOS development machine and appears only in the
+ * GCC leg of CI. See helper/t/README.
+ */
 static bool rd16(const img *m, size_t off, uint16_t *out)
 {
     if (off + 2 > m->n) return false;
-    *out = m->le ? (uint16_t)(m->b[off] | (uint16_t)m->b[off + 1] << 8)
-                 : (uint16_t)((uint16_t)m->b[off] << 8 | m->b[off + 1]);
+    /* Wider temporaries so the shifts happen in an unsigned type of known width,
+     * then exactly one narrowing cast, on the assignment. */
+    uint32_t lo = m->b[off], hi = m->b[off + 1];
+    *out = (uint16_t)(m->le ? (lo | hi << 8) : (lo << 8 | hi));
     return true;
 }
 
