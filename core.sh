@@ -391,10 +391,12 @@ resolve_external_browser() {
 }
 
 # Generate the current RFC 6238 TOTP code from a base32 seed. The seed comes from
-# the secrets backend and is passed as an argument here (a local shell var), never
-# to openconnect — only the short-lived code transits (on stdin).
+# the secrets backend and never reaches openconnect — only the short-lived code
+# transits (on stdin). It is fed to oathtool on STDIN rather than argv: an argv
+# key is visible in the process table to every user on the machine, which
+# oathtool's own help calls out as "not recommended on multi-user systems".
 generate_totp() {
-  oathtool --totp -b "$1" 2>/dev/null
+  printf '%s\n' "$1" | oathtool --totp -b - 2>/dev/null
 }
 
 # Securely supply a PKCS#11 PIN (e.g. a YubiKey PIV smartcard) to openconnect

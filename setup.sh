@@ -132,7 +132,8 @@ add_profile_wizard() {
         local _seed=""
         read -r -s -p "Enter the TOTP secret (base32, from your authenticator app): " _seed; echo
         if [ -n "$_seed" ]; then
-          if command -v oathtool >/dev/null 2>&1 && [ -n "$(oathtool --totp -b "$_seed" 2>/dev/null)" ]; then
+          # Seed on stdin, not argv — an argv key is world-visible in the process table.
+          if command -v oathtool >/dev/null 2>&1 && [ -n "$(printf '%s\n' "$_seed" | oathtool --totp -b - 2>/dev/null)" ]; then
             secrets_set "$name" "token_secret" "$_seed" && print_success "TOTP secret stored securely.\n"
           else
             print_danger "That doesn't look like a valid base32 TOTP secret (or 'oathtool' is missing); not stored. Add it later with: %s set-secret '%s' token_secret\n" "${DISPLAY_NAME}" "$name"
