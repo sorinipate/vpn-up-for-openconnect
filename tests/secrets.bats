@@ -162,3 +162,131 @@ _use_file_backend() { secrets_backend() { echo file; }; }
     esac
   done
 }
+
+# --- vault durability: a failed write must never destroy the existing vault ---
+#
+# The bug these cover: _vault_encrypt used to write openssl's output straight
+# over the only copy of the vault, ignore openssl's exit status, and return 0
+# regardless — so a failed encryption truncated the vault while the caller
+# reported success.
+
+_seed_vault() {   # one good entry, so there is something to lose
+  secrets_set_openssl "$(secrets_key 'Work VPN' password)" "original-pw"
+  [ "$(secrets_get_openssl "$(secrets_key 'Work VPN' password)")" = "original-pw" ]
+}
+
+@test "vault: successful set reports success and is readable back" {
+  _seed_vault
+  run secrets_set_openssl "$(secrets_key 'Work VPN' token_secret)" "seed-1"
+  [ "$status" -eq 0 ]
+  [ "$(secrets_get_openssl "$(secrets_key 'Work VPN' token_secret)")" = "seed-1" ]
+  [ "$(secrets_get_openssl "$(secrets_key 'Work VPN' password)")"     = "original-pw" ]
+}
+
+@test "vault: encryption failure reports failure and leaves the vault intact" {
+  _seed_vault
+  local _before; _before="$(cat "$SECRETS_VAULT")"
+
+  # openssl fails only when encrypting; decryption still works so we can verify.
+  openssl() {
+    local a; for a in "$@"; do [ "$a" = "-d" ] && { command openssl "$@"; return $?; }; done
+    return 1
+  }
+
+  run secrets_set_openssl "$(secrets_key 'Work VPN' password)" "should-not-land"
+  [ "$status" -ne 0 ]
+
+  unset -f openssl
+  [ "$(cat "$SECRETS_VAULT")" = "$_before" ]
+  [ "$(secrets_get_openssl "$(secrets_key 'Work VPN' password)")" = "original-pw" ]
+}
+
+@test "vault: silently empty encrypt output is refused, vault intact" {
+  _seed_vault
+  local _before; _before="$(cat "$SECRETS_VAULT")"
+
+  # Exits 0 but writes nothing — the case a bare status check would miss.
+  openssl() {
+    local a; for a in "$@"; do [ "$a" = "-d" ] && { command openssl "$@"; return $?; }; done
+    return 0
+  }
+
+  run secrets_set_openssl "$(secrets_key 'Work VPN' password)" "should-not-land"
+  [ "$status" -ne 0 ]
+
+  unset -f openssl
+  [ "$(cat "$SECRETS_VAULT")" = "$_before" ]
+  [ "$(secrets_get_openssl "$(secrets_key 'Work VPN' password)")" = "original-pw" ]
+}
+
+@test "vault: write-verify catches ciphertext that does not read back" {
+  _seed_vault
+  local _before; _before="$(cat "$SECRETS_VAULT")"
+
+  # Encrypt "succeeds" but produces garbage: only the read-back check sees this.
+  openssl() {
+    local a out=""
+    for a in "$@"; do [ "$a" = "-d" ] && { command openssl "$@"; return $?; }; done
+    # find the -out target and write plausible-looking but undecryptable bytes
+    while [ "$#" -gt 0 ]; do [ "$1" = "-out" ] && { out="$2"; break; }; shift; done
+    cat > /dev/null
+    printf 'U2FsdGVkX1_not_real_ciphertext\n' > "$out"
+    return 0
+  }
+
+  run secrets_set_openssl "$(secrets_key 'Work VPN' password)" "should-not-land"
+  [ "$status" -ne 0 ]
+
+  unset -f openssl
+  [ "$(cat "$SECRETS_VAULT")" = "$_before" ]
+  [ "$(secrets_get_openssl "$(secrets_key 'Work VPN' password)")" = "original-pw" ]
+}
+
+@test "vault: no temp file is left behind after a failed write" {
+  _seed_vault
+  openssl() {
+    local a; for a in "$@"; do [ "$a" = "-d" ] && { command openssl "$@"; return $?; }; done
+    return 1
+  }
+  run secrets_set_openssl "$(secrets_key 'Work VPN' password)" "nope"
+  unset -f openssl
+  [ "$status" -ne 0 ]
+  run bash -c 'ls "'"$SECRETS_VAULT"'".tmp.* 2>/dev/null'
+  [ -z "$output" ]
+}
+
+@test "vault: delete propagates an encryption failure" {
+  _seed_vault
+  openssl() {
+    local a; for a in "$@"; do [ "$a" = "-d" ] && { command openssl "$@"; return $?; }; done
+    return 1
+  }
+  run secrets_delete_openssl "$(secrets_key 'Work VPN' password)"
+  unset -f openssl
+  [ "$status" -ne 0 ]
+  [ "$(secrets_get_openssl "$(secrets_key 'Work VPN' password)")" = "original-pw" ]
+}
+
+# --- plain file backend: same durability contract ---
+
+@test "file backend: rename failure reports failure and keeps the old contents" {
+  secrets_set_file "$(secrets_key 'Work VPN' password)" "original-pw"
+  local _before; _before="$(cat "$SECRETS_PLAIN")"
+  mv() { return 1; }
+  run secrets_set_file "$(secrets_key 'Work VPN' password)" "should-not-land"
+  unset -f mv
+  [ "$status" -ne 0 ]
+  [ "$(cat "$SECRETS_PLAIN")" = "$_before" ]
+  [ "$(secrets_get_file "$(secrets_key 'Work VPN' password)")" = "original-pw" ]
+}
+
+@test "file backend: delete rename failure propagates (old code ended in chmod and swallowed it)" {
+  secrets_set_file "$(secrets_key 'Work VPN' password)" "original-pw"
+  local _before; _before="$(cat "$SECRETS_PLAIN")"
+  mv() { return 1; }
+  run secrets_delete_file "$(secrets_key 'Work VPN' password)"
+  unset -f mv
+  [ "$status" -ne 0 ]
+  [ "$(cat "$SECRETS_PLAIN")" = "$_before" ]
+  [ "$(secrets_get_file "$(secrets_key 'Work VPN' password)")" = "original-pw" ]
+}
