@@ -325,12 +325,13 @@ static void test_trusted_paths(void)
     char base[VU_PATH_MAX];
     bool have_base = false;
     {
+        /* Still a list: the point of this test is to find a base whose chain
+         * is ALREADY trusted, and /tmp at 1777 legitimately is not. The
+         * candidates no longer come from the environment - see vu_test_base(). */
         const char *cands[3];
         size_t nc = 0;
-        const char *home = getenv("HOME");
-        const char *tmp  = getenv("TMPDIR");
-        if (home && *home) cands[nc++] = home;
-        if (tmp  && *tmp)  cands[nc++] = tmp;
+        cands[nc++] = vu_test_base();
+        cands[nc++] = ".";
         cands[nc++] = "/tmp";
 
         for (size_t i = 0; i < nc && !have_base; ++i) {

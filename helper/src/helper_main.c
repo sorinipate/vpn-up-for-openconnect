@@ -90,12 +90,20 @@ static int cmd_connect(int argc, char **argv, uid_t uid)
      * naming an unapproved host. */
     if (!vu_policy_check(&req, &appr, &e)) goto bad;
 
-    /* Pinned executables, checked immediately before use rather than at startup:
-     * the window matters less than the fact that this is the last look. */
-    if (!vu_exec_precheck(VU_OPENCONNECT, VU_VPNC_SCRIPT, 0, &e)) {
+    /*
+     * The whole trusted execution closure, checked immediately before use rather
+     * than at startup: the window matters less than the fact that this is the
+     * last look. The failing rows are printed, because a closure failure is
+     * something the operator has to fix on the machine and "refused" alone would
+     * not tell them what.
+     */
+    static vu_closure_report closure;
+    if (!vu_exec_precheck(VU_OPENCONNECT, VU_VPNC_SCRIPT, 0, &closure, &e)) {
         fprintf(stderr, "vpn-up-helper: %s\n", e.msg);
-        fprintf(stderr, "vpn-up-helper: helper mode needs a root-owned OpenConnect; "
-                        "a Homebrew install cannot be used (see SECURITY.md).\n");
+        vu_closure_print(&closure, stderr);
+        fprintf(stderr, "vpn-up-helper: helper mode needs a root-owned OpenConnect whose "
+                        "whole execution closure is outside your write control; a Homebrew "
+                        "install cannot be used (see SECURITY.md).\n");
         return 1;
     }
 

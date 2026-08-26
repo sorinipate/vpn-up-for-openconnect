@@ -42,6 +42,13 @@ void vu_rm_rf(const char *path);
  * shorter, and turns "we would notice truncation" into "truncation cannot
  * happen". The format attribute keeps -Wformat checking at the call sites.
  */
+/*
+ * The directory fixtures are created under, from the password database and never
+ * from $HOME. See the implementation for why that distinction earns its keep in
+ * this corpus specifically.
+ */
+const char *vu_test_base(void);
+
 void vu_path(char *out, size_t cap, const char *fmt, ...)
 #if defined(__GNUC__)
     __attribute__((format(printf, 3, 4)))
@@ -53,5 +60,6 @@ void vu_test_state(void);    /* t/test_state.c  — paths, dirs, locks, identity
 void vu_test_registry(void); /* t/test_registry.c — Model B approval records */
 void vu_test_exec(void);     /* t/test_exec.c     — the phase-two argv itself */
 void vu_test_adversarial(void); /* t/test_adversarial.c — step 9: attacks, not features */
+void vu_test_closure(void);      /* t/test_closure.c     — step 10: the execution closure */
 
 #endif

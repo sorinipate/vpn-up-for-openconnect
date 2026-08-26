@@ -46,9 +46,8 @@ static char g_base[VU_PATH_MAX];
 
 static void make_base(const char *tag)
 {
-    const char *home = getenv("HOME");
-    if (!home || !*home) home = ".";
-    vu_path(g_base, sizeof g_base, "%s/.vpn-up-test-%s-%ld", home, tag, (long)getpid());
+    vu_path(g_base, sizeof g_base, "%s/.vpn-up-test-%s-%ld",
+            vu_test_base(), tag, (long)getpid());
     vu_rm_rf(g_base);
     CHECK(mkdir(g_base, 0700) == 0, "cannot create fixture base %s: %s", g_base, strerror(errno));
 }
@@ -639,9 +638,15 @@ static void test_environment(void)
         "BASH_ENV", "ENV", "IFS", "CDPATH", "PS4", "SHELLOPTS", "BASHOPTS",
         "PATH", "TMPDIR", "HOME", "SHELL",
     };
-    /* Saved and restored: HOME and PATH belong to the test runner too, and
-     * clobbering them broke every fixture created after this function on the
-     * first run of this corpus. */
+    /*
+     * Saved and restored as hygiene, not as a fix.
+     *
+     * On the first run of this corpus, clobbering HOME here broke every fixture
+     * created afterwards, because fixture paths were built from $HOME. They are
+     * built from the password database now (vu_test_base), so that coupling is
+     * gone and this restore no longer holds the corpus together - it just leaves
+     * the runner's environment as it found it.
+     */
     char *saved[sizeof hostile / sizeof *hostile];
     for (size_t i = 0; i < sizeof hostile / sizeof *hostile; ++i) {
         const char *v = getenv(hostile[i]);

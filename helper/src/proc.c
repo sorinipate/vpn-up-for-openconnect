@@ -217,7 +217,7 @@ char **vu_clean_env(void)
      * no IFS, no LD_ or DYLD_ interposition, no BASH_ENV, no CDPATH, no PS4.
      * PATH is explicit and deliberately non-empty (see vu_harden_process).
      */
-    static char path_var[] = "PATH=/usr/sbin:/usr/bin:/sbin:/bin";
+    static char path_var[] = "PATH=" VU_HELPER_PATH;
     static char *env[] = { path_var, NULL };
     return env;
 }

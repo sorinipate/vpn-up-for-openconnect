@@ -38,8 +38,48 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
     live in `$HOME` rather than `/tmp` (mode 1777 fails the trusted-path walk),
     which compiler diagnostics only exist on GCC and therefore only fail in CI,
     and why `make asan` is Linux-only.
+  - `vpn-up-admin verify-closure`, which reports the closure row by row. It
+    needs no password: it writes nothing and reads only ownership and mode bits,
+    so asking "is this machine eligible?" should not cost an authentication.
+  - An ELF reader (`helper/src/elf.c`) for the library search paths, tested
+    against ELF images the corpus builds byte by byte — the only way to produce a
+    truncated header, an unmapped string table or a big-endian ELF32 on demand.
+    `make test-elf-closure` runs the corpus with that path forced on, so
+    Linux-only code is compiled and exercised on macOS too instead of first
+    meeting a compiler in CI.
 
 ### Security
+
+- **The trusted execution closure is now checked in full, not just the two
+  pinned files.** A root-owned `openconnect` that loads a user-writable library,
+  or sources a user-writable hook, is the same bug as a user-writable
+  `openconnect`. Before every connect the helper now verifies the binary, its
+  library search paths, `/bin/sh`, the vpnc-script and its shebang interpreter,
+  the hook directories whose contents vpnc-script *sources*, and every entry in
+  the `PATH` it hands over — and prints the failing rows, because a closure
+  failure is something you have to fix on the machine.
+
+  The library half deliberately verifies **every directory the loader will
+  search** rather than enumerating libraries: with `LD_LIBRARY_PATH` and
+  `LD_PRELOAD` stripped, a library can only come from `DT_RPATH`/`DT_RUNPATH`,
+  `/etc/ld.so.preload`, or the `ld.so.conf`-configured and default directories.
+  That covers libraries nobody listed, anything `dlopen`'d, and whatever the next
+  version links against.
+
+- **`vpn-up doctor` reports whether this machine can run helper mode, and why
+  not.** It runs the same C walk the helper runs, so the answer is not a shell
+  approximation of it. Pointed at a Homebrew install it says exactly what is
+  wrong — `'/opt/homebrew' is owned by uid 501, expected 0 or root` — which is
+  the claim SECURITY.md has been making since the first of these releases,
+  now checked rather than asserted. A failing closure does not fail `doctor`:
+  helper mode is still inert, and macOS fails closed by design until the dyld
+  work lands.
+
+- **macOS helper mode now fails closed in code, not only in the design.** The
+  macOS dynamic library closure needs Mach-O and dyld rather than ELF and
+  `ld.so`, and until that exists the check refuses with
+  `trusted OpenConnect execution closure could not be established`. There is a
+  test asserting that behaviour, so it cannot quietly become a skipped row.
 
 - **`vpn-up doctor` now checks the privilege boundary, and fails when it is
   broken.** The whole point of two privileged binaries is that `vpn-up-admin`

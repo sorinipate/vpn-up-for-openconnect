@@ -18,10 +18,13 @@
  * malformed origin or a truncated fingerprint cannot be approved at all.
  */
 
+#include "vu_closure.h"
+#include "vu_exec.h"
 #include "vu_registry.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 static void usage(void)
 {
@@ -32,6 +35,7 @@ static void usage(void)
         "          (--proxy URL | --no-proxy)\n"
         "  revoke  --profile-id ID\n"
         "  list\n"
+        "  verify-closure\n"
         "  version\n"
         "\n"
         "Approvals are per-user and are keyed by the invoking user's SUDO_UID.\n"
@@ -192,6 +196,49 @@ static int cmd_revoke(int argc, char **argv, uid_t uid)
     return 0;
 }
 
+/*
+ * Report the trusted execution closure (§11.4, §11.6).
+ *
+ * It lives HERE and not in vpn-up-helper on purpose. The helper is the
+ * passwordless binary, and every subcommand it gains is something an attacker
+ * holding that grant can run; a diagnostic belongs with the tool that already
+ * costs a password. The helper runs the same check itself before every execve —
+ * this just shows you the result before you rely on it.
+ *
+ * Deliberately usable when the answer is "no": it prints every row and exits
+ * non-zero, rather than stopping at the first failure, because a machine that
+ * fails the closure usually fails several rows for one underlying reason (a
+ * user-owned prefix) and seeing them together is what identifies it.
+ */
+static int cmd_verify_closure(void)
+{
+    vu_closure_spec spec;
+    vu_closure_spec_default(&spec, VU_OPENCONNECT, VU_VPNC_SCRIPT, 0);
+    spec.probe = (geteuid() == 0);
+    spec.probe_uid = 0;
+
+    static vu_closure_report report;
+    vu_err e; vu_err_clear(&e);
+    bool ok = vu_closure_check(&spec, &report, &e);
+
+    printf("trusted execution closure\n");
+    printf("  openconnect   %s\n", VU_OPENCONNECT);
+    printf("  vpnc-script   %s\n", VU_VPNC_SCRIPT);
+    printf("  PATH          %s\n\n", VU_HELPER_PATH);
+    vu_closure_print(&report, stdout);
+
+    if (ok) {
+        printf("\nhelper mode: the closure is trustworthy on this machine\n");
+        return 0;
+    }
+    printf("\n%s\n", e.msg);
+    printf("helper mode is unavailable until every object above is root-owned and\n"
+           "outside your write control. The usual cause on macOS is a Homebrew\n"
+           "OpenConnect: its prefix belongs to the installing user, so handing root\n"
+           "to it would accomplish nothing (see SECURITY.md and design section 11.6).\n");
+    return 1;
+}
+
 static int cmd_list(uid_t uid)
 {
     static vu_approval items[VU_APPROVAL_LIST_MAX];
@@ -240,6 +287,19 @@ int main(int argc, char **argv)
         printf("  registry root %s\n", VU_REGISTRY_ROOT);
         printf("  state root    %s\n", VU_STATE_ROOT);
         return 0;
+    }
+
+    /*
+     * verify-closure sits ABOVE the root gate deliberately. It writes nothing and
+     * reads only ownership and mode bits, which are world-readable — so requiring
+     * a password to ask "is this machine eligible for helper mode?" would buy
+     * nothing and would keep `vpn-up doctor` from reporting it. The ACL probe
+     * inside it is the one part that needs privilege, and it is skipped rather
+     * than faked when absent (see cmd_verify_closure).
+     */
+    if (strcmp(cmd, "verify-closure") == 0) {
+        if (argc > 2) { fprintf(stderr, "vpn-up-admin: verify-closure takes no arguments\n"); return 2; }
+        return cmd_verify_closure();
     }
 
     vu_err e; vu_err_clear(&e);

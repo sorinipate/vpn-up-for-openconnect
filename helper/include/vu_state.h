@@ -262,6 +262,22 @@ bool vu_harden_process(int keep_fd, vu_err *e);
 bool vu_ensure_std_fds(vu_err *e);
 
 /*
+ * The PATH the privileged child receives.
+ *
+ * Defined here, and used by BOTH vu_clean_env (which sets it) and the closure
+ * check (which verifies every entry is a trusted directory). One definition
+ * because two would drift, and a PATH entry nobody checked is a directory root
+ * resolves tools through — vpnc-script looks up route, ifconfig, ip and
+ * resolvconf by name.
+ *
+ * Never empty: vpnc-script does PATH=/sbin:/usr/sbin:$PATH, so an empty value
+ * becomes a trailing colon, and a trailing colon means the current directory.
+ */
+#ifndef VU_HELPER_PATH
+#  define VU_HELPER_PATH "/usr/sbin:/usr/bin:/sbin:/bin"
+#endif
+
+/*
  * A minimal, explicitly constructed environment for the exec'd child. Nothing
  * is inherited: no IFS, no LD_ or DYLD_ variables, no BASH_ENV, no CDPATH. PATH
  * is set explicitly and is never empty, for the reason above.

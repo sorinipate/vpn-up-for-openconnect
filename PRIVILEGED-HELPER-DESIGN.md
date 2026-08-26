@@ -829,6 +829,66 @@ Neither is a privilege escalation. Both make a privileged program's behaviour
 depend on how its caller arranged its descriptors, which is a property no
 privileged program should have.
 
+#### The library closure, as implemented in step 10
+
+The table above says "its dynamic library closure" without saying how. The
+implementation chose a different shape from the obvious one, and the choice is
+the interesting part:
+
+**It does not enumerate and verify every library. It verifies every directory the
+loader will search.**
+
+With `LD_LIBRARY_PATH` and `LD_PRELOAD` stripped by the constructed environment
+(§11.3), a library can only be loaded from `DT_RPATH`/`DT_RUNPATH`,
+`/etc/ld.so.preload`, or the `ld.so.conf`-configured and default directories.
+Verify that set, and every library that *can* be loaded is covered — including
+ones this code has never heard of, anything `dlopen`'d at runtime, and whatever
+the next version links against. Enumerating a dependency graph would be larger,
+slower, and weaker.
+
+What is checked on Linux:
+
+| Object | Why |
+|---|---|
+| `DT_RPATH` / `DT_RUNPATH` entries, `$ORIGIN` expanded | searched *before* the system directories, so a writable entry here beats everything else |
+| `/etc/ld.so.preload` and every path in it | loaded into every process, as root |
+| `/etc/ld.so.conf`, `/etc/ld.so.conf.d` and the directories they name | the directory matters as much as the contents: whoever can add a `.conf` file adds a search directory |
+| the loader's default directories that exist | `/lib`, `/usr/lib`, and the multiarch variants |
+
+Two deliberate refusals rather than guesses:
+
+- **`$LIB` and `$PLATFORM` in a search path are refused.** Expanding them needs
+  the loader's own notion of the machine, and a directory we cannot resolve is
+  one we must not claim to have verified.
+- **`include` lines in `ld.so.conf` are reported as unexpanded**, not followed.
+  They are globs; an unexpanded glob is a set of directories the report should
+  admit it did not check.
+
+Also checked, and easy to miss: **the vpnc-script's shebang**. OpenConnect runs
+the script through `execl("/bin/sh", "-c", …)`, so `/bin/sh` is the interpreter
+that matters and is checked unconditionally — but the shebang is what runs if the
+script is ever executed directly, and one naming a user-writable prefix says
+something about the installation either way.
+
+macOS is unimplemented and therefore **fails closed**, with §11.7's wording, as
+a report row rather than a special case at the call site. Mach-O `LC_LOAD_DYLIB`,
+the dyld shared cache and the `DYLD_*` rules are a different mechanism from ELF
+and `ld.so`, not a port of it. That is step 13.
+
+**Verified against a real installation**, which is what §11.6 rested on until
+now. Pointed at this machine's Homebrew install, the check reports:
+
+```
+[!!] openconnect binary (executed as root)   /opt/homebrew/bin/openconnect
+     trust: '/opt/homebrew' is owned by uid 501, expected 0 or root
+[!!] vpnc-script (executed as root ...)      /opt/homebrew/etc/vpnc/vpnc-script
+     trust: '/opt/homebrew' is owned by uid 501, expected 0 or root
+```
+
+It names the prefix rather than the Cellar target because the walk reports the
+leftmost failing component, which is the useful answer: the whole prefix belongs
+to the installing user.
+
 ### 11.5 Ownership and mode bits are not sufficient: the effective-writability test
 
 Root ownership plus `0755` does not prove non-writability, because both macOS and
@@ -1022,7 +1082,8 @@ implementation (§16 step 3).
 7. **`vpn-up-helper connect/stop/version`**
 8. Two-phase shell integration in `vpn-up`
 9. Adversarial helper tests
-10. Linux trusted-execution-closure checks
+10. Linux trusted-execution-closure checks — the §11.4 walk, including the
+    library search paths (see §11.4's step 10 subsection)
 11. Real OpenConnect integration environment
 12. Linux hardened service
 13. MacPorts / macOS closure research and implementation

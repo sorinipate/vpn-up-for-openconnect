@@ -110,6 +110,40 @@ doctor_privilege_boundary() {
   return "$rc"
 }
 
+# ------------------------------------------------- trusted execution closure
+#
+# Design section 11.4: every executable, script, library, interpreter, sourced
+# hook and search path reachable from the privileged OpenConnect execution must
+# be outside the caller's write control. Section 11.6 turns that into a support
+# matrix, and this reports which row this machine is in.
+#
+# Run through vpn-up-admin, which does the walk in C, so the answer shown here is
+# produced by exactly the code the helper runs before every execve rather than by
+# a shell approximation of it. No sudo: the check reads ownership and mode bits,
+# which are world-readable, and it writes nothing.
+#
+# Deliberately does NOT affect doctor's exit status. A failing closure means
+# "helper mode is not available on this machine", which for now is true almost
+# everywhere — there is no installer, and macOS fails closed until the dyld work
+# in step 13. Doctor failing should mean something is MISCONFIGURED, not that a
+# roadmap item is outstanding.
+doctor_execution_closure() {
+  echo
+  echo "Trusted execution closure (helper mode eligibility):"
+
+  local a; a="$(admin_bin)"
+  if [ ! -x "$a" ]; then
+    echo "  [..] vpn-up-admin not installed at $a"
+    echo "       Helper mode is not available yet; prompt mode is in use, and the"
+    echo "       caveat in SECURITY.md about a user-writable openconnect applies."
+    return 0
+  fi
+
+  # Indent its report so it reads as part of doctor's output.
+  "$a" verify-closure 2>&1 | sed 's/^/  /'
+  return 0
+}
+
 doctor() {
   echo "=== vpn-up doctor ==="
   echo "- OS         : $(uname -a)"
@@ -165,6 +199,7 @@ doctor() {
   command -v helper_bin >/dev/null 2>&1 || . "${PROGRAM_PATH}/twophase.sh"
   local boundary_rc=0
   doctor_privilege_boundary || boundary_rc=$?
+  doctor_execution_closure
 
   echo
   echo "Config preview:"
