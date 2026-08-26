@@ -451,8 +451,8 @@ bool vu_state_prune(const vu_state_paths *p, vu_err *e)
 /* Verify one component of an already-resolved pinned path. Nothing here is ever
  * created: these paths belong to the system or the installer, and the only
  * question is whether we are willing to trust them. */
-static bool trusted_component(const char *whole, size_t len,
-                              uid_t owner, bool is_leaf, bool want_exec, vu_err *e)
+static bool trusted_component(const char *whole, size_t len, uid_t owner,
+                              bool is_leaf, bool leaf_is_dir, bool want_exec, vu_err *e)
 {
     char path[VU_PATH_MAX];
     if (len + 1 > sizeof path) { vu_err_set(e, "trust: path too long"); return false; }
@@ -470,7 +470,7 @@ static bool trusted_component(const char *whole, size_t len,
         vu_err_set(e, "trust: '%s' became a symlink during checking", path);
         return false;
     }
-    if (is_leaf) {
+    if (is_leaf && !leaf_is_dir) {
         if (!S_ISREG(st.st_mode)) {
             vu_err_set(e, "trust: '%s' is not a regular file", path);
             return false;
@@ -531,7 +531,8 @@ static bool trusted_component(const char *whole, size_t len,
  * root can alter a chain in which every component is root-owned and not
  * group-writable. Same honest caveat as §11.5.
  */
-bool vu_path_trusted(const char *path, uid_t owner, bool want_exec, vu_err *e)
+static bool trusted_walk(const char *path, uid_t owner, bool leaf_is_dir,
+                         bool want_exec, vu_err *e)
 {
     if (!path || path[0] != '/') { vu_err_set(e, "trust: path must be absolute"); return false; }
     size_t n = strlen(path);
@@ -563,9 +564,19 @@ bool vu_path_trusted(const char *path, uid_t owner, bool want_exec, vu_err *e)
     bool ok = true;
     for (size_t i = 1; i <= rn && ok; ++i) {
         if (i == rn || real[i] == '/') {
-            ok = trusted_component(real, i, owner, i == rn, want_exec, e);
+            ok = trusted_component(real, i, owner, i == rn, leaf_is_dir, want_exec, e);
         }
     }
     free(real);
     return ok;
+}
+
+bool vu_path_trusted(const char *path, uid_t owner, bool want_exec, vu_err *e)
+{
+    return trusted_walk(path, owner, false, want_exec, e);
+}
+
+bool vu_dir_trusted(const char *path, uid_t owner, vu_err *e)
+{
+    return trusted_walk(path, owner, true, false, e);
 }

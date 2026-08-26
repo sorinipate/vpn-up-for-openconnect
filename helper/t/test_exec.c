@@ -308,12 +308,46 @@ static void test_trusted_paths(void)
     uid_t me = geteuid();
     char root[VU_PATH_MAX], bin[VU_PATH_MAX], sub[VU_PATH_MAX];
 
-    const char *tmp = getenv("TMPDIR");
-    if (!tmp || !*tmp) tmp = "/tmp";
+    /*
+     * The fixture has to live somewhere whose parent chain is ALREADY trusted,
+     * because vu_path_trusted judges the whole absolute path and there is
+     * deliberately no way to tell it "start checking here".
+     *
+     * That rules out /tmp, which is 1777 on Linux — and TMPDIR is unset on the
+     * Linux runners, so the fallback lands exactly there. The refusal is correct
+     * (anyone can write /tmp, so nothing under it is a fit home for a
+     * root-executed binary) and the sticky bit does not change that judgement
+     * for this purpose, so the fixture moves rather than the rule.
+     *
+     * $HOME works on both: 0755 under a root-owned /home or /Users. TMPDIR is
+     * tried second because it is a per-user 0700 directory on macOS.
+     */
     char base[VU_PATH_MAX];
-    vu_path(base, sizeof base, "%s", tmp);
-    size_t bn = strlen(base);
-    while (bn > 1 && base[bn - 1] == '/') base[--bn] = '\0';
+    bool have_base = false;
+    {
+        const char *cands[3];
+        size_t nc = 0;
+        const char *home = getenv("HOME");
+        const char *tmp  = getenv("TMPDIR");
+        if (home && *home) cands[nc++] = home;
+        if (tmp  && *tmp)  cands[nc++] = tmp;
+        cands[nc++] = "/tmp";
+
+        for (size_t i = 0; i < nc && !have_base; ++i) {
+            vu_path(base, sizeof base, "%s", cands[i]);
+            size_t bn = strlen(base);
+            while (bn > 1 && base[bn - 1] == '/') base[--bn] = '\0';
+            vu_err probe; vu_err_clear(&probe);
+            if (vu_dir_trusted(base, me, &probe)) have_base = true;
+        }
+    }
+    if (!have_base) {
+        /* Nowhere writable has a trustworthy chain. Say so rather than silently
+         * dropping the positive assertions. */
+        CHECK(false, "no fixture base with a trusted parent chain (checked HOME, TMPDIR, /tmp)");
+        return;
+    }
+
     vu_path(root, sizeof root, "%s/vu-exec-test-XXXXXX", base);
     if (!mkdtemp(root)) { CHECK(false, "cannot create temp root"); return; }
     chmod(root, 0755);
@@ -387,6 +421,32 @@ static void test_trusted_paths(void)
     CHECK(!vu_path_trusted(hb, me, true, &e),
           "a link into a group-writable chain is refused");
     CHECK(strstr(e.msg, "writable") != NULL, "refused on writability: '%s'", e.msg);
+
+    /* World-writable anywhere above the binary is disqualifying too — this is
+     * what /tmp actually looks like, asserted deterministically instead of
+     * depending on how the runner sets TMPDIR. */
+    {
+        char open_dir[VU_PATH_MAX], open_bin[VU_PATH_MAX];
+        vu_path(open_dir, sizeof open_dir, "%s/wideopen", root);
+        CHECK(mkdir(open_dir, 0755) == 0, "made dir");
+        CHECK(chmod(open_dir, 0777) == 0, "made it world-writable");
+        vu_path(open_bin, sizeof open_bin, "%s/openconnect", open_dir);
+        FILE *of = fopen(open_bin, "w");
+        CHECK(of != NULL, "made binary");
+        if (of) { fputs("#!/bin/sh\n", of); fclose(of); }
+        CHECK(chmod(open_bin, 0755) == 0, "made it executable");
+        vu_err_clear(&e);
+        CHECK(!vu_path_trusted(open_bin, me, true, &e),
+              "a binary under a world-writable directory is refused");
+        CHECK(strstr(e.msg, "writable") != NULL, "refused on writability: '%s'", e.msg);
+    }
+
+    /* And the same question asked of a directory, which is what step 10 will do
+     * for /etc/vpnc and each PATH entry. */
+    vu_err_clear(&e);
+    CHECK(vu_dir_trusted(sub, me, &e), "a trusted directory passes: %s", e.msg);
+    vu_err_clear(&e);
+    CHECK(!vu_dir_trusted(bin, me, &e), "a file is not a trusted directory");
 
     /* Non-canonical and relative paths. */
     char dotted[VU_PATH_MAX];

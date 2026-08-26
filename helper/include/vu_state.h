@@ -133,6 +133,15 @@ bool vu_writable_by(const char *path, uid_t as_uid, bool *writable, vu_err *e);
  */
 bool vu_path_trusted(const char *path, uid_t owner, bool want_exec, vu_err *e);
 
+/*
+ * The same walk, for a path whose leaf must be a DIRECTORY. Step 10 needs this
+ * for the sourced-hooks directory under /etc/vpnc and for every entry in the
+ * PATH the helper constructs — both are part of the closure and neither is a
+ * file. Also lets a caller ask "is this chain trustworthy at all?" before
+ * relying on it.
+ */
+bool vu_dir_trusted(const char *path, uid_t owner, vu_err *e);
+
 /* ------------------------------------------------------------------ locking */
 
 /*
