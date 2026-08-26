@@ -24,3 +24,29 @@ setup() {
   [[ "$output" == *"0 failures"* ]]
   [[ "$output" != *"0 checks"* ]]
 }
+
+@test "vpn-up-admin refuses to run without privilege" {
+  command -v cc >/dev/null 2>&1 || skip "no C compiler available"
+  make -C "$HELPER_DIR" all >/dev/null
+  # The registry decides which VPNs this machine will establish without a
+  # password, so writing it must never be reachable unprivileged.
+  run "$HELPER_DIR/build/vpn-up-admin" list
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"sudo"* ]]
+}
+
+@test "vpn-up-admin reports its roots without needing privilege" {
+  command -v cc >/dev/null 2>&1 || skip "no C compiler available"
+  make -C "$HELPER_DIR" all >/dev/null
+  run "$HELPER_DIR/build/vpn-up-admin" version
+  [ "$status" -eq 0 ]
+  # The registry must NOT live under the volatile state root: /run and /var/run
+  # are cleared at boot, which would silently revoke every approval.
+  [[ "$output" == *"registry root"* ]]
+  [[ "$output" == *"state root"* ]]
+  registry="$(sed -n 's/.*registry root *//p' <<< "$output")"
+  state="$(sed -n 's/.*state root *//p' <<< "$output")"
+  [ "$registry" != "$state" ]
+  [[ "$state" == */run/* || "$state" == /run/* ]]
+  [[ "$registry" != */run/* ]]
+}

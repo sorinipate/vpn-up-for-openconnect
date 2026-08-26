@@ -50,5 +50,6 @@ void vu_path(char *out, size_t cap, const char *fmt, ...)
 
 void vu_test_policy(void);   /* t/test_policy.c — validators, parser, Model B */
 void vu_test_state(void);    /* t/test_state.c  — paths, dirs, locks, identity */
+void vu_test_registry(void); /* t/test_registry.c — Model B approval records */
 
 #endif

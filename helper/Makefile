@@ -39,15 +39,20 @@ HARDEN   = -D_FORTIFY_SOURCE=2 -fstack-protector-strong
 OPT     ?= -O2
 CFLAGS  += $(CSTD) $(FEATURE) $(WARN) $(HARDEN) $(OPT) -Iinclude -It
 
-SRC      = src/validate.c src/authparse.c src/policy.c src/state.c src/proc.c
-TEST_SRC = t/main.c t/harness.c t/test_policy.c t/test_state.c
-TEST_BIN = build/vu-test
+# Shared library sources: linked into the test binary AND into both privileged
+# executables. One copy of the validation logic, so the helper and the admin tool
+# cannot drift apart in what they consider acceptable.
+SRC       = src/validate.c src/authparse.c src/policy.c src/state.c src/proc.c \
+            src/registry.c
+TEST_SRC  = t/main.c t/harness.c t/test_policy.c t/test_state.c t/test_registry.c
+TEST_BIN  = build/vu-test
+ADMIN_BIN = build/vpn-up-admin
 
 SAN_FLAGS = $(CSTD) $(FEATURE) $(WARN) -g -O1 -fno-omit-frame-pointer -Iinclude -It
 
 .PHONY: all test clean ubsan asan sanitize
 
-all: $(TEST_BIN)
+all: $(TEST_BIN) $(ADMIN_BIN)
 
 build:
 	mkdir -p build
@@ -55,8 +60,20 @@ build:
 $(TEST_BIN): $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h | build
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(TEST_SRC)
 
-test: $(TEST_BIN)
+$(ADMIN_BIN): $(SRC) src/admin_main.c include/vu.h include/vu_state.h include/vu_registry.h | build
+	$(CC) $(CFLAGS) -o $@ $(SRC) src/admin_main.c
+
+test: $(TEST_BIN) $(ADMIN_BIN)
 	./$(TEST_BIN)
+	# The admin tool must refuse to run without privilege, and must not need
+	# privilege merely to report its own version.
+	./$(ADMIN_BIN) version >/dev/null
+	@if ./$(ADMIN_BIN) list >/dev/null 2>&1; then \
+		echo "FAIL: vpn-up-admin list succeeded without root"; exit 1; \
+	else echo "ok: vpn-up-admin refuses to run unprivileged"; fi
+	@if ./$(ADMIN_BIN) >/dev/null 2>&1; then \
+		echo "FAIL: vpn-up-admin with no command exited 0"; exit 1; \
+	else echo "ok: vpn-up-admin with no command reports usage"; fi
 
 # The corpus is mostly malformed input, which is exactly where a buffer or
 # overflow bug would hide, so the sanitizer runs matter more here than usual.
