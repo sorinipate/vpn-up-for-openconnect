@@ -33,6 +33,27 @@ jobs:
       - name: Run bats tests
         run: bats tests/
 
+  helper:
+    name: helper policy engine
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      # Warnings are errors, and the corpus is mostly malformed input, so the
+      # sanitizer runs are where a buffer bug in the validators would surface.
+      - name: Build and run the corpus
+        run: make -C helper test
+      - name: Re-run under UBSan
+        run: make -C helper ubsan
+      # ASan's runtime hangs in its own initialiser on macOS 26 (before main),
+      # so it runs on Linux only. See the note in helper/Makefile.
+      - name: Re-run under ASan (Linux only)
+        if: runner.os == 'Linux'
+        run: make -C helper asan
+
   gitleaks:
     runs-on: ubuntu-latest
     steps:

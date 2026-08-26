@@ -104,9 +104,19 @@ case "${1:-}" in
   set-secret) shift; profile="${1:-}"; field="${2:-}"; { [ -z "$profile" ] || [ -z "$field" ]; } && { echo "Usage: $0 set-secret <profile> <field>"; exit 1; }
               [ "$field" = "sudo_password" ] && { echo "Storing the sudo password is not supported (it would defeat sudo's protection). See the sudoers rule in the README." >&2; exit 1; }
               read -r -s -p "Enter value for ${profile}.${field}: " value; echo
-              secrets_set "${profile}" "${field}" "${value}"; echo "Saved secret for ${profile}.${field}." ;;
+              if secrets_set "${profile}" "${field}" "${value}"; then
+                echo "Saved secret for ${profile}.${field}."
+              else
+                echo "Failed to save secret for ${profile}.${field}; nothing was changed." >&2
+                exit 1
+              fi ;;
   delete-secret) shift; profile="${1:-}"; field="${2:-}"; { [ -z "$profile" ] || [ -z "$field" ]; } && { echo "Usage: $0 delete-secret <profile> <field>"; exit 1; }
-                 secrets_delete "${profile}" "${field}"; echo "Deleted secret for ${profile}.${field} (if existed)." ;;
+                 if secrets_delete "${profile}" "${field}"; then
+                   echo "Deleted secret for ${profile}.${field} (if existed)."
+                 else
+                   echo "Failed to delete secret for ${profile}.${field}; nothing was changed." >&2
+                   exit 1
+                 fi ;;
   pin)        shift
               if [ "${1:-}" = "--save" ]; then
                 profile="${2:-}"; [ -z "$profile" ] && { echo "Usage: $0 pin --save <profile>"; exit 1; }

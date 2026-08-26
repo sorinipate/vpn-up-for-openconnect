@@ -132,8 +132,13 @@ add_profile_wizard() {
         local _seed=""
         read -r -s -p "Enter the TOTP secret (base32, from your authenticator app): " _seed; echo
         if [ -n "$_seed" ]; then
-          if command -v oathtool >/dev/null 2>&1 && [ -n "$(oathtool --totp -b "$_seed" 2>/dev/null)" ]; then
-            secrets_set "$name" "token_secret" "$_seed" && print_success "TOTP secret stored securely.\n"
+          # Seed on stdin, not argv — an argv key is world-visible in the process table.
+          if command -v oathtool >/dev/null 2>&1 && [ -n "$(printf '%s\n' "$_seed" | oathtool --totp -b - 2>/dev/null)" ]; then
+            if secrets_set "$name" "token_secret" "$_seed"; then
+              print_success "TOTP secret stored securely.\n"
+            else
+              print_danger "Could not store the TOTP secret; add it later with: %s set-secret '%s' token_secret\n" "${DISPLAY_NAME}" "$name"
+            fi
           else
             print_danger "That doesn't look like a valid base32 TOTP secret (or 'oathtool' is missing); not stored. Add it later with: %s set-secret '%s' token_secret\n" "${DISPLAY_NAME}" "$name"
           fi
@@ -158,7 +163,13 @@ add_profile_wizard() {
         if [ "$(_bool_default "${_in_pin}" "FALSE")" = TRUE ]; then
           local _pin
           read -r -s -p "Enter the PKCS#11 PIN: " _pin; echo
-          [ -n "$_pin" ] && secrets_set "$name" "key_password" "$_pin" && print_success "PKCS#11 PIN stored securely.\n"
+          if [ -n "$_pin" ]; then
+            if secrets_set "$name" "key_password" "$_pin"; then
+              print_success "PKCS#11 PIN stored securely.\n"
+            else
+              print_danger "Could not store the PKCS#11 PIN; add it later with: %s set-secret '%s' key_password\n" "${DISPLAY_NAME}" "$name"
+            fi
+          fi
           unset _pin
         fi
         ;;
@@ -226,8 +237,8 @@ remove_profile() {
     service_uninstall "$name"
   fi
 
-  # stored secret
-  secrets_delete "$name" "password"
+  # stored secrets (password, TOTP seed, PKCS#11 PIN — all of them)
+  secrets_delete_profile "$name"
 
   # XML block
   local name_lit; name_lit="$(xpath_literal "$name")"
