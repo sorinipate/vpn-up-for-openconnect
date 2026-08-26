@@ -108,6 +108,40 @@ bool vu_dir_ensure(const char *path, uid_t expect_uid, mode_t mode, vu_err *e);
  */
 bool vu_writable_by(const char *path, uid_t as_uid, bool *writable, vu_err *e);
 
+/*
+ * Verify that a FIXED, pinned path is one we are willing to hand root to.
+ *
+ * Resolves the path with realpath(), then checks the resolved file and every
+ * parent directory: owned by `owner` (or by root, which in production is the
+ * same thing since owner is 0), no group or other write bit, a regular file,
+ * and executable when want_exec.
+ *
+ * Resolving rather than refusing symlinks is deliberate. Blanket refusal cannot
+ * work (/var is a symlink on macOS) and checks the wrong thing: what matters is
+ * whether a non-root user can influence what gets executed. Homebrew's
+ * bin/openconnect is a link into a user-owned Cellar, and resolving it catches
+ * that on the ownership of the real chain — a truer answer than refusing the
+ * link. See the comment on the implementation.
+ *
+ * SCOPE, and this matters: this is the file-level part of the trusted execution
+ * closure (§11.4), which is all step 7 implements. It does NOT yet cover the
+ * dynamic library closure, the sourced hooks under /etc/vpnc, or the PATH entries
+ * vpnc-script resolves through. Those are step 10 on Linux and step 13 on
+ * macOS, and until they exist the helper is not a finished boundary. Never call
+ * this on a caller-supplied path: its safety comes from the path set being
+ * fixed and small.
+ */
+bool vu_path_trusted(const char *path, uid_t owner, bool want_exec, vu_err *e);
+
+/*
+ * The same walk, for a path whose leaf must be a DIRECTORY. Step 10 needs this
+ * for the sourced-hooks directory under /etc/vpnc and for every entry in the
+ * PATH the helper constructs — both are part of the closure and neither is a
+ * file. Also lets a caller ask "is this chain trustworthy at all?" before
+ * relying on it.
+ */
+bool vu_dir_trusted(const char *path, uid_t owner, vu_err *e);
+
 /* ------------------------------------------------------------------ locking */
 
 /*
