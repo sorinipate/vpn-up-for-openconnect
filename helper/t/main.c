@@ -8,6 +8,7 @@ int main(void)
 {
     vu_test_policy();
     vu_test_state();
+    vu_test_registry();
 
     printf("%d checks, %d failures\n", vu_checks, vu_failures);
     return vu_failures == 0 ? 0 : 1;
