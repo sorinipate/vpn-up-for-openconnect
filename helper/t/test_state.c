@@ -27,14 +27,9 @@ static char g_root[VU_PATH_MAX];
 
 static void make_root(void)
 {
-    /* mkdtemp needs a writable template; TMPDIR is honoured where set. */
-    const char *tmp = getenv("TMPDIR");
-    if (!tmp || !*tmp) tmp = "/tmp";
-    char base[VU_PATH_MAX];
-    vu_path(base, sizeof base, "%s", tmp);
-    size_t bn = strlen(base);
-    while (bn > 1 && base[bn - 1] == '/') base[--bn] = '\0';   /* TMPDIR often ends in / */
-    vu_path(g_root, sizeof g_root, "%s/vu-state-test-XXXXXX", base);
+    /* mkdtemp needs a writable template. The base comes from the password
+     * database rather than TMPDIR - see vu_test_base(). */
+    vu_path(g_root, sizeof g_root, "%s/vu-state-test-XXXXXX", vu_test_base());
     if (!mkdtemp(g_root)) {
         fprintf(stderr, "cannot create temp root: %s\n", strerror(errno));
         exit(2);
