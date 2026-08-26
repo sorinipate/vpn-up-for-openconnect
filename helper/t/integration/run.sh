@@ -32,7 +32,15 @@
 set -euo pipefail
 
 
-PREFIX="${VPN_UP_INTEGRATION_PREFIX:-/opt/vpn-up-integration}"
+# Where the fixture install goes. Chosen at run time from candidates whose parent
+# is root-owned and not group- or world-writable, because the closure check walks
+# parents and will (correctly) refuse a prefix under a world-writable directory.
+# Some CI images ship /opt as mode 0777, which is exactly that case.
+#
+# The alternative would be to chmod the parent, and that is worse: it mutates a
+# system directory to make a test pass, and it hides a real signal - a
+# world-writable /opt IS a finding on a machine that intends to run helper mode.
+PREFIX_CANDIDATES="/usr/lib /opt /usr/local/lib"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"   # helper/
 PROFILE_ID="11111111-2222-3333-4444-555555555555"
 ENDPOINT="https://vpn.example.com:443"
@@ -61,6 +69,43 @@ skip() { printf 'SKIPPED: %s\n' "$*"; exit 0; }
 
 command -v sudo >/dev/null 2>&1 || skip "sudo not available"
 sudo -n true 2>/dev/null || skip "sudo needs a password; this test must run unattended"
+
+# Is this directory root-owned with no group or other write bit? The same
+# question vu_dir_trusted asks in C, asked here with stat so the script can pick a
+# location the closure check will accept instead of failing inside it.
+parent_is_trustworthy() {
+  local d owner mode
+  # RESOLVE first, then check - the same policy as vu_path_trusted in C. Without
+  # this, `stat` on a symlink reports the LINK's mode: /tmp on macOS is a
+  # root-owned 0755 symlink to a 1777 directory, and the naive check called it
+  # trustworthy.
+  d=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+  [ -d "$d" ] || return 1
+  if [ "$(uname)" = Darwin ]; then
+    owner=$(stat -f '%u' "$d") ; mode=$(stat -f '%Lp' "$d")
+  else
+    owner=$(stat -c '%u' "$d") ; mode=$(stat -c '%a' "$d")
+  fi
+  [ "$owner" = 0 ] || return 1
+  # No group-write (020) and no other-write (002).
+  [ $(( 8#$mode & 8#22 )) -eq 0 ]
+}
+
+if [ -n "${VPN_UP_INTEGRATION_PREFIX:-}" ]; then
+  PREFIX="$VPN_UP_INTEGRATION_PREFIX"
+else
+  PREFIX=""
+  for cand in $PREFIX_CANDIDATES; do
+    if parent_is_trustworthy "$cand"; then
+      PREFIX="$cand/vpn-up-integration"
+      break
+    fi
+  done
+  [ -n "$PREFIX" ] || skip "no candidate directory ($PREFIX_CANDIDATES) is root-owned
+         and free of group/other write, so any fixture install would be refused by
+         the closure check for a reason that is about this machine rather than
+         about the code"
+fi
 
 echo "=== vpn-up-helper end-to-end (as root, stand-in OpenConnect) ==="
 echo "prefix: $PREFIX"

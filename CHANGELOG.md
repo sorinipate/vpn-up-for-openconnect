@@ -79,6 +79,14 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
   The whole locking model depends on it, and it was previously an assumption
   flagged in the design as needing a test rather than source inspection.
 
+- **Fixed: the effective-writability probe dropped privilege to root instead of
+  to the calling user**, so it failed every time it ran. §11.5 asks whether the
+  *caller* can write a trusted object despite its mode bits; the implementation
+  passed the required owner (0) rather than `SUDO_UID`, which made the check ask
+  whether root can regain root. It went unnoticed because the probe only runs as
+  root, and nothing ran as root until the integration test did. The probe now
+  refuses uid 0 outright rather than attempting a question with no answer.
+
 - **The trusted execution closure is now checked in full, not just the two
   pinned files.** A root-owned `openconnect` that loads a user-writable library,
   or sources a user-writable hook, is the same bug as a user-writable

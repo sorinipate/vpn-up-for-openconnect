@@ -919,6 +919,31 @@ root-owned. A small piece of revision 1's uid-dropping logic returns here — bu
 only for two or three fixed paths, never for caller-supplied ones, which is
 exactly the distinction that made revision 1's version untenable.
 
+#### The probe drops to SUDO_UID, not to the owner — corrected during step 11
+
+The paragraph above says "drop supplementary groups, GID and UID to `SUDO_UID`".
+Step 10 implemented it with the required *owner* instead, which is 0 — so the
+probe dropped privilege to root and then asserted it could not regain root. It
+regained it trivially and reported could-not-drop-privilege, every time, on every
+machine.
+
+It went unnoticed because the probe only runs as root and nothing had run as root
+until step 11's integration script did. The first CI report read it as a missing
+Linux capability in the runner; it was neither environmental nor
+capability-related.
+
+Two corrections, and the second is the one that stops a recurrence:
+
+- The caller's uid is threaded through to the probe, so it asks the question §11.5
+  actually poses: can **the caller** write this object despite its mode bits.
+- `vu_writable_by` **refuses `as_uid == 0` outright**, and `vu_closure_check`
+  refuses `probe && probe_uid == 0` before forking. A meaningless question now
+  produces a clear refusal instead of a confusing failure four frames down.
+
+Where the probe cannot be performed — unprivileged, or root with no `SUDO_UID` —
+it is skipped and the report says so. A check that could not run must never be
+reported as having passed.
+
 ### 11.6 A root-owned OpenConnect is required on every platform
 
 > **Helper mode requires a root-owned OpenConnect installation whose whole

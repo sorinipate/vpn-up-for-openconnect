@@ -137,18 +137,20 @@ bool vu_build_argv(const vu_request *req, const vu_approval *appr,
 }
 
 bool vu_exec_precheck(const char *openconnect_path, const char *script_path,
-                      uid_t owner, vu_closure_report *report, vu_err *e)
+                      uid_t owner, uid_t caller_uid,
+                      vu_closure_report *report, vu_err *e)
 {
     vu_closure_spec spec;
     vu_closure_spec_default(&spec, openconnect_path, script_path, owner);
 
     /*
-     * The effective-writability probe runs only as root, because dropping
-     * privilege is the mechanism (§11.5). Under test, and in prompt mode, it is
-     * skipped rather than reporting a misleading answer.
+     * The probe runs only as root, because dropping privilege is the mechanism
+     * (§11.5), and only when we know who the caller is - the question is whether
+     * THEY can write a trusted object despite its mode bits. Without a caller
+     * uid it is skipped rather than answered wrongly.
      */
-    spec.probe = (geteuid() == 0);
-    spec.probe_uid = owner;
+    spec.probe_uid = caller_uid;
+    spec.probe = (geteuid() == 0) && caller_uid != 0;
 
     static vu_closure_report local;
     if (!report) report = &local;

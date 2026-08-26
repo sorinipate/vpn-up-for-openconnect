@@ -25,7 +25,14 @@ void vu_closure_spec_default(vu_closure_spec *s, const char *openconnect,
     s->ldso_conf     = "/etc/ld.so.conf";
     s->ldso_conf_dir = "/etc/ld.so.conf.d";
     s->owner         = owner;
-    s->probe_uid     = owner;
+    /*
+     * NOT owner. The probe asks "can the CALLER write this despite the mode
+     * bits", so it needs the calling user's uid - SUDO_UID - and owner is 0 in
+     * production. Defaulting it to owner is the bug that shipped in step 10 and
+     * failed the first time anything ran as root. Callers that enable the probe
+     * must set this; vu_closure_check refuses the combination otherwise.
+     */
+    s->probe_uid     = 0;
     s->probe         = false;
 }
 
@@ -409,6 +416,12 @@ bool vu_closure_check(const vu_closure_spec *s, vu_closure_report *out, vu_err *
 
     if (!s->openconnect || !s->script || !s->shell) {
         vu_err_set(e, "closure: spec is incomplete");
+        return false;
+    }
+    /* Fail fast and legibly rather than in a forked child four frames down. */
+    if (s->probe && s->probe_uid == 0) {
+        vu_err_set(e, "closure: the effective-writability probe needs the calling "
+                      "user's uid, not 0");
         return false;
     }
 
