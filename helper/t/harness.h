@@ -2,6 +2,7 @@
 #ifndef VU_HARNESS_H
 #define VU_HARNESS_H
 
+#include <stddef.h>
 #include <stdio.h>
 
 extern int vu_checks;
@@ -27,6 +28,25 @@ extern int vu_failures;
  * instead of quietened.
  */
 void vu_rm_rf(const char *path);
+
+/*
+ * Build a path (or any bounded string) into a fixed buffer, aborting the run if
+ * it does not fit.
+ *
+ * Replaces bare snprintf() at every path-building site in the corpus. GCC's
+ * -Wformat-truncation — which clang does not implement, so it only shows up in
+ * CI — rejects `snprintf(buf, sizeof buf, "%s/a", other)` whenever buf and
+ * other are the same size, because the result provably might not fit. Checking
+ * the return value at each of the fifteen call sites would satisfy the
+ * compiler; funnelling them through one function that cannot truncate is
+ * shorter, and turns "we would notice truncation" into "truncation cannot
+ * happen". The format attribute keeps -Wformat checking at the call sites.
+ */
+void vu_path(char *out, size_t cap, const char *fmt, ...)
+#if defined(__GNUC__)
+    __attribute__((format(printf, 3, 4)))
+#endif
+    ;
 
 void vu_test_policy(void);   /* t/test_policy.c — validators, parser, Model B */
 void vu_test_state(void);    /* t/test_state.c  — paths, dirs, locks, identity */

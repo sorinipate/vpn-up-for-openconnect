@@ -31,10 +31,10 @@ static void make_root(void)
     const char *tmp = getenv("TMPDIR");
     if (!tmp || !*tmp) tmp = "/tmp";
     char base[VU_PATH_MAX];
-    snprintf(base, sizeof base, "%s", tmp);
+    vu_path(base, sizeof base, "%s", tmp);
     size_t bn = strlen(base);
     while (bn > 1 && base[bn - 1] == '/') base[--bn] = '\0';   /* TMPDIR often ends in / */
-    snprintf(g_root, sizeof g_root, "%s/vu-state-test-XXXXXX", base);
+    vu_path(g_root, sizeof g_root, "%s/vu-state-test-XXXXXX", base);
     if (!mkdtemp(g_root)) {
         fprintf(stderr, "cannot create temp root: %s\n", strerror(errno));
         exit(2);
@@ -80,9 +80,9 @@ static void test_paths(void)
 
     vu_err_clear(&e);
     CHECK(vu_state_paths_in("/run/vpn-up", 501, PROFILE, &p, &e), "paths built: %s", e.msg);
-    snprintf(want, sizeof want, "/run/vpn-up/501/%s", PROFILE);
+    vu_path(want, sizeof want, "/run/vpn-up/501/%s", PROFILE);
     CHECK(strcmp(p.profile_dir, want) == 0, "profile dir is uid-namespaced, got '%s'", p.profile_dir);
-    snprintf(want, sizeof want, "/run/vpn-up/501/%s/lock", PROFILE);
+    vu_path(want, sizeof want, "/run/vpn-up/501/%s/lock", PROFILE);
     CHECK(strcmp(p.lock, want) == 0, "lock path");
 
     /* The uid component is what keeps one user from addressing another's
@@ -123,19 +123,19 @@ static void test_dir_ensure(void)
     /* One owned directory per call: the chain is built explicitly, which is the
      * documented usage now that a blanket no-follow walk is known to be
      * impossible on macOS. */
-    snprintf(sub, sizeof sub, "%s/a", g_root);
+    vu_path(sub, sizeof sub, "%s/a", g_root);
     vu_err_clear(&e);
     CHECK(vu_dir_ensure(sub, me, 0700, &e), "first level created: %s", e.msg);
-    snprintf(sub, sizeof sub, "%s/a/b", g_root);
+    vu_path(sub, sizeof sub, "%s/a/b", g_root);
     vu_err_clear(&e);
     CHECK(vu_dir_ensure(sub, me, 0700, &e), "second level created: %s", e.msg);
-    snprintf(dir, sizeof dir, "%s/a/b/c", g_root);
+    vu_path(dir, sizeof dir, "%s/a/b/c", g_root);
     vu_err_clear(&e);
     CHECK(vu_dir_ensure(dir, me, 0700, &e), "third level created: %s", e.msg);
 
     /* A missing parent is an explicit error, not a silent mkdir -p. */
     char orphan[VU_PATH_MAX];
-    snprintf(orphan, sizeof orphan, "%s/nope/deeper", g_root);
+    vu_path(orphan, sizeof orphan, "%s/nope/deeper", g_root);
     vu_err_clear(&e);
     CHECK(!vu_dir_ensure(orphan, me, 0700, &e), "missing parent refused");
     CHECK(strstr(e.msg, "parent") != NULL, "refusal names the parent: '%s'", e.msg);
@@ -148,20 +148,20 @@ static void test_dir_ensure(void)
 
     /* Ownership and mode are contract, not preference: a group-writable
      * directory is refused even though we own it. */
-    snprintf(sub, sizeof sub, "%s/loose", g_root);
+    vu_path(sub, sizeof sub, "%s/loose", g_root);
     CHECK(mkdir(sub, 0770) == 0, "made group-writable dir");
     vu_err_clear(&e);
     CHECK(!vu_dir_ensure(sub, me, 0700, &e), "group-writable dir refused");
     CHECK(strstr(e.msg, "group") != NULL, "refusal names the reason: '%s'", e.msg);
 
-    snprintf(sub, sizeof sub, "%s/world", g_root);
+    vu_path(sub, sizeof sub, "%s/world", g_root);
     CHECK(mkdir(sub, 0707) == 0, "made other-writable dir");
     vu_err_clear(&e);
     CHECK(!vu_dir_ensure(sub, me, 0700, &e), "other-writable dir refused");
 
     /* Wrong owner: we cannot chown without privilege, so assert the check by
      * expecting an owner we are not. */
-    snprintf(sub, sizeof sub, "%s/owned", g_root);
+    vu_path(sub, sizeof sub, "%s/owned", g_root);
     CHECK(mkdir(sub, 0700) == 0, "made dir");
     vu_err_clear(&e);
     CHECK(!vu_dir_ensure(sub, me + 1, 0700, &e), "wrong owner refused");
@@ -183,8 +183,8 @@ static void test_dir_ensure(void)
      *     subverted nothing here helps.
      */
     char target[VU_PATH_MAX], link[VU_PATH_MAX], through[VU_PATH_MAX];
-    snprintf(target, sizeof target, "%s/real", g_root);
-    snprintf(link,   sizeof link,   "%s/link", g_root);
+    vu_path(target, sizeof target, "%s/real", g_root);
+    vu_path(link,   sizeof link,   "%s/link", g_root);
     CHECK(mkdir(target, 0700) == 0, "made link target");
     CHECK(symlink(target, link) == 0, "made symlink");
 
@@ -192,14 +192,14 @@ static void test_dir_ensure(void)
     CHECK(!vu_dir_ensure(link, me, 0700, &e), "symlinked final component refused");
     CHECK(strstr(e.msg, "symlink") != NULL, "refusal names the reason: '%s'", e.msg);
 
-    snprintf(through, sizeof through, "%s/deeper", link);
+    vu_path(through, sizeof through, "%s/deeper", link);
     vu_err_clear(&e);
     CHECK(vu_dir_ensure(through, me, 0700, &e),
           "a symlinked PARENT is followed, by design: %s", e.msg);
     {
         /* And it lands in the real target, not somewhere else. */
         char resolved[VU_PATH_MAX];
-        snprintf(resolved, sizeof resolved, "%s/deeper", target);
+        vu_path(resolved, sizeof resolved, "%s/deeper", target);
         struct stat ls;
         CHECK(lstat(resolved, &ls) == 0 && S_ISDIR(ls.st_mode),
               "created inside the link target");
@@ -207,7 +207,7 @@ static void test_dir_ensure(void)
 
     /* A plain file where a directory belongs. */
     char file[VU_PATH_MAX];
-    snprintf(file, sizeof file, "%s/afile", g_root);
+    vu_path(file, sizeof file, "%s/afile", g_root);
     int fd = open(file, O_CREAT | O_WRONLY, 0600);
     CHECK(fd >= 0, "made file");
     close(fd);
@@ -227,7 +227,7 @@ static void test_writable_by(void)
     char f[VU_PATH_MAX];
     bool w;
 
-    snprintf(f, sizeof f, "%s/wtest", g_root);
+    vu_path(f, sizeof f, "%s/wtest", g_root);
     int fd = open(f, O_CREAT | O_WRONLY, 0600);
     CHECK(fd >= 0, "made writable file");
     close(fd);
@@ -286,7 +286,7 @@ static void test_locking(void)
     /* A symlinked lock path must not be followed: that is a root-owned write
      * pointed wherever the attacker likes. */
     char other[VU_PATH_MAX];
-    snprintf(other, sizeof other, "%s/target-lock", g_root);
+    vu_path(other, sizeof other, "%s/target-lock", g_root);
     unlink(p.lock);
     CHECK(symlink(other, p.lock) == 0, "symlinked the lock path");
     vu_err_clear(&e);
@@ -382,7 +382,7 @@ static void test_identity_and_record(void)
 static void test_harden(void)
 {
     char probe[VU_PATH_MAX];
-    snprintf(probe, sizeof probe, "%s/probe", g_root);
+    vu_path(probe, sizeof probe, "%s/probe", g_root);
     int keep = open(probe, O_CREAT | O_RDWR, 0600);
     CHECK(keep >= 0, "made keep fd");
 

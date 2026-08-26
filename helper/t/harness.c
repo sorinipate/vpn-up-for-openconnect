@@ -3,6 +3,8 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <stdarg.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -40,4 +42,21 @@ void vu_rm_rf(const char *path)
     if (fd < 0) { (void)unlink(path); return; }
     rm_at(fd);
     (void)rmdir(path);
+}
+
+void vu_path(char *out, size_t cap, const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(out, cap, fmt, ap);
+    va_end(ap);
+
+    if (n < 0 || (size_t)n >= cap) {
+        /* Abort rather than continue on a shortened path: a test that quietly
+         * operates on the wrong directory is worse than one that stops. The
+         * realistic trigger is an unusually long TMPDIR. */
+        fprintf(stderr, "test harness: path needs %d bytes, buffer holds %zu "
+                        "(is TMPDIR unusually long?)\n", n, cap);
+        exit(2);
+    }
 }
