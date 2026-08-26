@@ -149,13 +149,20 @@ static void test_dir_ensure(void)
     /* Ownership and mode are contract, not preference: a group-writable
      * directory is refused even though we own it. */
     vu_path(sub, sizeof sub, "%s/loose", g_root);
-    CHECK(mkdir(sub, 0770) == 0, "made group-writable dir");
+    /* mkdir's mode is masked by umask (022 here), so 0770 lands as 0750 and the
+     * fixture would not actually be group-WRITABLE. chmod is not masked. These
+     * assertions pass either way today, because vu_dir_ensure refuses any group
+     * or other bit at all — but naming a fixture for a property it does not
+     * have is how a test quietly stops testing anything. */
+    CHECK(mkdir(sub, 0700) == 0, "made dir");
+    CHECK(chmod(sub, 0770) == 0, "made it genuinely group-writable");
     vu_err_clear(&e);
     CHECK(!vu_dir_ensure(sub, me, 0700, &e), "group-writable dir refused");
     CHECK(strstr(e.msg, "group") != NULL, "refusal names the reason: '%s'", e.msg);
 
     vu_path(sub, sizeof sub, "%s/world", g_root);
-    CHECK(mkdir(sub, 0707) == 0, "made other-writable dir");
+    CHECK(mkdir(sub, 0700) == 0, "made dir");
+    CHECK(chmod(sub, 0707) == 0, "made it genuinely other-writable");
     vu_err_clear(&e);
     CHECK(!vu_dir_ensure(sub, me, 0700, &e), "other-writable dir refused");
 

@@ -1,0 +1,87 @@
+/*
+ * vu_exec.h — building the phase-two OpenConnect invocation (§4, §8, §16 step 7).
+ *
+ * The argv construction is deliberately a PURE function, separate from the
+ * privileged sequencing in helper_main.c. It is the part where a mistake means
+ * root runs something it should not, and keeping it free of side effects is
+ * what makes it testable element-by-element without privilege — the same
+ * discipline as steps 4 and 5.
+ */
+#ifndef VU_EXEC_H
+#define VU_EXEC_H
+
+#include "vu.h"
+#include "vu_registry.h"
+
+/*
+ * Pinned executables. Set at install time (-DVU_OPENCONNECT=...) once §17.2 is
+ * settled; the defaults name the supported source per platform. Never taken
+ * from the environment or from the request — a caller who chooses the binary
+ * chooses what root executes.
+ *
+ * macOS defaults to MacPorts because Homebrew's prefix is owned by the
+ * installing user and is therefore unusable for helper mode (§11.6).
+ */
+#ifndef VU_OPENCONNECT
+#  if defined(__APPLE__)
+#    define VU_OPENCONNECT "/opt/local/sbin/openconnect"
+#  else
+#    define VU_OPENCONNECT "/usr/sbin/openconnect"
+#  endif
+#endif
+
+/*
+ * The vpnc-script is passed EXPLICITLY rather than relying on OpenConnect's
+ * compiled-in default, because that default may live in a user-writable prefix
+ * (§1.3). OpenConnect runs this value through execl("/bin/sh", "-c", ...), so
+ * the path is fixed, contains no caller input, and must contain no
+ * shell-significant character.
+ */
+#ifndef VU_VPNC_SCRIPT
+#  if defined(__APPLE__)
+#    define VU_VPNC_SCRIPT "/opt/local/etc/vpnc/vpnc-script"
+#  else
+#    define VU_VPNC_SCRIPT "/etc/vpnc/vpnc-script"
+#  endif
+#endif
+
+#define VU_ARGV_MAX  32
+#define VU_ARGV_ITEM VU_URL_MAX      /* the connect URL is the longest element */
+
+/* Storage plus the NULL-terminated vector. Large enough that callers declare it
+ * static rather than on the stack. */
+typedef struct {
+    char   store[VU_ARGV_MAX][VU_ARGV_ITEM];
+    char  *argv[VU_ARGV_MAX + 1];
+    size_t n;
+} vu_argv;
+
+/*
+ * Build the phase-two invocation from a validated request and its approved
+ * record. Three elements are unconditional, and the reasons are worth keeping
+ * next to the code:
+ *
+ *   --cookie-on-stdin  the cookie never touches argv, so it never appears in ps
+ *   --non-inter        the helper does not read stdin, so OpenConnect must not
+ *                      be able to fall back to prompting root-side if the
+ *                      cookie is missing or rejected — it has to exit instead
+ *   --servercert=      taken from the REGISTRY, never the request. This is what
+ *                      stops a caller substituting a gateway even when it
+ *                      controls DNS or supplies its own --resolve
+ *
+ * Never emitted: --background, --pid-file, --script with caller input,
+ * --csd-*, --config, --xmlconfig, --external-browser, or anything at all that
+ * did not come from the closed schema.
+ */
+bool vu_build_argv(const vu_request *req, const vu_approval *appr,
+                   const char *openconnect_path, const char *script_path,
+                   vu_argv *out, vu_err *e);
+
+/*
+ * File-level trusted-closure check on the two pinned paths, run immediately
+ * before execve. Partial by design in step 7 — see vu_path_trusted's scope note.
+ */
+bool vu_exec_precheck(const char *openconnect_path, const char *script_path,
+                      uid_t owner, vu_err *e);
+
+#endif /* VU_EXEC_H */

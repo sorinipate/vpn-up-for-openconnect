@@ -184,6 +184,11 @@ bool vu_auth_require_helper_contract(const vu_auth *a, vu_err *e);
 
 /* ------------------------------------------------------- request and policy */
 
+/* Rendered tunable flags (§10). Small on purpose: the table has seven entries
+ * and a request naming the same one twice is a mistake, not a use case. */
+#define VU_TUNABLE_MAX   8
+#define VU_TUNABLE_LEN  96
+
 typedef struct {
     char       profile_id[VU_UUID_MAX];
     char       protocol[VU_PROTO_MAX];
@@ -192,6 +197,8 @@ typedef struct {
     vu_resolve resolve;   bool has_resolve;
     char       proxy[VU_PROXY_MAX];       /* "" means none */
     char       useragent[VU_UA_MAX];      /* "" means unset */
+    char       tunables[VU_TUNABLE_MAX][VU_TUNABLE_LEN];
+    size_t     n_tunables;
     bool       quiet;
 } vu_request;
 

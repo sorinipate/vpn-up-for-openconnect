@@ -43,16 +43,18 @@ CFLAGS  += $(CSTD) $(FEATURE) $(WARN) $(HARDEN) $(OPT) -Iinclude -It
 # executables. One copy of the validation logic, so the helper and the admin tool
 # cannot drift apart in what they consider acceptable.
 SRC       = src/validate.c src/authparse.c src/policy.c src/state.c src/proc.c \
-            src/registry.c
-TEST_SRC  = t/main.c t/harness.c t/test_policy.c t/test_state.c t/test_registry.c
+            src/registry.c src/exec.c
+TEST_SRC  = t/main.c t/harness.c t/test_policy.c t/test_state.c t/test_registry.c \
+            t/test_exec.c
 TEST_BIN  = build/vu-test
-ADMIN_BIN = build/vpn-up-admin
+ADMIN_BIN  = build/vpn-up-admin
+HELPER_BIN = build/vpn-up-helper
 
 SAN_FLAGS = $(CSTD) $(FEATURE) $(WARN) -g -O1 -fno-omit-frame-pointer -Iinclude -It
 
 .PHONY: all test clean ubsan asan sanitize
 
-all: $(TEST_BIN) $(ADMIN_BIN)
+all: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN)
 
 build:
 	mkdir -p build
@@ -63,7 +65,10 @@ $(TEST_BIN): $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h | build
 $(ADMIN_BIN): $(SRC) src/admin_main.c include/vu.h include/vu_state.h include/vu_registry.h | build
 	$(CC) $(CFLAGS) -o $@ $(SRC) src/admin_main.c
 
-test: $(TEST_BIN) $(ADMIN_BIN)
+$(HELPER_BIN): $(SRC) src/helper_main.c include/vu.h include/vu_state.h include/vu_registry.h include/vu_exec.h | build
+	$(CC) $(CFLAGS) -o $@ $(SRC) src/helper_main.c
+
+test: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN)
 	./$(TEST_BIN)
 	# The admin tool must refuse to run without privilege, and must not need
 	# privilege merely to report its own version.
@@ -74,6 +79,10 @@ test: $(TEST_BIN) $(ADMIN_BIN)
 	@if ./$(ADMIN_BIN) >/dev/null 2>&1; then \
 		echo "FAIL: vpn-up-admin with no command exited 0"; exit 1; \
 	else echo "ok: vpn-up-admin with no command reports usage"; fi
+	./$(HELPER_BIN) version >/dev/null
+	@if ./$(HELPER_BIN) connect --profile-id x >/dev/null 2>&1; then \
+		echo "FAIL: vpn-up-helper connect succeeded without root"; exit 1; \
+	else echo "ok: vpn-up-helper refuses to connect unprivileged"; fi
 
 # The corpus is mostly malformed input, which is exactly where a buffer or
 # overflow bug would hide, so the sanitizer runs matter more here than usual.

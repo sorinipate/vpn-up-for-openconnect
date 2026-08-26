@@ -445,3 +445,127 @@ bool vu_state_prune(const vu_state_paths *p, vu_err *e)
     }
     return true;
 }
+
+/* ------------------------------------------------- pinned-path verification */
+
+/* Verify one component of an already-resolved pinned path. Nothing here is ever
+ * created: these paths belong to the system or the installer, and the only
+ * question is whether we are willing to trust them. */
+static bool trusted_component(const char *whole, size_t len,
+                              uid_t owner, bool is_leaf, bool want_exec, vu_err *e)
+{
+    char path[VU_PATH_MAX];
+    if (len + 1 > sizeof path) { vu_err_set(e, "trust: path too long"); return false; }
+    memcpy(path, whole, len);
+    path[len] = '\0';
+
+    struct stat st;
+    if (lstat(path, &st) != 0) {
+        vu_err_set(e, "trust: cannot stat '%s': %s", path, strerror(errno));
+        return false;
+    }
+    if (S_ISLNK(st.st_mode)) {
+        /* Cannot happen after realpath(); if it does, something changed under
+         * us and refusing is the only safe answer. */
+        vu_err_set(e, "trust: '%s' became a symlink during checking", path);
+        return false;
+    }
+    if (is_leaf) {
+        if (!S_ISREG(st.st_mode)) {
+            vu_err_set(e, "trust: '%s' is not a regular file", path);
+            return false;
+        }
+        if (want_exec && !(st.st_mode & S_IXUSR)) {
+            vu_err_set(e, "trust: '%s' is not executable", path);
+            return false;
+        }
+    } else if (!S_ISDIR(st.st_mode)) {
+        vu_err_set(e, "trust: '%s' is not a directory", path);
+        return false;
+    }
+    /*
+     * Root, or the nominated owner. In production `owner` IS 0, so this reduces
+     * to "must be root" and grants nothing extra. It reads as a special case
+     * only under test, where the fixture necessarily sits beneath root-owned
+     * system directories (/, /private, /var/folders ...) that the test user
+     * cannot own — and a root-owned component is exactly the thing a non-root
+     * attacker cannot subvert, which is the whole property being checked. A
+     * component owned by some OTHER unprivileged uid is still refused.
+     */
+    if (st.st_uid != owner && st.st_uid != 0) {
+        vu_err_set(e, "trust: '%s' is owned by uid %lu, expected %lu or root", path,
+                   (unsigned long)st.st_uid, (unsigned long)owner);
+        return false;
+    }
+    /* Write access is the question, not read: anyone who can write the binary,
+     * or any directory above it, chooses what root runs. */
+    if (st.st_mode & (S_IWGRP | S_IWOTH)) {
+        vu_err_set(e, "trust: '%s' is group- or world-writable (mode %04o)", path,
+                   (unsigned)(st.st_mode & 07777));
+        return false;
+    }
+    return true;
+}
+
+/*
+ * RESOLVE, then verify the resolved chain — rather than refusing symlinks.
+ *
+ * An earlier draft refused a symlink at any component. That is unworkable and,
+ * more importantly, checks the wrong thing:
+ *
+ *   - unworkable, for the same reason as §11.4: /var is a symlink on macOS, so
+ *     any path under /var/... is refused before the interesting checks run;
+ *   - wrong, because what actually matters is whether a non-root user can
+ *     influence what gets executed. A root-owned link inside root-owned
+ *     directories is harmless; a link whose TARGET sits in a user-writable
+ *     directory is not, and blanket refusal conflates the two.
+ *
+ * Resolving first and then verifying every component of the real path is
+ * strictly stronger against the case that motivated the rule. Homebrew's
+ * /opt/homebrew/bin/openconnect is a link into ../Cellar: refusing the link
+ * catches it, but so does resolving it and finding that the Cellar chain is
+ * owned by the installing user. The second answer is the true one, and it does
+ * not break /var.
+ *
+ * TOCTOU is bounded rather than eliminated: between this check and execve, only
+ * root can alter a chain in which every component is root-owned and not
+ * group-writable. Same honest caveat as §11.5.
+ */
+bool vu_path_trusted(const char *path, uid_t owner, bool want_exec, vu_err *e)
+{
+    if (!path || path[0] != '/') { vu_err_set(e, "trust: path must be absolute"); return false; }
+    size_t n = strlen(path);
+    if (n < 2 || n >= VU_PATH_MAX) { vu_err_set(e, "trust: implausible path length"); return false; }
+    if (path[n - 1] == '/') { vu_err_set(e, "trust: path must not end in '/'"); return false; }
+    if (strstr(path, "/../") || strstr(path, "/./")) {
+        /* Refuse rather than normalise: a pinned path is written once, by hand,
+         * and should say plainly what it means. */
+        vu_err_set(e, "trust: path must be canonical");
+        return false;
+    }
+
+    /* NULL lets realpath allocate: passing a buffer smaller than PATH_MAX is a
+     * documented overflow hazard, and PATH_MAX differs between platforms. */
+    char *real = realpath(path, NULL);
+    if (!real) {
+        vu_err_set(e, "trust: cannot resolve '%s': %s", path, strerror(errno));
+        return false;
+    }
+    size_t rn = strlen(real);
+    if (rn < 2 || rn >= VU_PATH_MAX) {
+        vu_err_set(e, "trust: resolved path has implausible length");
+        free(real);
+        return false;
+    }
+
+    /* Walk left to right, so an error about /opt being writable is reported
+     * before one about the binary inside it. */
+    bool ok = true;
+    for (size_t i = 1; i <= rn && ok; ++i) {
+        if (i == rn || real[i] == '/') {
+            ok = trusted_component(real, i, owner, i == rn, want_exec, e);
+        }
+    }
+    free(real);
+    return ok;
+}

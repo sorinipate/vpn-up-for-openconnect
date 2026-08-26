@@ -35,6 +35,30 @@ setup() {
   [[ "$output" == *"sudo"* ]]
 }
 
+@test "vpn-up-helper refuses to connect without privilege" {
+  command -v cc >/dev/null 2>&1 || skip "no C compiler available"
+  make -C "$HELPER_DIR" all >/dev/null
+  run "$HELPER_DIR/build/vpn-up-helper" connect --profile-id a7d1bb99538c4db4b3570123456789ab
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"root"* ]]
+}
+
+@test "vpn-up-helper pins openconnect outside any user-writable prefix" {
+  command -v cc >/dev/null 2>&1 || skip "no C compiler available"
+  make -C "$HELPER_DIR" all >/dev/null
+  run "$HELPER_DIR/build/vpn-up-helper" version
+  [ "$status" -eq 0 ]
+  # Field extraction, not a regex: the path itself ends in "openconnect", so a
+  # greedy .*openconnect match consumes the whole line and yields nothing.
+  oc="$(awk '$1 == "openconnect" { print $2 }' <<< "$output")"
+  [ -n "$oc" ]
+  # Homebrew's prefix is owned by the installing user, so helper mode cannot use
+  # it: pinning openconnect there would hand root a replaceable binary.
+  [[ "$oc" != /opt/homebrew/* ]]
+  [[ "$oc" != /usr/local/* ]]
+  [[ "$oc" == /* ]]
+}
+
 @test "vpn-up-admin reports its roots without needing privilege" {
   command -v cc >/dev/null 2>&1 || skip "no C compiler available"
   make -C "$HELPER_DIR" all >/dev/null
