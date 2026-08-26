@@ -409,6 +409,19 @@ the lock, validates or prunes the recorded pid, and rewrites it.
 > OpenConnect does not close inherited descriptors it does not own. Source
 > inspection is not a contract.
 
+**Confirmed in step 11**, against OpenConnect 9.21, by holding an `flock`,
+clearing `FD_CLOEXEC`, `exec`ing OpenConnect, and testing the lock from a
+separate open file description:
+
+```
+while OpenConnect runs   the inherited lock is STILL HELD
+after it exits           the lock is released
+```
+
+Both halves hold, so the model above works as described. The check lives in
+`helper/t/integration/openconnect-probe.sh` so it is re-answered per version
+rather than once.
+
 ---
 
 ## 7. Model B — approved VPN privilege
@@ -1109,7 +1122,9 @@ implementation (§16 step 3).
 9. Adversarial helper tests
 10. Linux trusted-execution-closure checks — the §11.4 walk, including the
     library search paths (see §11.4's step 10 subsection)
-11. Real OpenConnect integration environment
+11. Real OpenConnect integration environment — the two §18 items marked
+    "integration test, not source inspection", plus the OpenConnect facts §6
+    and §17.5 depend on
 12. Linux hardened service
 13. MacPorts / macOS closure research and implementation
 14. macOS hardened service
@@ -1164,11 +1179,27 @@ unaffected, and a service that restarts re-authenticates. The question is
 whether any protocol's cookie is single-use in a way that makes a fast restart
 loop fail confusingly, and what the backoff should be (§15).
 
-### 17.5 Does `https://` work as a proxy scheme?
+### 17.5 Does `https://` work as a proxy scheme? — **ANSWERED, step 11**
 
-`--proxy` v1 accepts `http://` and `socks5://` only. Add `https://` if, and only
-if, an integration test shows the installed OpenConnect treats it as intended
-(§9).
+**No, and the v1 schema is not conservative — it is exactly right.**
+
+Asked of the installed OpenConnect 9.21 rather than reasoned about:
+
+```
+http://    accepted (reaches the connection attempt)
+socks5://  accepted (reaches the connection attempt)
+https://   "Only http or socks(5) proxies supported"
+socks4://  "Only http or socks(5) proxies supported"
+```
+
+The helper's proxy validator and OpenConnect's own support matrix therefore agree
+exactly. `https://` is not something to add pending evidence; it is something
+OpenConnect itself refuses.
+
+Kept as a test (`helper/t/integration/openconnect-probe.sh`) rather than written
+down as a fact, because the answer is version-dependent: if a future OpenConnect
+adds the scheme, this section says to consider adding it too, and a test will say
+so where a note in a document would not.
 
 ---
 
