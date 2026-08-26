@@ -2,6 +2,7 @@
 
 #include <dirent.h>
 #include <errno.h>
+#include <pwd.h>
 #include <fcntl.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -59,4 +60,48 @@ void vu_path(char *out, size_t cap, const char *fmt, ...)
                         "(is TMPDIR unusually long?)\n", n, cap);
         exit(2);
     }
+}
+
+const char *vu_test_base(void)
+{
+    /*
+     * Where fixtures live, from the PASSWORD DATABASE rather than $HOME.
+     *
+     * Three reasons, in ascending order of how much they matter:
+     *
+     *  1. $HOME is caller-controlled and pw_dir is not. For a corpus whose whole
+     *     subject is code that must not trust its environment, reading the
+     *     environment to decide where to write is the wrong instinct.
+     *
+     *  2. t/test_adversarial.c's test_environment() DELIBERATELY clobbers HOME,
+     *     to prove it does not survive into the exec'd process. The first version
+     *     of that test broke every fixture created after it, and needed strdup'd
+     *     save/restore to stop doing so. A corpus that never reads $HOME cannot
+     *     have that failure mode at all - the restore is now hygiene rather than
+     *     load-bearing.
+     *
+     *  3. It removes the taint source behind CodeQL's cpp/system-data-exposure
+     *     (CWE-497), which fired on every fixture message that prints its path.
+     *     That was a false positive - a test writing to its own stderr is not a
+     *     service leaking to a remote user - but the first two reasons stand on
+     *     their own, and a fix that is correct for independent reasons is better
+     *     than an annotation.
+     *
+     * The fallback is "." rather than $HOME: tests run from helper/, which is
+     * writable, and falling back to the environment would put the caller-
+     * controlled value back on a path this function exists to keep off it.
+     * getpwuid can legitimately return NULL in a container whose uid is not in
+     * /etc/passwd.
+     */
+    static char base[1024];
+    if (base[0]) return base;
+
+    const struct passwd *pw = getpwuid(getuid());
+    const char *dir = (pw && pw->pw_dir && pw->pw_dir[0]) ? pw->pw_dir : ".";
+    vu_path(base, sizeof base, "%s", dir);
+
+    /* A trailing slash would produce "//" in every fixture path below it. */
+    size_t n = strlen(base);
+    while (n > 1 && base[n - 1] == '/') base[--n] = '\0';
+    return base;
 }

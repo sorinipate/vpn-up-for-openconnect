@@ -27,13 +27,7 @@ static const char *ID_B = "bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb";
 
 static void make_root(void)
 {
-    const char *tmp = getenv("TMPDIR");
-    if (!tmp || !*tmp) tmp = "/tmp";
-    char base[VU_PATH_MAX];
-    vu_path(base, sizeof base, "%s", tmp);
-    size_t bn = strlen(base);
-    while (bn > 1 && base[bn - 1] == '/') base[--bn] = '\0';
-    vu_path(g_root, sizeof g_root, "%s/vu-reg-test-XXXXXX", base);
+    vu_path(g_root, sizeof g_root, "%s/vu-reg-test-XXXXXX", vu_test_base());
     if (!mkdtemp(g_root)) {
         fprintf(stderr, "cannot create temp registry root: %s\n", strerror(errno));
         exit(2);
