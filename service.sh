@@ -4,7 +4,8 @@
 #
 # Service mode runs openconnect in the FOREGROUND under the service manager;
 # KeepAlive/Restart relaunches it if the tunnel drops. Requirements:
-#   - a passwordless sudoers rule for openconnect (see README)
+#   - a passwordless sudoers rule for openconnect (see README; it grants
+#     effective root to the invoking user — see SECURITY.md "Known limitations")
 #   - the profile's password stored in the secrets backend
 #   - a non-interactive 2FA method (push/phone/sms — not passcode)
 
@@ -109,7 +110,7 @@ _service_preflight() {
     return 1
   fi
   if ! sudo -n -v 2>/dev/null; then
-    print_warning "No passwordless sudo detected. Service mode requires a sudoers rule for openconnect (see README); the service will fail until it exists.\n"
+    print_warning "No passwordless sudo detected. Service mode requires a sudoers rule for openconnect (see README); the service will fail until it exists. NOTE: that rule grants effective root to your account (see SECURITY.md).\n"
   fi
   local clientcert
   clientcert="$(xmlstarlet sel -t -m "//VPN[name=$(xpath_literal "$profile")]" -v 'clientCertificate | clientcertificate' "$PROFILES_FILE" 2>/dev/null)"

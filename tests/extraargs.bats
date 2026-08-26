@@ -93,3 +93,57 @@ _capture_argv() {
   [[ "$output" != *"--no-dtls"* ]]
   [[ "$output" != *"--reconnect-timeout"* ]]
 }
+
+# --- privileged-argument warning (root-execution footguns) ---
+
+@test "_warn_extra_arg_privileged flags root-executing flags and ignores others" {
+  run _warn_extra_arg_privileged --no-dtls --script --os=win
+  [[ "$output" == *"--script"* ]]
+  [[ "$output" == *"ROOT PRIVILEGES"* ]]
+  [[ "$output" != *"--no-dtls"* ]]
+  [[ "$output" != *"--os"* ]]
+}
+
+@test "_warn_extra_arg_privileged covers every root-execution flag, in --flag=value form too" {
+  local flag
+  for flag in --script --script-tun --csd-wrapper --config --xmlconfig; do
+    run _warn_extra_arg_privileged "$flag"
+    [[ "$output" == *"$flag"* ]] || { echo "bare $flag not warned"; return 1; }
+    run _warn_extra_arg_privileged "${flag}=/tmp/x"
+    [[ "$output" == *"$flag"* ]] || { echo "${flag}=value not warned"; return 1; }
+  done
+}
+
+@test "a root-executing flag in extraArgs warns loudly but is still passed" {
+  _write_profiles '--script &quot;vpn-slice 10.0.0.0/8&quot;'
+  load_profile_fields "Extra VPN"
+  ARGV_FILE="$BATS_TEST_TMPDIR/argv"
+  sudo() { if [ "$1" = openconnect ]; then shift; printf '%s\n' "$@" > "$ARGV_FILE"; return 0; fi; return 0; }
+  VPN_PASSWD="pw"; SERVER_CERTIFICATE="pin-sha256:abc"; QUIET=FALSE; BACKGROUND=TRUE
+  run run_openconnect
+  [[ "$output" == *"ROOT PRIVILEGES"* ]]
+  grep -qx -- "--script" "$ARGV_FILE"            # still passed through
+  grep -qx -- "vpn-slice 10.0.0.0/8" "$ARGV_FILE"
+}
+
+@test "--csd-wrapper in extraArgs triggers the privileged warning, not just a collision" {
+  _write_profiles '&quot;--csd-wrapper=/a b&quot;'
+  load_profile_fields "Extra VPN"
+  ARGV_FILE="$BATS_TEST_TMPDIR/argv"
+  sudo() { if [ "$1" = openconnect ]; then shift; printf '%s\n' "$@" > "$ARGV_FILE"; return 0; fi; return 0; }
+  VPN_PASSWD="pw"; SERVER_CERTIFICATE="pin-sha256:abc"; QUIET=FALSE; BACKGROUND=TRUE
+  run run_openconnect
+  [[ "$output" == *"--csd-wrapper"* ]]
+  [[ "$output" == *"ROOT PRIVILEGES"* ]]
+  [[ "$output" != *"vpn-up already manages"* ]]  # not a managed flag
+}
+
+@test "benign extraArgs print no privileged warning" {
+  _write_profiles "--no-dtls --reconnect-timeout 30"
+  load_profile_fields "Extra VPN"
+  ARGV_FILE="$BATS_TEST_TMPDIR/argv"
+  sudo() { if [ "$1" = openconnect ]; then shift; printf '%s\n' "$@" > "$ARGV_FILE"; return 0; fi; return 0; }
+  VPN_PASSWD="pw"; SERVER_CERTIFICATE="pin-sha256:abc"; QUIET=FALSE; BACKGROUND=TRUE
+  run run_openconnect
+  [[ "$output" != *"ROOT PRIVILEGES"* ]]
+}

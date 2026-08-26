@@ -5,6 +5,47 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ---
 
+## [Unreleased]
+### Security
+
+- **Retracted the claim that a `NOPASSWD` sudoers rule for `openconnect` is
+  safely "scoped to one binary."** It is not: sudoers constrains the *command*,
+  not its *arguments*, and `openconnect`'s `--script`, `--script-tun`,
+  `--csd-wrapper`, `--config`, and `--xmlconfig` flags execute a program as root.
+  Such a rule is therefore equivalent to passwordless root for the invoking
+  account, usable by any process running as that user without going through
+  `vpn-up`. On macOS it is weaker still — Homebrew's prefix is owned by the
+  installing user, so the permitted binary can simply be replaced. `SECURITY.md`
+  now carries a *Known limitations* section covering both, and README,
+  `docs/usage.md`, `docs/troubleshooting.md`, `docs/vpn-at-login.md`, and
+  `docs/split-tunnel.md` are consistent with it. A root-owned privileged helper
+  (`vpn-up-helper`), with sudoers permitting only the helper, is the planned fix
+  and the next security milestone.
+- **Documented that a Homebrew `openconnect` executes a user-writable script as
+  root on every connect.** Its compiled-in default `vpnc-script` lives inside the
+  Homebrew prefix (`/opt/homebrew/etc/vpnc/vpnc-script`), which is owned by the
+  installing user. No unusual arguments are needed to reach root there, so
+  argument filtering — by `vpn-up` or by any future helper — is not sufficient on
+  its own. Users are now told to verify the path with `openconnect --version`.
+- **The login service is documented as not recommended** until that helper
+  lands, since it cannot run without the sudoers rule.
+- **`extraArgs` entries that execute programs as root now print a loud warning.**
+  `--script`, `--script-tun`, `--csd-wrapper`, `--config`, and `--xmlconfig`
+  raise a distinct danger-level message (previously `--script` and
+  `--csd-wrapper` were not flagged at all). The arguments are still passed
+  through — split tunnelling and CSD need them — and this remains a footgun
+  guardrail, **not** a security boundary: while the sudoers rule permits
+  `openconnect` itself, no client-side filtering can enforce anything.
+
+### Fixed
+
+- **Stale macOS `openconnect` path in the sudoers examples.** They named
+  `/opt/homebrew/sbin/openconnect`; current Homebrew installs to
+  `/opt/homebrew/bin/openconnect`, so the documented rule silently did nothing.
+  All examples now tell you to confirm the path with `command -v openconnect`.
+
+---
+
 ## [v3.11.1] — 2026-06-19
 ### Fixed
 

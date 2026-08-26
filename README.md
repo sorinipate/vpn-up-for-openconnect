@@ -81,7 +81,7 @@ VPN Up is useful if you:
   - [Hooks](#hooks)
   - [Shell completion](#shell-completion)
   - [Secrets management](#secrets-management)
-  - [Passwordless sudo](#passwordless-sudo-optional)
+  - [Passwordless sudo](#passwordless-sudo-optional--read-the-trade-off-first)
   - [Certificate pinning](#certificate-pinning)
   - [Diagnostics](#diagnostics)
 - [Configuration](#-configuration)
@@ -295,9 +295,11 @@ vpn-up service uninstall "Frankfurt VPN"
 
 Uses a launchd user agent on macOS and a systemd user unit on Linux; the service manager supervises openconnect in the foreground and relaunches it if the tunnel drops (30s throttle). Requirements:
 
-- the [passwordless sudoers rule](#passwordless-sudo-optional) — there is no TTY to type a sudo password into
+- the [passwordless sudoers rule](#passwordless-sudo-optional--read-the-trade-off-first) — there is no TTY to type a sudo password into
 - the profile's password stored in the secrets backend
 - a non-interactive 2FA method (`push`, `phone`, `sms` — not `passcode`)
+
+> ⚠️ **The login service is not recommended right now.** It cannot work without the passwordless sudoers rule, and that rule currently [grants effective root](#passwordless-sudo-optional--read-the-trade-off-first) to your account. Until the privileged helper lands (see [SECURITY.md](SECURITY.md#known-limitations)), prefer starting the VPN manually and typing your sudo password. If you do run the service, do it only on a single-user machine you trust.
 
 ### Hooks
 
@@ -336,20 +338,37 @@ vpn-up delete-secret "Frankfurt VPN" password
 
 Passwords are stored in the OS keychain/keyring (or an encrypted vault as fallback) — never in files, never in the process table, never exported to child processes.
 
-### Passwordless sudo (optional)
+### Passwordless sudo (optional — read the trade-off first)
 
-`openconnect` needs root. By default you'll get the normal `sudo` prompt. Never store your sudo password anywhere; if you want non-interactive runs, grant passwordless sudo for `openconnect` **only**:
+`openconnect` needs root. By default you get the normal `sudo` prompt, and **that is the safe configuration**. Never store your sudo password anywhere.
+
+> ### ⚠️ A `NOPASSWD` rule for `openconnect` grants effective root
+>
+> Earlier versions of this README described the rule below as safe because it is "scoped to the one binary." **That was wrong, and is retracted.** sudoers matches the *command*, not its *arguments*: when a rule names a command with no arguments, the user may run it with whatever arguments they choose. Several `openconnect` flags execute another program as root — `--script`, `--script-tun`, `--csd-wrapper`, and `--config`/`--xmlconfig`, which can name those from a file. So the rule below is equivalent to passwordless root for your account, usable by anything running as your user, whether or not it goes through `vpn-up`.
+>
+> Filtering inside `vpn-up` cannot fix this — the rule permits `openconnect` directly, bypassing `vpn-up` entirely. The boundary has to move into sudoers. A root-owned privileged helper that builds the `openconnect` invocation itself, with sudoers permitting only *that* helper, is the planned fix (see [SECURITY.md](SECURITY.md#known-limitations)). Until it ships, treat the rule below as a deliberate trade-off — appropriate on a single-user machine you trust, not on a shared or managed one.
+
+If you accept that trade-off:
 
 ```bash
-# macOS (Homebrew):
-echo "$USER ALL=(root) NOPASSWD: /opt/homebrew/sbin/openconnect" | sudo tee /etc/sudoers.d/vpn-up
+# Verify the real path first — it varies by platform and by Homebrew version:
+command -v openconnect
+
+# macOS (Homebrew, Apple Silicon — usually /opt/homebrew/bin/openconnect):
+echo "$USER ALL=(root) NOPASSWD: /opt/homebrew/bin/openconnect" | sudo tee /etc/sudoers.d/vpn-up
 # Linux:
 echo "$USER ALL=(root) NOPASSWD: /usr/sbin/openconnect" | sudo tee /etc/sudoers.d/vpn-up
 sudo chmod 440 /etc/sudoers.d/vpn-up
 sudo visudo -cf /etc/sudoers.d/vpn-up   # validate
 ```
 
-> Verify the `openconnect` path with `command -v openconnect`. Keep the rule scoped to the one binary — do not add broad commands like `kill` here. Stopping the VPN will still ask for your sudo password; that's intentional.
+> **Homebrew prefix caveat (macOS).** Permitting a binary through sudoers only means anything if neither the binary nor the directories above it can be replaced by the unprivileged user. Homebrew's prefix — `/opt/homebrew` on Apple Silicon, `/usr/local` on Intel — is owned by the *installing user*, so a rule pointing into it can be defeated by swapping the binary, no arguments needed.
+>
+> Worse, `openconnect`'s compiled-in default `vpnc-script` is inside that prefix (`/opt/homebrew/etc/vpnc/vpnc-script`) and is **executed as root on every connect**. Check with `openconnect --version`, then `ls -l` the path it prints. If that file is user-writable, `sudo openconnect` runs user-controlled code as root with no special arguments at all.
+>
+> For a passwordless rule on macOS, point it at a root-owned `openconnect` whose default script is also root-owned — or keep the `sudo` prompt.
+
+> Do not add broad commands like `kill` to this rule. Stopping the VPN still asks for your sudo password; that's intentional.
 
 ### Certificate pinning
 
@@ -376,7 +395,7 @@ Need an openconnect flag `vpn-up` doesn't model (`--no-dtls`, `--os=win`, `--csd
 
 - Tokenized with `xargs`, so quotes are respected (`"--csd-wrapper=/path with space"` stays one argument) — and **never** `eval`'d.
 - Avoid flags `vpn-up` already manages — `--protocol`, `--user`, `--passwd-on-stdin`, `--background`, `--servercert`, `--authgroup`, `--pid-file`, `--external-browser`, `--token-mode`/`--token-secret`. Duplicating one prints a warning (it may conflict) but is still passed.
-- ⚠️ openconnect runs as **root**; some flags execute programs as root (e.g. `--csd-wrapper`, `--script`). Only put flags here that you'd be comfortable running under `sudo` yourself.
+- ⚠️ **Some flags execute a program as root.** openconnect runs under `sudo`, and `--script`, `--script-tun`, `--csd-wrapper`, `--config`, and `--xmlconfig` all give it something to run — as root. `vpn-up` prints a loud warning and still passes them (they are legitimately needed for split tunnelling and CSD), but combined with a [passwordless sudoers rule](#passwordless-sudo-optional--read-the-trade-off-first) they form a **root-execution path**. Point them only at a program on a path that only root can write.
 
 **Split-tunnel routing:** to send only some subnets through the VPN (and the rest direct), set `<extraArgs>--script "vpn-slice 10.0.0.0/8 host.corp"</extraArgs>` — [vpn-slice](https://github.com/dlenski/vpn-slice) is a drop-in `vpnc-script` replacement. Full recipe (include/exclude syntax, hooks alternative, caveats): [Split-tunnel routing](https://sorinipate.github.io/vpn-up-for-openconnect/split-tunnel/).
 

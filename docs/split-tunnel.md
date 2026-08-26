@@ -98,9 +98,15 @@ route**: it auto-detects the interface and works the same everywhere.
   than a single flag.
 - **Policy.** Some organizations require full-tunnel VPN; split tunneling may violate
   an acceptable-use policy. Check before you rely on it.
-- **Runs as root.** `--script` runs the helper as root (OpenConnect runs under
-  `sudo`). Only point it at a tool you trust — the same caution as any
-  [`extraArgs`]({{ '/usage/' | relative_url }}) entry.
+- **Runs as root — this is a privilege boundary, not a detail.** `--script` runs
+  the helper as root (OpenConnect runs under `sudo`), so whatever you name here
+  gets root. Install `vpn-slice` on a path only root can write and point
+  `--script` at that absolute path; a writable path (Homebrew's prefix included)
+  means anyone who can write it can run code as root at your next connect. If you
+  have also installed a passwordless sudoers rule for `openconnect`, this flag is
+  a full root-execution path for your account — see
+  [Known limitations](https://github.com/sorinipate/vpn-up-for-openconnect/blob/main/SECURITY.md#known-limitations).
+  VPN Up prints a warning whenever `extraArgs` contains it.
 
 ## Related
 
