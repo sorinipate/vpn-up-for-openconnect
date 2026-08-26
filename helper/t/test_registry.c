@@ -42,13 +42,6 @@ static void make_root(void)
     g_me = geteuid();
 }
 
-static void rm_rf(const char *path)
-{
-    char cmd[VU_PATH_MAX + 32];
-    snprintf(cmd, sizeof cmd, "rm -rf '%s'", path);
-    (void)system(cmd);
-}
-
 static vu_approval sample(const char *id)
 {
     vu_approval a;
@@ -356,5 +349,5 @@ void vu_test_registry(void)
     test_operations();
     test_tampering();
     test_admin_gate();
-    rm_rf(g_root);
+    vu_rm_rf(g_root);
 }

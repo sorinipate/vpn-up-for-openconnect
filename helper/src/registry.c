@@ -1,6 +1,7 @@
 /* registry.c — persistent, root-owned Model B approval records. */
 
-#define _GNU_SOURCE
+/* Feature-test macros come from the Makefile (see FEATURE there), so a new
+ * translation unit cannot forget them. */
 
 #include "vu_registry.h"
 
