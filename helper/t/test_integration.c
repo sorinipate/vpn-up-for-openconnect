@@ -459,11 +459,30 @@ static void test_concurrent_connects(void)
         CHECK(kids[i] >= 0, "fork: %s", strerror(errno));
         if (kids[i] == 0) {
             close(ready[1]);
-            /* Block until the parent closes the write end: all racers are
-             * released at the same instant, so this is a real race rather than
-             * eight sequential acquisitions. */
-            char b;
-            (void)read(ready[0], &b, 1);
+            /*
+             * The starting gun. Block until the parent closes the write end,
+             * which arrives here as EOF, so all racers are released at the same
+             * instant and this is a real race rather than eight sequential
+             * acquisitions.
+             *
+             * The result is CONSUMED, not cast away. glibc marks read() with
+             * warn_unused_result under _FORTIFY_SOURCE, and `(void)` does not
+             * suppress -Wunused-result in gcc - only in clang. Neither clang nor
+             * gcc on macOS diagnoses this, because the attribute comes from the
+             * LIBC rather than the compiler, so it is invisible outside a glibc
+             * build. See t/README.
+             *
+             * Consuming it properly also fixes a real if unlikely bug: a signal
+             * delivered while waiting would have released one racer early and
+             * quietly weakened the race the test exists to create.
+             */
+            for (;;) {
+                char b;
+                ssize_t r = read(ready[0], &b, 1);
+                if (r >= 0) break;          /* EOF or a byte: either releases us */
+                if (errno == EINTR) continue;
+                _exit(3);                   /* barrier broken; parent counts it */
+            }
             close(ready[0]);
 
             vu_err ce; vu_err_clear(&ce);

@@ -86,6 +86,27 @@ TWO LIMITS ON THAT, both learned by getting it wrong:
   - clang cannot substitute for it at all. The int-out-of-a-conditional case is
     not diagnosed by clang under ANY warning set, including -Weverything.
 
+A CLASS NO LOCAL COMPILER CAN CATCH, and the sharpest trap here so far:
+
+    char b;
+    (void)read(fd, &b, 1);      /* fine on macOS, hard error on glibc */
+
+glibc marks read, write, fread, fwrite, fgets, system and realloc with
+warn_unused_result under _FORTIFY_SOURCE. Two things make this invisible on a
+development Mac:
+
+  - the attribute comes from the LIBC, not the compiler, so Darwin's headers do
+    not carry it and neither clang nor a Homebrew gcc says anything;
+  - `(void)` suppresses -Wunused-result in clang and does NOT in gcc. So the
+    idiom that reads as "I deliberately ignored this" is silently accepted
+    locally and rejected in CI.
+
+Installing a compiler does not help. Only a glibc build does - CI, or a Linux
+container, which this project does not currently require. `make wur-check` is the
+substitute: a grep for the discarded-result shapes, part of `make test`, that
+turns an invisible class into a local failure. It was validated by reintroducing
+the bug that reached CI and watching it fire.
+
 Diagnostics that only exist in GCC, and therefore only fail in CI:
 
   -Wformat-truncation   rejects snprintf(buf, sizeof buf, "%s/a", other) when
