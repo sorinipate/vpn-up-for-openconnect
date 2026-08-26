@@ -12,6 +12,7 @@ int main(void)
     vu_test_exec();
     vu_test_adversarial();
     vu_test_closure();
+    vu_test_integration();
 
     printf("%d checks, %d failures\n", vu_checks, vu_failures);
     return vu_failures == 0 ? 0 : 1;

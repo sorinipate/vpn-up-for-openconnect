@@ -41,6 +41,11 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
   - `vpn-up-admin verify-closure`, which reports the closure row by row. It
     needs no password: it writes nothing and reads only ownership and mode bits,
     so asking "is this machine eligible?" should not cost an authentication.
+  - An integration harness (`helper/t/integration/`): a compiled stand-in for
+    OpenConnect that reports exactly what crossed the privilege boundary, an
+    opt-in end-to-end run of the real binaries as root against it, and a probe
+    for the OpenConnect behaviours the design depends on. The end-to-end script
+    creates and removes a single dedicated prefix and touches nothing else.
   - An ELF reader (`helper/src/elf.c`) for the library search paths, tested
     against ELF images the corpus builds byte by byte — the only way to produce a
     truncated header, an unmapped string table or a big-endian ELF32 on demand.
@@ -49,6 +54,30 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
     meeting a compiler in CI.
 
 ### Security
+
+- **Two claims the design marked "integration test, not source inspection" are
+  now tested with a real `execve` into a real second process.** The per-profile
+  lock survives the `execve` into OpenConnect and is released by the kernel when
+  it exits — so "one tunnel per profile" holds with no reaper and no pid file —
+  and a 100000-byte cookie (larger than every buffer in this project, and larger
+  than a pipe) passes through stdin byte-for-byte. A marker buried in the middle
+  of that cookie must appear nowhere in the child's argv, environment, or
+  `/proc/self/cmdline`, which is what `ps` reads.
+
+  Both were verified to actually discriminate rather than merely pass: putting
+  `FD_CLOEXEC` back on the lock descriptor makes the lock assertion fail, and
+  putting the cookie on argv or in the environment makes the marker assertion
+  fail.
+
+- **Answered against the real OpenConnect: `https://` is not a usable proxy
+  scheme.** OpenConnect 9.21 replies `Only http or socks(5) proxies supported`,
+  so the helper's `http://`-and-`socks5://`-only rule is not a conservative
+  guess — it matches OpenConnect's own support matrix exactly. Kept as a test
+  rather than a note, because the answer is version-dependent.
+
+- **Also answered: OpenConnect leaves an inherited locked descriptor alone.**
+  The whole locking model depends on it, and it was previously an assumption
+  flagged in the design as needing a test rather than source inspection.
 
 - **The trusted execution closure is now checked in full, not just the two
   pinned files.** A root-owned `openconnect` that loads a user-writable library,

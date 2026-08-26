@@ -54,6 +54,35 @@ jobs:
         if: runner.os == 'Linux'
         run: make -C helper asan
 
+  integration:
+    name: helper integration (Linux, as root)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      # The real binaries, as root, against a stand-in OpenConnect. Linux only:
+      # macOS helper mode fails closed until the dyld closure work (design step
+      # 13), so there is nothing to run end to end there yet.
+      - name: End-to-end with a stand-in OpenConnect
+        run: |
+          set -o pipefail
+          VPN_UP_INTEGRATION=1 helper/t/integration/run.sh 2>&1 | tee /tmp/integration.log
+          # A test that skips in CI has verified nothing, and would report green
+          # forever. The script skips deliberately when its preconditions are
+          # absent; here their absence is itself the failure.
+          if grep -q '^SKIPPED' /tmp/integration.log; then
+            echo "::error::the integration test skipped in CI, so it verified nothing"
+            exit 1
+          fi
+      # Questions only the real OpenConnect can answer: which proxy schemes it
+      # supports (design section 17.5) and whether it leaves an inherited locked
+      # descriptor alone (section 18). Both are version-dependent, so they are a
+      # test rather than a note in the design document.
+      - name: Real OpenConnect assumptions
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openconnect
+          helper/t/integration/openconnect-probe.sh
+
   gitleaks:
     runs-on: ubuntu-latest
     steps:

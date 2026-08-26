@@ -46,19 +46,31 @@ SRC       = src/validate.c src/authparse.c src/policy.c src/request.c \
             src/state.c src/proc.c src/registry.c src/elf.c src/closure.c \
             src/exec.c
 TEST_SRC  = t/main.c t/harness.c t/test_policy.c t/test_state.c t/test_registry.c \
-            t/test_exec.c t/test_adversarial.c t/test_closure.c
+            t/test_exec.c t/test_adversarial.c t/test_closure.c \
+            t/test_integration.c
 TEST_BIN  = build/vu-test
 ADMIN_BIN  = build/vpn-up-admin
 HELPER_BIN = build/vpn-up-helper
+
+# The stand-in for OpenConnect at the execve boundary (step 11). A compiled
+# binary, not a script: the closure check parses the pinned binary's ELF dynamic
+# section, and a stand-in that could not pass the real check would not be
+# standing in for much. Defined HERE rather than next to its rule because make
+# expands a prerequisite list when the rule is read, so a variable defined later
+# expands to nothing in `all:`.
+FAKE_BIN   = build/fake-openconnect
 
 SAN_FLAGS = $(CSTD) $(FEATURE) $(WARN) -g -O1 -fno-omit-frame-pointer -Iinclude -It
 
 .PHONY: all test clean ubsan asan sanitize test-elf-closure
 
-all: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN)
+all: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN) $(FAKE_BIN)
 
 build:
 	mkdir -p build
+
+$(FAKE_BIN): t/integration/fake-openconnect.c | build
+	$(CC) $(CSTD) $(FEATURE) -Wall -Wextra -Werror $(OPT) -o $@ $<
 
 $(TEST_BIN): $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h | build
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(TEST_SRC)
@@ -69,7 +81,7 @@ $(ADMIN_BIN): $(SRC) src/admin_main.c include/vu.h include/vu_state.h include/vu
 $(HELPER_BIN): $(SRC) src/helper_main.c include/vu.h include/vu_state.h include/vu_registry.h include/vu_exec.h | build
 	$(CC) $(CFLAGS) -o $@ $(SRC) src/helper_main.c
 
-test: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN) test-elf-closure
+test: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN) $(FAKE_BIN) test-elf-closure
 	./$(TEST_BIN)
 	# The admin tool must refuse to run without privilege, and must not need
 	# privilege merely to report its own version.
@@ -127,7 +139,7 @@ test: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN) test-elf-closure
 # ELF parse of a Mach-O binary reports "not an ELF binary" and the check still
 # refuses. Only the synthetic ELF fixtures in t/test_closure.c get past it.
 .PHONY: test-elf-closure
-test-elf-closure: $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h include/vu_closure.h | build
+test-elf-closure: $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h include/vu_closure.h $(FAKE_BIN) | build
 	$(CC) $(CFLAGS) -DVU_LIBRARY_CLOSURE_ELF=1 -o build/vu-test-elf $(SRC) $(TEST_SRC)
 	./build/vu-test-elf
 
@@ -140,11 +152,11 @@ test-elf-closure: $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h include/vu_
 # so `make asan` cannot run there. UndefinedBehaviorSanitizer does not intercept
 # malloc and works on both platforms. CI therefore runs ubsan everywhere and asan
 # on Linux only; do not read a macOS asan hang as a finding in this code.
-ubsan: $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h | build
+ubsan: $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h $(FAKE_BIN) | build
 	$(CC) $(SAN_FLAGS) -fsanitize=undefined -o build/vu-test-ubsan $(SRC) $(TEST_SRC)
 	UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1 ./build/vu-test-ubsan
 
-asan: $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h | build
+asan: $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h $(FAKE_BIN) | build
 	$(CC) $(SAN_FLAGS) -fsanitize=address -o build/vu-test-asan $(SRC) $(TEST_SRC)
 	ASAN_OPTIONS=detect_leaks=1 ./build/vu-test-asan
 
