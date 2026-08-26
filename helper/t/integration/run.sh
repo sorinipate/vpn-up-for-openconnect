@@ -81,9 +81,20 @@ done
 
 # The stand-in has to be a compiled ELF binary: the closure check parses the
 # pinned binary's dynamic section, and a script is refused as "not an ELF binary".
-cc -std=c99 -O1 -o /tmp/vu-fake-openconnect "$HERE/t/integration/fake-openconnect.c"
-sudo install -o 0 -g 0 -m 0755 /tmp/vu-fake-openconnect "$PREFIX/bin/openconnect"
-rm -f /tmp/vu-fake-openconnect
+#
+# Built through the MAKEFILE rather than with a cc command written here. The first
+# version invoked `cc -std=c99` directly and broke the Linux build: -std=c99
+# defines __STRICT_ANSI__, glibc then hides nanosleep and struct timespec behind a
+# feature macro, and the compile fails. The Makefile already knows the macro, and
+# knows it has to differ by platform - _GNU_SOURCE on glibc, _DARWIN_C_SOURCE on
+# Darwin, where _POSIX_C_SOURCE would RESTRICT the namespace instead of widening
+# it. Duplicating that knowledge here was the defect; deleting the duplicate is
+# the fix. See helper/t/README.
+#
+# Clean first, because the pinned build below reuses this build directory.
+make -C "$HERE" --no-print-directory clean >/dev/null
+make -C "$HERE" --no-print-directory build/fake-openconnect >/dev/null
+sudo install -o 0 -g 0 -m 0755 "$HERE/build/fake-openconnect" "$PREFIX/bin/openconnect"
 
 printf '#!/bin/sh\n# stand-in vpnc-script\nexit 0\n' > /tmp/vu-fake-script
 sudo install -o 0 -g 0 -m 0755 /tmp/vu-fake-script "$PREFIX/etc/vpnc-script"
@@ -92,7 +103,7 @@ rm -f /tmp/vu-fake-script
 # Build the binaries with their compile-time pins pointed at the fixture. That
 # the roots are compile-time constants rather than environment variables is the
 # whole reason this is safe to do: a test build cannot become a runtime override.
-make -C "$HERE" --no-print-directory clean >/dev/null
+# No clean here: the stand-in above lives in the same build directory.
 make -C "$HERE" --no-print-directory build/vpn-up-helper build/vpn-up-admin \
   OPT="-O1 -DVU_OPENCONNECT='\"$PREFIX/bin/openconnect\"' \
        -DVU_VPNC_SCRIPT='\"$PREFIX/etc/vpnc-script\"' \

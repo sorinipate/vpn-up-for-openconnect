@@ -141,7 +141,16 @@ int main(int argc, char **argv)
 }
 PROBE
 
-if ! cc -std=c99 -o "$probe_bin" "$probe_src" 2>/dev/null; then
+# The same platform feature macro the Makefile uses, for the same reason: with
+# -std=c99 and no macro, glibc hides nanosleep and struct timespec and this will
+# not compile. It has to differ by platform - on Darwin _POSIX_C_SOURCE would
+# restrict the namespace rather than widen it. See helper/t/README.
+case "$(uname)" in
+  Darwin) feature=-D_DARWIN_C_SOURCE ;;
+  *)      feature=-D_GNU_SOURCE ;;
+esac
+
+if ! cc -std=c99 "$feature" -o "$probe_bin" "$probe_src" 2>/dev/null; then
   note "[..] no working compiler; descriptor probe skipped"
 else
   result="$("$probe_bin" "$(command -v openconnect)")"
