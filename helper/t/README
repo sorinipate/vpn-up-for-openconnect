@@ -13,6 +13,7 @@ cause is probably below.
   t/test_exec.c          the phase-two argv, element by element        (step 7)
   t/test_adversarial.c   attacks on all of the above                   (step 9)
   t/fixtures/auth/       fixtures shared with tests/twophase.bats      (step 9)
+  t/test_closure.c       the trusted execution closure                 (step 10)
 
 The first four are organised by module and mostly assert that each piece does
 what it says. The fifth is organised by ATTACK and mostly asserts refusals; it
@@ -94,13 +95,40 @@ Sanitizers:
                main() is reached. Do not read a macOS asan hang as a finding in
                this code.
 
+---------------------------------------------------- synthetic ELF fixtures
+
+t/test_closure.c builds ELF images byte by byte rather than testing against
+whatever binary is installed. That is not only because there is no Linux
+toolchain on the development machine: a synthesised image is the only way to get
+a truncated header, a string table pointing outside the file, a big-endian ELF32
+or a DT_RUNPATH of "$ORIGIN/../lib" on demand and deterministically.
+
+One detail in the fixture is load-bearing. The PT_LOAD segment is given a
+non-zero p_vaddr, so DT_STRTAB — which is a VIRTUAL ADDRESS, not a file offset —
+does not coincide with its offset. A parser that confuses the two works on most
+real binaries, where the first segment maps at 0 and the two happen to be equal,
+and reads garbage on the rest. The fixture fails such a parser immediately.
+
+`make test-elf-closure` rebuilds the corpus with -DVU_LIBRARY_CLOSURE_ELF=1 and
+runs it, so the Linux-only library-closure branch is compiled and exercised here
+rather than first meeting a compiler in CI. `make test` depends on it.
+
+Forcing that macro on cannot weaken production: against a REAL macOS install the
+ELF parse of a Mach-O binary reports "not an ELF binary" and the check still
+refuses. Only the synthetic fixtures get past it.
+
 ---------------------------------------------------------- what is NOT tested yet
 
 By design, because it needs something this corpus does not have:
 
-  the dynamic library closure, /etc/vpnc sourced hooks, PATH entries   (step 10)
   lock survival across execve, cookie passthrough on a real tunnel     (step 11)
-  ACL-based write access on an otherwise root-owned file               (step 10)
+  the macOS dyld closure: LC_LOAD_DYLIB, the shared cache, DYLD_*      (step 13)
 
-Until those exist the helper is not a finished boundary, and §11.7 of the design
-keeps macOS helper mode failing closed for exactly that reason.
+The ACL case IS tested, on macOS, using chmod +a to grant write access to a file
+whose mode bits are 0444 — mode bits say no, the ACL says yes, and the effective
+probe has to notice. It is skipped with a note if the filesystem has no ACL
+support. The Linux equivalent (setfacl) is not exercised yet.
+
+Until step 13 exists the helper is not a finished boundary on macOS, and §11.7
+keeps helper mode failing closed there — which t/test_closure.c now asserts as
+behaviour rather than trusting the document.

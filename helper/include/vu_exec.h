@@ -11,6 +11,7 @@
 #define VU_EXEC_H
 
 #include "vu.h"
+#include "vu_closure.h"
 #include "vu_registry.h"
 
 /*
@@ -78,10 +79,19 @@ bool vu_build_argv(const vu_request *req, const vu_approval *appr,
                    vu_argv *out, vu_err *e);
 
 /*
- * File-level trusted-closure check on the two pinned paths, run immediately
- * before execve. Partial by design in step 7 — see vu_path_trusted's scope note.
+ * The trusted-execution-closure check, run immediately before execve.
+ *
+ * Step 7 checked two files. Step 10 replaced that with the full §11.4 walk —
+ * library search paths, /bin/sh, the script's interpreter, the sourced hook
+ * directories and every PATH entry — because a root-owned binary that loads a
+ * user-writable library, or sources a user-writable hook, is the same bug as a
+ * user-writable binary.
+ *
+ * `report` may be NULL when the caller only wants the verdict; when it is not,
+ * it is populated for printing and names the objects that failed. See
+ * vu_closure_check, of which this is the pinned-path wrapper.
  */
 bool vu_exec_precheck(const char *openconnect_path, const char *script_path,
-                      uid_t owner, vu_err *e);
+                      uid_t owner, vu_closure_report *report, vu_err *e);
 
 #endif /* VU_EXEC_H */

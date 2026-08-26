@@ -43,16 +43,17 @@ CFLAGS  += $(CSTD) $(FEATURE) $(WARN) $(HARDEN) $(OPT) -Iinclude -It
 # executables. One copy of the validation logic, so the helper and the admin tool
 # cannot drift apart in what they consider acceptable.
 SRC       = src/validate.c src/authparse.c src/policy.c src/request.c \
-            src/state.c src/proc.c src/registry.c src/exec.c
+            src/state.c src/proc.c src/registry.c src/elf.c src/closure.c \
+            src/exec.c
 TEST_SRC  = t/main.c t/harness.c t/test_policy.c t/test_state.c t/test_registry.c \
-            t/test_exec.c t/test_adversarial.c
+            t/test_exec.c t/test_adversarial.c t/test_closure.c
 TEST_BIN  = build/vu-test
 ADMIN_BIN  = build/vpn-up-admin
 HELPER_BIN = build/vpn-up-helper
 
 SAN_FLAGS = $(CSTD) $(FEATURE) $(WARN) -g -O1 -fno-omit-frame-pointer -Iinclude -It
 
-.PHONY: all test clean ubsan asan sanitize
+.PHONY: all test clean ubsan asan sanitize test-elf-closure
 
 all: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN)
 
@@ -68,7 +69,7 @@ $(ADMIN_BIN): $(SRC) src/admin_main.c include/vu.h include/vu_state.h include/vu
 $(HELPER_BIN): $(SRC) src/helper_main.c include/vu.h include/vu_state.h include/vu_registry.h include/vu_exec.h | build
 	$(CC) $(CFLAGS) -o $@ $(SRC) src/helper_main.c
 
-test: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN)
+test: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN) test-elf-closure
 	./$(TEST_BIN)
 	# The admin tool must refuse to run without privilege, and must not need
 	# privilege merely to report its own version.
@@ -115,6 +116,20 @@ test: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN)
 		fi; \
 	done
 	@echo "ok: vpn-up-admin offers no connect subcommand"
+
+# The ELF/ld.so library closure is compiled in on Linux only, because macOS needs
+# dyld and Mach-O instead (design step 13) and until then §11.7 requires helper
+# mode to fail CLOSED there. That leaves a gap this target fills: on macOS the
+# Linux-only branch would otherwise never be compiled or run before CI, which is
+# where three of the four CI failures in steps 5-7 came from.
+#
+# Forcing it on is safe, and not merely convenient: with a REAL macOS install the
+# ELF parse of a Mach-O binary reports "not an ELF binary" and the check still
+# refuses. Only the synthetic ELF fixtures in t/test_closure.c get past it.
+.PHONY: test-elf-closure
+test-elf-closure: $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h include/vu_closure.h | build
+	$(CC) $(CFLAGS) -DVU_LIBRARY_CLOSURE_ELF=1 -o build/vu-test-elf $(SRC) $(TEST_SRC)
+	./build/vu-test-elf
 
 # The corpus is mostly malformed input, which is exactly where a buffer or
 # overflow bug would hide, so the sanitizer runs matter more here than usual.

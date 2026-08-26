@@ -3,6 +3,8 @@
 #include "vu_exec.h"
 #include "vu_state.h"
 
+#include <unistd.h>
+
 #include <stdio.h>
 #include <string.h>
 
@@ -135,9 +137,20 @@ bool vu_build_argv(const vu_request *req, const vu_approval *appr,
 }
 
 bool vu_exec_precheck(const char *openconnect_path, const char *script_path,
-                      uid_t owner, vu_err *e)
+                      uid_t owner, vu_closure_report *report, vu_err *e)
 {
-    if (!vu_path_trusted(openconnect_path, owner, true, e)) return false;
-    if (!vu_path_trusted(script_path, owner, true, e)) return false;
-    return true;
+    vu_closure_spec spec;
+    vu_closure_spec_default(&spec, openconnect_path, script_path, owner);
+
+    /*
+     * The effective-writability probe runs only as root, because dropping
+     * privilege is the mechanism (§11.5). Under test, and in prompt mode, it is
+     * skipped rather than reporting a misleading answer.
+     */
+    spec.probe = (geteuid() == 0);
+    spec.probe_uid = owner;
+
+    static vu_closure_report local;
+    if (!report) report = &local;
+    return vu_closure_check(&spec, report, e);
 }

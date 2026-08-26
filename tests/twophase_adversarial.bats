@@ -260,3 +260,37 @@ STUB
   run grep -c 'pid' "$BATS_TEST_TMPDIR/argv"
   [ "$output" = "0" ]
 }
+
+# --- the trusted execution closure ----------------------------------------
+
+@test "doctor reports the closure and does not fail on it" {
+  # A failing closure means "helper mode is not available here", which is true
+  # almost everywhere right now: there is no installer, and macOS fails closed
+  # until the dyld work. Doctor's exit status is for MISCONFIGURATION, so a
+  # roadmap item must not turn it red.
+  export VPN_UP_HELPER_DIR="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$VPN_UP_HELPER_DIR"
+  cat > "$VPN_UP_HELPER_DIR/vpn-up-admin" <<'STUB'
+#!/bin/sh
+[ "$1" = verify-closure ] || exit 64
+echo "  [!!] openconnect binary (executed as root)  /opt/homebrew/bin/openconnect"
+echo "       trust: '/opt/homebrew' is owned by uid 501, expected 0 or root"
+exit 1
+STUB
+  chmod +x "$VPN_UP_HELPER_DIR/vpn-up-admin"
+
+  run doctor_execution_closure
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Trusted execution closure"* ]]
+  [[ "$output" == *"owned by uid 501"* ]]
+}
+
+@test "doctor explains itself when the closure cannot be checked" {
+  export VPN_UP_HELPER_DIR="$BATS_TEST_TMPDIR/nowhere"
+  run doctor_execution_closure
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"vpn-up-admin not installed"* ]]
+  # It must point at the caveat that still applies in prompt mode rather than
+  # implying everything is fine.
+  [[ "$output" == *"SECURITY.md"* ]]
+}
