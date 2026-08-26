@@ -105,11 +105,13 @@ the openconnect command, just before the gateway host:
   `--background`, `--servercert`, `--authgroup`, `--pid-file`, `--external-browser`,
   `--token-mode`/`--token-secret`). Duplicating one warns but is still passed.
 - ⚠️ **Some flags execute a program as root.** openconnect runs under `sudo`, so
-  `--script`, `--script-tun`, `--csd-wrapper`, `--config`, and `--xmlconfig` all
-  hand root to whatever they name. VPN Up warns loudly and still passes them
-  (split tunnelling and CSD need them), but with a passwordless sudoers rule they
-  form a root-execution path — point them only at a program on a path that only
-  root can write. See [Known limitations](https://github.com/sorinipate/vpn-up-for-openconnect/blob/main/SECURITY.md#known-limitations).
+  `--script`/`-s`, `--script-tun`/`-S`, `--csd-wrapper`, `--csd-user`,
+  `--config`, `--xmlconfig`/`-x`, and `--external-browser` all hand root to
+  whatever they name. VPN Up warns loudly and still passes them (split
+  tunnelling, CSD, and session-aware SSO openers need them), but with a
+  passwordless sudoers rule they form a root-execution path — point them only at
+  a program on a path that only root can write. See
+  [Known limitations](https://github.com/sorinipate/vpn-up-for-openconnect/blob/main/SECURITY.md#known-limitations).
 
 See also: [SSO & Duo 2FA]({{ '/sso-duo/' | relative_url }}) and
 [supported protocols]({{ '/protocols/' | relative_url }}).

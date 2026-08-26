@@ -34,12 +34,14 @@ sudoers rule that names the `openconnect` binary, that rule **is equivalent to
 passwordless root for your account** — it is not a privilege "scoped to one
 binary," and earlier documentation that described it that way was wrong.
 
-Two independent reasons:
+Three independent reasons:
 
 1. **sudoers does not constrain arguments.** A rule that names a command with no
    arguments lets the user run it with any arguments. `openconnect` has flags
-   that execute another program as root — `--script`, `--script-tun`,
-   `--csd-wrapper` — and `--config`/`--xmlconfig`, which can name those from a
+   that execute another program as root — `--script`/`-s`, `--script-tun`/`-S`,
+   `--csd-wrapper`, `--external-browser` (the SSO opener), and `--csd-user`
+   (which enables execution of the *gateway-supplied* CSD binary; `=root` runs it
+   as root) — plus `--config` and `--xmlconfig`/`-x`, which can name those from a
    file. `sudo openconnect --script /tmp/anything <host>` therefore runs
    `/tmp/anything` as root.
 2. **On macOS the permitted path is user-writable.** Homebrew's prefix
@@ -49,13 +51,14 @@ Two independent reasons:
    permitted executable nor its parent directories are writable by the
    unprivileged user.
 3. **A Homebrew `openconnect` runs a user-writable script as root by default.**
-   `openconnect` has a compiled-in default `vpnc-script`, and on Homebrew that is
-   `/opt/homebrew/etc/vpnc/vpnc-script` — owned by the installing user, in a
-   group-writable parent. It is executed as root on every connect. So on a
-   Homebrew install, `sudo openconnect` reaches root-controlled-by-the-user
-   territory with **no unusual arguments at all**; `--script` is merely the
-   explicit route. Check yours with `openconnect --version` (it prints the
-   default) and `ls -l` the result.
+   `openconnect` has a compiled-in default `vpnc-script`, and the Homebrew
+   formula points it at `$HOMEBREW_PREFIX/etc/vpnc/vpnc-script` — inside the
+   prefix, and so owned by the installing user, who can therefore modify it. It
+   is executed as root on every connect. So on a Homebrew install,
+   `sudo openconnect` reaches user-modifiable-code-as-root with **no unusual
+   arguments at all**; `--script` is merely the explicit route. Check yours with
+   `openconnect --help` (it prints the default under "VPN configuration script")
+   and `ls -l` the result.
 
 Consequences worth being explicit about: any process running as your user can
 use the rule without going through `vpn-up`, and anyone who can write your

@@ -106,12 +106,43 @@ _capture_argv() {
 
 @test "_warn_extra_arg_privileged covers every root-execution flag, in --flag=value form too" {
   local flag
-  for flag in --script --script-tun --csd-wrapper --config --xmlconfig; do
+  for flag in --script --script-tun --csd-wrapper --csd-user --config --xmlconfig --external-browser; do
     run _warn_extra_arg_privileged "$flag"
     [[ "$output" == *"$flag"* ]] || { echo "bare $flag not warned"; return 1; }
     run _warn_extra_arg_privileged "${flag}=/tmp/x"
     [[ "$output" == *"$flag"* ]] || { echo "${flag}=value not warned"; return 1; }
   done
+}
+
+@test "_warn_extra_arg_privileged covers the short forms (-s/-S/-x)" {
+  local flag
+  for flag in -s -S -x; do
+    run _warn_extra_arg_privileged "$flag"
+    [[ "$output" == *"ROOT PRIVILEGES"* ]] || { echo "bare $flag not warned"; return 1; }
+    run _warn_extra_arg_privileged "${flag}=/tmp/x"
+    [[ "$output" == *"ROOT PRIVILEGES"* ]] || { echo "${flag}=value not warned"; return 1; }
+  done
+  # a same-shaped but harmless short flag must NOT warn
+  run _warn_extra_arg_privileged -q
+  [[ "$output" != *"ROOT PRIVILEGES"* ]]
+}
+
+@test "-s in extraArgs warns like --script (short form reaches root the same way)" {
+  _write_profiles '-s /tmp/evil'
+  load_profile_fields "Extra VPN"
+  ARGV_FILE="$BATS_TEST_TMPDIR/argv"
+  sudo() { if [ "$1" = openconnect ]; then shift; printf '%s\n' "$@" > "$ARGV_FILE"; return 0; fi; return 0; }
+  VPN_PASSWD="pw"; SERVER_CERTIFICATE="pin-sha256:abc"; QUIET=FALSE; BACKGROUND=TRUE
+  run run_openconnect
+  [[ "$output" == *"ROOT PRIVILEGES"* ]]
+  grep -qx -- "-s" "$ARGV_FILE"
+}
+
+@test "--external-browser warns as privileged as well as managed" {
+  run _warn_extra_arg_privileged --external-browser=/tmp/opener
+  [[ "$output" == *"ROOT PRIVILEGES"* ]]
+  run _warn_extra_arg_collisions --external-browser=/tmp/opener
+  [[ "$output" == *"vpn-up already manages"* ]]
 }
 
 @test "a root-executing flag in extraArgs warns loudly but is still passed" {
