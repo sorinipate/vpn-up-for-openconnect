@@ -44,23 +44,49 @@ static void make_base(const char *tag)
 
 static void drop_base(void) { vu_rm_rf(g_base); }
 
+/*
+ * Fixture creation, with the mode set through the DESCRIPTOR rather than the
+ * path.
+ *
+ * The mode has to be set explicitly at all, rather than passed to open() or
+ * mkdir(), because the umask masks the creation mode — a fixture that means to be
+ * group-writable is otherwise silently created 0750, which was a real false pass
+ * in step 5.
+ *
+ * Setting it with fchmod() rather than chmod() closes a time-of-check /
+ * time-of-use gap: chmod() re-resolves the pathname, so between creating the
+ * file and setting its mode the name could refer to something else. In a fixture
+ * tree under $HOME with a pid in its name that is not a realistic attack, and it
+ * is still the wrong way to write it here — this corpus exists to verify code
+ * whose whole discipline is openat, O_NOFOLLOW and fstat-on-the-descriptor
+ * instead of stat-on-the-path. A test that verifies that property while not
+ * practising it invites the reader to think the distinction is pedantic.
+ *
+ * fchmod is also immune to the umask, so it replaces the old chmod rather than
+ * joining it. Flagged by CodeQL; the suggested patch added the fchmod and left
+ * the chmod in place, which would have kept the gap it was closing.
+ */
 static void write_file(const char *path, const char *text, mode_t mode)
 {
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
     CHECK(fd >= 0, "cannot create %s: %s", path, strerror(errno));
     if (fd < 0) return;
     size_t len = strlen(text);
     CHECK(len == 0 || write(fd, text, len) == (ssize_t)len, "write %s: %s", path, strerror(errno));
+    CHECK(fchmod(fd, mode) == 0, "fchmod %s: %s", path, strerror(errno));
     close(fd);
-    /* chmod after the fact: the umask would otherwise mask the bits a fixture
-     * is specifically trying to set. Learned in step 5. */
-    CHECK(chmod(path, mode) == 0, "chmod %s: %s", path, strerror(errno));
 }
 
 static void make_dir(const char *path, mode_t mode)
 {
     CHECK(mkdir(path, 0700) == 0, "mkdir %s: %s", path, strerror(errno));
-    CHECK(chmod(path, mode) == 0, "chmod %s: %s", path, strerror(errno));
+    /* O_NOFOLLOW on the leaf, which is also the production policy for a
+     * directory this program just created (design §11.4, as amended in step 5). */
+    int fd = open(path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    CHECK(fd >= 0, "cannot open %s: %s", path, strerror(errno));
+    if (fd < 0) return;
+    CHECK(fchmod(fd, mode) == 0, "fchmod %s: %s", path, strerror(errno));
+    close(fd);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -205,12 +231,12 @@ static void build_elf(elf_build *m, bool is64, bool le,
 
 static void write_elf(const char *path, const elf_build *m, mode_t mode)
 {
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
     CHECK(fd >= 0, "cannot create %s: %s", path, strerror(errno));
     if (fd < 0) return;
     CHECK(write(fd, m->b, m->n) == (ssize_t)m->n, "write elf: %s", strerror(errno));
+    CHECK(fchmod(fd, mode) == 0, "fchmod %s: %s", path, strerror(errno));
     close(fd);
-    CHECK(chmod(path, mode) == 0, "chmod: %s", strerror(errno));
 }
 
 static void test_elf_reader(void)
