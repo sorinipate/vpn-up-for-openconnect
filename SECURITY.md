@@ -81,7 +81,7 @@ with sudoers permitting only the helper and no longer `openconnect`. Until then:
   not recommended on shared or managed machines.
 - If you install the rule, point it at a root-owned `openconnect` outside any
   user-writable prefix, and confirm its default `vpnc-script`
-  (`openconnect --version`) is root-owned too.
+  (`openconnect --help`, under "VPN configuration script") is root-owned too.
 
 ## Scope notes
 

@@ -340,7 +340,9 @@ Passwords are stored in the OS keychain/keyring (or an encrypted vault as fallba
 
 ### Passwordless sudo (optional — read the trade-off first)
 
-`openconnect` needs root. By default you get the normal `sudo` prompt, and **that is the safe configuration**. Never store your sudo password anywhere.
+`openconnect` needs root. By default you get the normal `sudo` prompt, which avoids the *ambient* passwordless-root problem below and is **the safer default**. Never store your sudo password anywhere.
+
+Prompt mode is a compatibility mode, not a hardened boundary: a user-writable `openconnect` is a poor `sudo` target even with a password prompt, because a process running as you can replace the binary and wait for your next legitimate `sudo openconnect`. Closing that requires a root-owned installation — see [SECURITY.md](SECURITY.md#known-limitations).
 
 > ### ⚠️ A `NOPASSWD` rule for `openconnect` grants effective root
 >

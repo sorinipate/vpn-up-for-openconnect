@@ -32,7 +32,11 @@ the connection then proceeds and the tunnel comes up.
 ## It keeps asking for my sudo password
 
 `openconnect` needs root, so VPN Up runs it under `sudo`. That prompt is the
-**safe** configuration — the sudo password is never stored anywhere.
+**safer default** — it avoids the ambient passwordless-root problem below, and the
+sudo password is never stored anywhere. It is a compatibility mode rather than a
+hardened boundary, though: a user-writable `openconnect` is a poor `sudo` target
+even with a prompt, since a process running as you could replace the binary and
+wait for your next legitimate `sudo openconnect`.
 
 > ⚠️ **A passwordless rule is not "just scoped to one binary."** sudoers matches
 > the command, not its arguments, and several `openconnect` flags (`--script`,
