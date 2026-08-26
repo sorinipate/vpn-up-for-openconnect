@@ -18,6 +18,9 @@ XML
   source "$BATS_TEST_DIRNAME/../logging.sh"
   source "$BATS_TEST_DIRNAME/../profiles.sh"
   source "$BATS_TEST_DIRNAME/../core.sh"
+  # encryption.sh supplies secrets_delete_profile (and SECRET_FIELDS); the real
+  # fan-out runs, into the stubbed secrets_delete below.
+  source "$BATS_TEST_DIRNAME/../encryption.sh"
   source "$BATS_TEST_DIRNAME/../setup.sh"
   # stubs for remove_profile collaborators
   _service_path_for() { echo "$BATS_TEST_TMPDIR/no-such-service"; }
@@ -31,7 +34,11 @@ XML
   remove_profile "Doomed VPN" <<< "y"
   ! profile_exists "Doomed VPN"
   profile_exists "Keeper VPN"
-  grep -q "secret-deleted:Doomed VPN.password" "$BATS_TEST_TMPDIR/calls"
+  # every secret field must be cleared, not just the password
+  grep -q "secret-deleted:Doomed VPN.password"     "$BATS_TEST_TMPDIR/calls"
+  grep -q "secret-deleted:Doomed VPN.token_secret" "$BATS_TEST_TMPDIR/calls"
+  grep -q "secret-deleted:Doomed VPN.key_password" "$BATS_TEST_TMPDIR/calls"
+  ! grep -q "secret-deleted:Keeper VPN" "$BATS_TEST_TMPDIR/calls"
   [ ! -e "$DATA_DIR/pids/${PROGRAM_NAME}.Doomed_VPN.state" ]
   [ ! -e "$DATA_DIR/logs/${PROGRAM_NAME}.Doomed_VPN.log" ]
   xmlstarlet val -q "$PROFILES_FILE"

@@ -52,6 +52,26 @@ XML
   [ "$(generate_totp JBSWY3DPEHPK3PXP)" = "654321" ]
 }
 
+@test "generate_totp passes the seed on stdin, never on argv" {
+  # Capture both what oathtool received as arguments and what it read on stdin.
+  oathtool() { printf '%s\n' "$@" > "$BATS_TEST_TMPDIR/argv"; cat > "$BATS_TEST_TMPDIR/stdin"; echo "654321"; }
+  [ "$(generate_totp JBSWY3DPEHPK3PXP)" = "654321" ]
+
+  # The seed must not appear anywhere in the process table.
+  ! grep -q "JBSWY3DPEHPK3PXP" "$BATS_TEST_TMPDIR/argv"
+  # It must arrive on stdin instead, and '-' must be the key argument.
+  grep -qx -- "JBSWY3DPEHPK3PXP" "$BATS_TEST_TMPDIR/stdin"
+  grep -qx -- "-" "$BATS_TEST_TMPDIR/argv"
+  grep -qx -- "--totp" "$BATS_TEST_TMPDIR/argv"
+  grep -qx -- "-b" "$BATS_TEST_TMPDIR/argv"
+}
+
+@test "generate_totp matches the real oathtool for a known seed (stdin form)" {
+  command -v oathtool >/dev/null 2>&1 || skip "oathtool not installed"
+  # Same time step, so the stdin form and the legacy argv form must agree.
+  [ "$(generate_totp JBSWY3DPEHPK3PXP)" = "$(oathtool --totp -b JBSWY3DPEHPK3PXP)" ]
+}
+
 @test "require_oathtool succeeds when oathtool is present" {
   oathtool() { :; }   # a function makes `command -v oathtool` resolve
   run require_oathtool

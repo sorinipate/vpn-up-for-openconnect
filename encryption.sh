@@ -118,3 +118,19 @@ secrets_delete_file() {
 secrets_set() { local profile="$1"; local field="$2"; local value="$3"; local b; b="$(secrets_backend)"; local k; k="$(secrets_key "$profile" "$field")"; case "$b" in keychain) secrets_set_keychain "$k" "$value" ;; secret-tool) secrets_set_secrettool "$k" "$value" ;; openssl) secrets_set_openssl "$k" "$value" ;; file) secrets_set_file "$k" "$value" ;; esac; }
 secrets_get() { local profile="$1"; local field="$2"; local b; b="$(secrets_backend)"; local k; k="$(secrets_key "$profile" "$field")"; case "$b" in keychain) secrets_get_keychain "$k" ;; secret-tool) secrets_get_secrettool "$k" ;; openssl) secrets_get_openssl "$k" ;; file) secrets_get_file "$k" ;; esac; }
 secrets_delete() { local profile="$1"; local field="$2"; local b; b="$(secrets_backend)"; local k; k="$(secrets_key "$profile" "$field")"; case "$b" in keychain) secrets_delete_keychain "$k" ;; secret-tool) secrets_delete_secrettool "$k" ;; openssl) secrets_delete_openssl "$k" ;; file) secrets_delete_file "$k" ;; esac; }
+
+# Every secret field a profile can own. Deleting a profile must clear all of
+# them, or the orphans linger in the keychain/vault after the profile is gone.
+# Keep this list in step with every secrets_set call site (setup.sh add-profile,
+# `set-secret`); a new field added there and forgotten here reintroduces the leak.
+SECRET_FIELDS="password token_secret key_password"
+
+# Remove all of a profile's secrets. Field-by-field through secrets_delete so
+# each backend's own delete path (and its "absent is not an error" behaviour) is
+# reused unchanged.
+secrets_delete_profile() {
+  local profile="$1" field
+  for field in $SECRET_FIELDS; do
+    secrets_delete "$profile" "$field"
+  done
+}
