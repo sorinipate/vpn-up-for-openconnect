@@ -990,6 +990,54 @@ static void test_acl_detection(void)
     CHECK(strstr(e.msg, "requires root") != NULL, "say why: %s", e.msg);
 
     /*
+     * Probing uid 0 must be REFUSED, not attempted.
+     *
+     * This is the assertion that was missing, and its absence let a real bug ship
+     * in step 10: the closure spec defaulted probe_uid to `owner`, which is 0 in
+     * production, so the probe was asked to drop privilege to root and then verify
+     * it could not regain root. It "succeeded" at dropping, regained root
+     * trivially, and reported could-not-drop-privilege - a failure that reads as a
+     * broken sandbox and is actually a caller passing the wrong uid. It went
+     * unnoticed because the probe only runs as root, and nothing ran as root until
+     * the step 11 integration script did.
+     */
+    vu_err_clear(&e);
+    CHECK(!vu_writable_by(file, 0, &writable, &e),
+          "probing uid 0 is meaningless and must be refused, not attempted");
+    CHECK(strstr(e.msg, "uid 0") != NULL, "say why: %s", e.msg);
+
+    /* And the spec-level guard, so the mistake cannot be made through the
+     * closure check either. */
+    {
+        vu_closure_spec spec;
+        vu_closure_report rep;
+        vu_closure_spec_default(&spec, file, file, getuid());
+        spec.shell = file;
+        spec.probe = true;
+        spec.probe_uid = 0;                  /* the step 10 bug, exactly */
+        vu_err_clear(&e);
+        CHECK(!vu_closure_check(&spec, &rep, &e),
+              "a probe with no caller uid must be refused up front");
+        CHECK(strstr(e.msg, "calling user's uid") != NULL, "explain: %s", e.msg);
+
+        /*
+         * The default must not adopt the OWNER as the probe uid, which is the
+         * exact shape of the step 10 bug.
+         *
+         * A non-zero owner is essential here: the first version of this
+         * assertion passed owner 0, so `probe_uid = owner` and `probe_uid = 0`
+         * were indistinguishable and the test could not fail. Caught by
+         * restoring the bug and watching the corpus stay green.
+         */
+        vu_closure_spec fresh;
+        vu_closure_spec_default(&fresh, file, file, (uid_t)4242);
+        CHECK(!fresh.probe, "the default spec must leave the probe off");
+        CHECK(fresh.probe_uid != (uid_t)4242,
+              "the default must not adopt the owner as the probe uid: the probe "
+              "asks about the CALLER, and owner is 0 in production");
+    }
+
+    /*
      * The case §11.5 exists for: mode bits say no, an ACL says yes.
      *
      * Testable for real on macOS with chmod +a. The file is made read-only for

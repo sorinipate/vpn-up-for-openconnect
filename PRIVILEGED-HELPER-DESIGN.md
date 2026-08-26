@@ -409,6 +409,19 @@ the lock, validates or prunes the recorded pid, and rewrites it.
 > OpenConnect does not close inherited descriptors it does not own. Source
 > inspection is not a contract.
 
+**Confirmed in step 11**, against OpenConnect 9.21, by holding an `flock`,
+clearing `FD_CLOEXEC`, `exec`ing OpenConnect, and testing the lock from a
+separate open file description:
+
+```
+while OpenConnect runs   the inherited lock is STILL HELD
+after it exits           the lock is released
+```
+
+Both halves hold, so the model above works as described. The check lives in
+`helper/t/integration/openconnect-probe.sh` so it is re-answered per version
+rather than once.
+
 ---
 
 ## 7. Model B — approved VPN privilege
@@ -906,6 +919,31 @@ root-owned. A small piece of revision 1's uid-dropping logic returns here — bu
 only for two or three fixed paths, never for caller-supplied ones, which is
 exactly the distinction that made revision 1's version untenable.
 
+#### The probe drops to SUDO_UID, not to the owner — corrected during step 11
+
+The paragraph above says "drop supplementary groups, GID and UID to `SUDO_UID`".
+Step 10 implemented it with the required *owner* instead, which is 0 — so the
+probe dropped privilege to root and then asserted it could not regain root. It
+regained it trivially and reported could-not-drop-privilege, every time, on every
+machine.
+
+It went unnoticed because the probe only runs as root and nothing had run as root
+until step 11's integration script did. The first CI report read it as a missing
+Linux capability in the runner; it was neither environmental nor
+capability-related.
+
+Two corrections, and the second is the one that stops a recurrence:
+
+- The caller's uid is threaded through to the probe, so it asks the question §11.5
+  actually poses: can **the caller** write this object despite its mode bits.
+- `vu_writable_by` **refuses `as_uid == 0` outright**, and `vu_closure_check`
+  refuses `probe && probe_uid == 0` before forking. A meaningless question now
+  produces a clear refusal instead of a confusing failure four frames down.
+
+Where the probe cannot be performed — unprivileged, or root with no `SUDO_UID` —
+it is skipped and the report says so. A check that could not run must never be
+reported as having passed.
+
 ### 11.6 A root-owned OpenConnect is required on every platform
 
 > **Helper mode requires a root-owned OpenConnect installation whose whole
@@ -1084,7 +1122,9 @@ implementation (§16 step 3).
 9. Adversarial helper tests
 10. Linux trusted-execution-closure checks — the §11.4 walk, including the
     library search paths (see §11.4's step 10 subsection)
-11. Real OpenConnect integration environment
+11. Real OpenConnect integration environment — the two §18 items marked
+    "integration test, not source inspection", plus the OpenConnect facts §6
+    and §17.5 depend on
 12. Linux hardened service
 13. MacPorts / macOS closure research and implementation
 14. macOS hardened service
@@ -1139,11 +1179,27 @@ unaffected, and a service that restarts re-authenticates. The question is
 whether any protocol's cookie is single-use in a way that makes a fast restart
 loop fail confusingly, and what the backoff should be (§15).
 
-### 17.5 Does `https://` work as a proxy scheme?
+### 17.5 Does `https://` work as a proxy scheme? — **ANSWERED, step 11**
 
-`--proxy` v1 accepts `http://` and `socks5://` only. Add `https://` if, and only
-if, an integration test shows the installed OpenConnect treats it as intended
-(§9).
+**No, and the v1 schema is not conservative — it is exactly right.**
+
+Asked of the installed OpenConnect 9.21 rather than reasoned about:
+
+```
+http://    accepted (reaches the connection attempt)
+socks5://  accepted (reaches the connection attempt)
+https://   "Only http or socks(5) proxies supported"
+socks4://  "Only http or socks(5) proxies supported"
+```
+
+The helper's proxy validator and OpenConnect's own support matrix therefore agree
+exactly. `https://` is not something to add pending evidence; it is something
+OpenConnect itself refuses.
+
+Kept as a test (`helper/t/integration/openconnect-probe.sh`) rather than written
+down as a fact, because the answer is version-dependent: if a future OpenConnect
+adds the scheme, this section says to consider adding it too, and a test will say
+so where a note in a document would not.
 
 ---
 

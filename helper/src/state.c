@@ -237,6 +237,25 @@ bool vu_writable_by(const char *path, uid_t as_uid, bool *writable, vu_err *e)
     if (!path || !writable) { vu_err_set(e, "writable: null argument"); return false; }
     *writable = false;
 
+    /*
+     * Probing uid 0 is not a question with an answer: root can write anything, so
+     * "can uid 0 write this" is always yes and tells you nothing about whether an
+     * ACL grants the CALLER access, which is the only thing §11.5 is about.
+     *
+     * Refused loudly rather than attempted, because attempting it produced one of
+     * the more confusing failures in this project's history. The child below drops
+     * to as_uid and then asserts it cannot get back to root; asked to drop to
+     * ROOT, it "succeeds", regains root trivially, and exits with the
+     * could-not-drop-privilege code. The report reads as a broken sandbox or a
+     * missing capability, and the actual mistake is a caller passing the wrong
+     * uid. See the step 11 amendment in §11.5.
+     */
+    if (as_uid == 0) {
+        vu_err_set(e, "writable: refusing to probe uid 0 - root can write anything, "
+                      "so the caller's uid (SUDO_UID) is what this must be asked about");
+        return false;
+    }
+
     /* Only meaningful as root — dropping privilege is the whole mechanism. When
      * not root (under test, or in prompt mode) report the honest answer rather
      * than a misleading one. */

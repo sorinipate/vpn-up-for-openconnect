@@ -98,7 +98,7 @@ static int cmd_connect(int argc, char **argv, uid_t uid)
      * not tell them what.
      */
     static vu_closure_report closure;
-    if (!vu_exec_precheck(VU_OPENCONNECT, VU_VPNC_SCRIPT, 0, &closure, &e)) {
+    if (!vu_exec_precheck(VU_OPENCONNECT, VU_VPNC_SCRIPT, 0, uid, &closure, &e)) {
         fprintf(stderr, "vpn-up-helper: %s\n", e.msg);
         vu_closure_print(&closure, stderr);
         fprintf(stderr, "vpn-up-helper: helper mode needs a root-owned OpenConnect whose "

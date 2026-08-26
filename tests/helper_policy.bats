@@ -20,9 +20,24 @@ setup() {
   command -v cc >/dev/null 2>&1 || skip "no C compiler available"
   run make -C "$HELPER_DIR" test
   [ "$status" -eq 0 ] || { echo "$output"; return 1; }
+
   # Guard against a harness that silently runs nothing.
-  [[ "$output" == *"0 failures"* ]]
-  [[ "$output" != *"0 checks"* ]]
+  #
+  # The previous version tested for the SUBSTRING "0 checks", which broke the
+  # moment the corpus reached a count ending in zero: "1360 checks" contains
+  # "0 checks". Matching the summary line and reading the number is both correct
+  # and a stronger guard, since a floor catches a corpus that shrank as well as
+  # one that vanished.
+  [[ "$output" =~ ([0-9]+)[[:space:]]checks,[[:space:]]([0-9]+)[[:space:]]failures ]] \
+    || { echo "no summary line in: $output"; return 1; }
+  [ "${BASH_REMATCH[1]}" -ge 500 ] || { echo "only ${BASH_REMATCH[1]} checks ran"; return 1; }
+  [ "${BASH_REMATCH[2]}" -eq 0 ]
+  # And no summary line anywhere in the output may report a failure: `make test`
+  # runs the corpus more than once, in more than one configuration, so checking
+  # only the first match would miss the second. Done with a line-anchored grep
+  # rather than a glob over the whole output, which is what the first attempt at
+  # this used and which matched incidental digits between the two summaries.
+  ! printf '%s\n' "$output" | grep -qE '^[0-9]+ checks, [1-9][0-9]* failures$'
 }
 
 @test "vpn-up-admin refuses to run without privilege" {

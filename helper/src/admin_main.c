@@ -214,8 +214,21 @@ static int cmd_verify_closure(void)
 {
     vu_closure_spec spec;
     vu_closure_spec_default(&spec, VU_OPENCONNECT, VU_VPNC_SCRIPT, 0);
-    spec.probe = (geteuid() == 0);
-    spec.probe_uid = 0;
+
+    /*
+     * The ACL probe needs root (to drop privilege) AND a caller uid to drop TO.
+     * Running unprivileged, or as root with no SUDO_UID, it is skipped and the
+     * report says so - a probe that cannot be performed must not be reported as
+     * having passed.
+     */
+    if (geteuid() == 0) {
+        vu_err probe_err; vu_err_clear(&probe_err);
+        uid_t caller;
+        if (vu_sudo_uid(&caller, &probe_err)) {
+            spec.probe_uid = caller;
+            spec.probe = true;
+        }
+    }
 
     static vu_closure_report report;
     vu_err e; vu_err_clear(&e);
@@ -224,7 +237,10 @@ static int cmd_verify_closure(void)
     printf("trusted execution closure\n");
     printf("  openconnect   %s\n", VU_OPENCONNECT);
     printf("  vpnc-script   %s\n", VU_VPNC_SCRIPT);
-    printf("  PATH          %s\n\n", VU_HELPER_PATH);
+    printf("  PATH          %s\n", VU_HELPER_PATH);
+    printf("  ACL probe     %s\n\n", spec.probe
+           ? "on (checking effective write access for the invoking user)"
+           : "skipped (needs sudo, so that privilege can be dropped to test it)");
     vu_closure_print(&report, stdout);
 
     if (ok) {
