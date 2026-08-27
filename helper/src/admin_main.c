@@ -333,6 +333,19 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /*
+     * §11.1, same as the helper: an approval written by a binary the caller can
+     * replace is worth nothing, since the replacement would decide what counts
+     * as approved. `version` and `verify-closure` return above this point on
+     * purpose — both answer questions about machines that have no installation.
+     */
+    if (!vu_self_trusted(&e)) {
+        fprintf(stderr, "vpn-up-admin: %s\n", e.msg);
+        fprintf(stderr, "vpn-up-admin: refusing to run as root from an untrusted path; "
+                        "install with 'vpn-up install-helper'\n");
+        return 1;
+    }
+
     if (strcmp(cmd, "approve") == 0) return cmd_approve(argc - 2, argv + 2, uid);
     if (strcmp(cmd, "revoke")  == 0) return cmd_revoke(argc - 2, argv + 2, uid);
     if (strcmp(cmd, "list")    == 0) {

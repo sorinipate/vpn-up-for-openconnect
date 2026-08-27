@@ -317,6 +317,19 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /*
+     * §11.1: this binary re-walks its own install path before doing privileged
+     * work. A root-owned helper under a directory the caller can write is not a
+     * boundary — the caller replaces the file and waits for the next connect.
+     * After the root gate so that `version` stays runnable from a build tree.
+     */
+    if (!vu_self_trusted(&e)) {
+        fprintf(stderr, "vpn-up-helper: %s\n", e.msg);
+        fprintf(stderr, "vpn-up-helper: refusing to run as root from an untrusted path; "
+                        "install with 'vpn-up install-helper'\n");
+        return 1;
+    }
+
     if (strcmp(cmd, "connect") == 0) return cmd_connect(argc - 2, argv + 2, uid);
     if (strcmp(cmd, "stop")    == 0) return cmd_stop(argc - 2, argv + 2, uid);
 

@@ -34,7 +34,21 @@ on drop (30-second throttle).
 
 Because there's no terminal to type into at login, a service profile needs:
 
-1. **A passwordless sudoers rule** for the `openconnect` binary:
+1. **Passwordless root for the connect step.** Two ways, and the first is
+   strictly better:
+
+   **The helper (preferred).** `vpn-up install-helper --passwordless` installs a
+   root-owned `vpn-up-helper` and authorizes only *that* binary — one that builds
+   the `openconnect` command line itself from a closed set of validated options,
+   so the grant is not equivalent to arbitrary root the way the rule below is.
+   Each profile also needs `vpn-up approve-profile` once. Needs a C toolchain;
+   currently Linux with a distro-packaged `openconnect` (macOS and Homebrew are
+   refused — see [SECURITY.md](https://github.com/sorinipate/vpn-up-for-openconnect/blob/main/SECURITY.md#known-limitations)).
+   Note that `install-helper` **removes the legacy rule below**, so if you are
+   migrating, run it and re-check the service.
+
+   **The legacy sudoers rule** for the `openconnect` binary, where the helper is
+   not available yet:
 
    ```bash
    command -v openconnect     # verify the real path first

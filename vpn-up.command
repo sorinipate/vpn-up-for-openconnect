@@ -46,6 +46,7 @@ unset _legacy_file
 . "${PROGRAM_PATH}/profiles.sh"
 . "${PROGRAM_PATH}/core.sh"
 . "${PROGRAM_PATH}/twophase.sh"
+. "${PROGRAM_PATH}/helperinstall.sh"
 . "${PROGRAM_PATH}/setup.sh"
 . "${PROGRAM_PATH}/service.sh"
 
@@ -67,6 +68,10 @@ Commands:
   add-profile          Add a VPN profile interactively (incl. secret + pin)
   approve-profile      Approve a profile's endpoint for passwordless connects
                        (requires your password; needs the privileged helper)
+  install-helper       Install the privileged helper (root-owned) and retire the
+                       legacy passwordless openconnect rule.
+                       Add --passwordless to authorize unattended connects.
+  uninstall-helper     Remove the privileged helper and its sudoers rule
   remove-profile <p>   Remove a profile (XML, secret, logs, service)
   service install <p>  Connect at login + auto-reconnect (launchd/systemd)
   service uninstall <p> Remove the login service for a profile
@@ -97,6 +102,8 @@ case "${1:-}" in
   setup)      setup_wizard ;;
   add-profile) add_profile_wizard ;;
   approve-profile) approve_profile "${2:-}" ;;
+  install-helper)   shift; install_helper "$@" ;;
+  uninstall-helper) shift; uninstall_helper "$@" ;;
   remove-profile) remove_profile "${2:-}" ;;
   service)    shift; sub="${1:-}"
               case "$sub" in

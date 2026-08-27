@@ -221,3 +221,27 @@ char **vu_clean_env(void)
     static char *env[] = { path_var, NULL };
     return env;
 }
+
+bool vu_self_trusted(vu_err *e)
+{
+    /*
+     * Deliberately asks the OS which image is running rather than trusting
+     * argv[0], which the caller controls entirely: a caller who execve's us with
+     * argv[0] = "/opt/vpn-up/bin/vpn-up-helper" while the real image lives in a
+     * directory they can write would otherwise pass this check by saying so.
+     * vu_proc_identity reads /proc/<pid>/exe or proc_pidpath, neither of which
+     * the caller can influence.
+     */
+    vu_proc self;
+    if (!vu_proc_identity(getpid(), &self, e)) return false;
+
+    if (!vu_path_trusted(self.exe, 0, true, e)) {
+        /*
+         * The message from vu_path_trusted names the offending component, which
+         * is the whole value of reporting rather than just refusing: this is a
+         * misinstallation, and the person reading it has to go fix a directory.
+         */
+        return false;
+    }
+    return true;
+}

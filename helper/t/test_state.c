@@ -420,6 +420,51 @@ static void test_harden(void)
     close(keep);
 }
 
+/* ------------------------------------------------------- §11.1 self-check */
+
+/*
+ * vu_self_trusted() must REFUSE this test binary.
+ *
+ * The corpus runs from helper/build, which lives under a user-owned tree, so the
+ * owner-0 walk has to fail — and that is the only assertion available here,
+ * because an unprivileged process cannot construct a root-owned fixture to prove
+ * the positive case. The positive case is proven in t/integration/run.sh, which
+ * installs both binaries into a root-owned prefix and runs them from there.
+ *
+ * A test that can only pass is worthless, so this one is paired with two things
+ * that keep it honest: it first proves vu_proc_identity() works, so a refusal
+ * cannot be silently coming from "could not read my own path" instead of from
+ * the ownership check; and it skips loudly if the build tree itself happens to
+ * pass the walk (make test run as root from a root-owned directory), rather than
+ * reporting a failure that says nothing about the code.
+ */
+static void test_self_trusted(void)
+{
+    vu_err e; vu_err_clear(&e);
+
+    vu_proc self;
+    if (!vu_proc_identity(getpid(), &self, &e)) {
+        CHECK(false, "cannot identify own image, so the self-check cannot be tested: %s", e.msg);
+        return;
+    }
+    CHECK(self.exe[0] == '/', "own image path is absolute");
+
+    vu_err probe; vu_err_clear(&probe);
+    if (vu_path_trusted(self.exe, 0, true, &probe)) {
+        printf("skip: this build tree passes the owner-0 walk (%s), so the "
+               "refusal case cannot be asserted here; run.sh covers the accept case\n",
+               self.exe);
+        return;
+    }
+
+    vu_err_clear(&e);
+    CHECK(!vu_self_trusted(&e), "the test binary must not be considered trusted");
+    /* The message has to name the object, because a closure/install failure is
+     * something a person then has to go and fix. */
+    CHECK(e.msg[0] != '\0', "a refusal must carry a reason");
+    CHECK(strstr(e.msg, "/") != NULL, "the reason must name a path, got '%s'", e.msg);
+}
+
 /* --------------------------------------------------------------------- entry */
 
 void vu_test_state(void)
@@ -432,5 +477,6 @@ void vu_test_state(void)
     test_locking();
     test_identity_and_record();
     test_harden();
+    test_self_trusted();
     vu_rm_rf(g_root);
 }

@@ -431,6 +431,78 @@ else
   ok "a revoked approval stops working immediately"
 fi
 
+# ------------------------------------------------- 11.1: the self-path check
+#
+# The unprivileged corpus can only assert the REFUSAL (it runs from a user-owned
+# build tree). The accept case needs a root-owned install, which is exactly what
+# this script has - so both halves are proven, and neither test is one that could
+# only pass.
+
+echo
+echo "Install-path self-check (§11.1):"
+# Accept: everything above already ran the installed binaries as root, so a
+# root-gated command working at all is the positive case. Assert it explicitly
+# anyway, because it is what the refusal below is being contrasted with. `list`
+# is used rather than `version`: version sits ABOVE the root gate and therefore
+# never performs the walk.
+if sudo -n SUDO_UID="$UID_NOW" "$ADMIN" list >/dev/null 2>&1; then
+  ok "the installed vpn-up-admin accepts its own install path"
+else
+  bad "the installed vpn-up-admin refused its own install path"
+fi
+
+# Refuse: the SAME binary, run as root from the user-owned build directory.
+if sudo -n SUDO_UID="$UID_NOW" "$HERE/build/vpn-up-admin" list >/tmp/vu-out.txt 2>&1; then
+  bad "a root-gated command succeeded from a user-writable build directory"
+else
+  if grep -q 'untrusted path' /tmp/vu-out.txt; then
+    ok "the same binary is refused when run as root from the build directory"
+  else
+    bad "refused from the build directory, but not by the self-path check"
+    sed 's/^/       /' /tmp/vu-out.txt
+  fi
+fi
+
+# `version` must stay exempt, or doctor could not report on a machine with no
+# installation and the passwordless probe would conflate two different questions.
+if sudo -n "$HERE/build/vpn-up-admin" version >/dev/null 2>&1; then
+  ok "version still runs from anywhere (the documented diagnostic exemption)"
+else
+  bad "version is no longer runnable from a build tree; doctor depends on it"
+fi
+
+# ------------------------------------- sudo timestamp cache versus real policy
+#
+# The property: "passwordless" is a question about POLICY, and `sudo -n` answers
+# a question about the CACHE. Only a real sudo can show the difference, so this
+# cannot be an argv assertion.
+#
+# It must prove it can fail before it means anything. On a runner where the user
+# holds NOPASSWD: ALL - which is how this script can use `sudo -n` at all in CI -
+# `sudo -k -n <anything>` succeeds too, so every "must fail" leg below is
+# unassertable. Detect that and skip loudly rather than reporting a pass.
+
+echo
+echo "Passwordless probes ignore the credential cache:"
+if sudo -k -n /usr/bin/true >/dev/null 2>&1; then
+  echo "  [..] SKIPPED: this account can run anything passwordless (NOPASSWD: ALL),"
+  echo "       so 'must fail' cannot be distinguished from 'must succeed' here."
+  echo "       Run in a container or VM with ordinary sudoers to exercise it."
+else
+  # A warm cache: this script has been running sudo throughout, so plain -n
+  # succeeds for a command no rule names.
+  if sudo -n "$ADMIN" version >/dev/null 2>&1; then
+    ok "sudo -n succeeds on the warm timestamp, with no rule naming this binary"
+  else
+    bad "expected sudo -n to succeed on a warm timestamp"
+  fi
+  if sudo -k -n "$ADMIN" version >/dev/null 2>&1; then
+    bad "sudo -k -n succeeded with no rule naming the binary: the cache leaked in"
+  else
+    ok "sudo -k -n refuses the same command: it reports policy, not the cache"
+  fi
+fi
+
 rm -f /tmp/vu-cookie /tmp/vu-report.txt /tmp/vu-report2.txt /tmp/vu-err.txt /tmp/vu-out.txt
 
 echo

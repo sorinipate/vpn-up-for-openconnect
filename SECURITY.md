@@ -72,16 +72,55 @@ enforce anything. Point 3 makes that sharper still: with a user-writable default
 `vpnc-script`, filtering arguments would not be sufficient even if it were
 enforceable.
 
-Planned fix: a root-owned privileged helper (`vpn-up-helper`) that accepts a
-narrow, validated request and constructs the `openconnect` invocation itself,
-with sudoers permitting only the helper and no longer `openconnect`. Until then:
+**The fix is available**: a root-owned privileged helper (`vpn-up-helper`) that
+accepts a narrow, validated request and constructs the `openconnect` invocation
+itself, with sudoers permitting only the helper and never `openconnect`.
+
+```sh
+vpn-up install-helper                  # retires the legacy rule; connects prompt for a password
+vpn-up install-helper --passwordless   # also authorizes unattended connects (read below first)
+vpn-up doctor                          # reports the boundary and this machine's eligibility
+```
+
+`install-helper` **retires the legacy `openconnect` rule whether or not you ask
+for a passwordless one** — a hardened boundary next to the old arbitrary-root
+grant is worse than either alone, because it looks fixed. It needs a C toolchain
+(Xcode command line tools on macOS, `cc` on Linux), and it refuses to install on
+a machine whose OpenConnect execution closure it cannot verify, which today means
+**macOS is refused**: verifying the dynamic-library closure there needs Mach-O
+and dyld support that is not written yet. Homebrew installations are refused on
+every platform, for reason 2 above.
+
+Until you have run it:
 
 - Prefer the interactive `sudo` prompt (the default) and no sudoers rule.
-- The login service requires the rule, so it inherits this limitation and is
-  not recommended on shared or managed machines.
-- If you install the rule, point it at a root-owned `openconnect` outside any
-  user-writable prefix, and confirm its default `vpnc-script`
+- The login service requires a passwordless rule, so it inherits this limitation
+  and is not recommended on shared or managed machines.
+- If you install the legacy rule anyway, point it at a root-owned `openconnect`
+  outside any user-writable prefix, and confirm its default `vpnc-script`
   (`openconnect --help`, under "VPN configuration script") is root-owned too.
+
+### What installation itself assumes
+
+The helper's boundary defends against an arbitrary process running as your user
+**after** installation. Installation does not:
+
+> The interactive installation ceremony assumes the source tree and the build
+> artefacts are not being maliciously modified by another process running as your
+> user while it runs.
+
+`install-helper` compiles the helper from this checkout as *you* and then installs
+the result as root. A process running as your user could substitute what root
+installs, and no check inside the installed binary can detect that — it would be
+the substituted code doing the checking. Verifying provenance independently needs
+an input root can authenticate without trusting your account: a distribution
+package, or a release signed with a key obtained out of band. VPN Up has neither
+yet, so nothing shipped inside a user-writable checkout can close this.
+
+That is why the passwordless rule is **opt-in**. Without `--passwordless` you get
+the closed argument schema, the approved-endpoint binding and the closure check at
+the cost of one password per connect, and a locally built binary never becomes
+root-reachable-without-a-password as a side effect of installing.
 
 ## Scope notes
 

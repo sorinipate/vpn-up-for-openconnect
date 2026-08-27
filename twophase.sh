@@ -27,15 +27,45 @@ helper_dir() {
 helper_bin() { printf '%s/vpn-up-helper' "$(helper_dir)"; }
 admin_bin()  { printf '%s/vpn-up-admin'  "$(helper_dir)"; }
 
-# Is helper mode usable? Both halves have to hold:
-#   - the binary exists and is executable
-#   - sudoers permits it WITHOUT a password
-# The second is probed with `sudo -n`, because a rule that still prompts is no
-# use to a login service and would hang it.
+# Two questions, deliberately separate, because the passwordless sudoers rule is
+# opt-in (`install-helper --passwordless`). Without the tiers, an install that
+# writes no rule would leave the helper installed and never used.
+
+# Installed and runnable. `version` sits above the helper's root gate, so this
+# proves presence and executability only - NOT that the install path is trusted.
+# That is checked by the binaries themselves at every privileged invocation
+# (§11.1), where a caller cannot skip it.
+helper_mode_installed() {
+  local h a; h="$(helper_bin)"; a="$(admin_bin)"
+  [ -x "$h" ] && [ -x "$a" ] || return 1
+  "$a" version >/dev/null 2>&1
+}
+
+# Genuinely passwordless - the gate a login service needs.
+#
+# `-k` is not decoration: `sudo -n` alone answers "can this run right now without
+# prompting", which is also true whenever the user authenticated to sudo in the
+# last few minutes. A service starting at boot has no such cache, so a plain
+# `sudo -n` here would report "available" for a machine where the service is
+# about to hang on a password prompt. With a command, `-k` makes sudo ignore the
+# cached credentials without invalidating them, so this asks about policy.
 helper_mode_available() {
   local h; h="$(helper_bin)"
   [ -x "$h" ] || return 1
-  sudo -n "$h" version >/dev/null 2>&1
+  sudo -k -n "$h" version >/dev/null 2>&1
+}
+
+# Should THIS run use helper mode?
+#
+# Passwordless: always. Installed but not passwordless: only when there is a
+# terminal, because the only cost is a sudo prompt and somebody has to be there
+# to answer it. Unattended runs (the launchd agent / systemd unit, which invoke
+# `vpn-up start <profile>` with no tty) fall through to prompt mode rather than
+# blocking forever on a password nobody will type.
+helper_mode_usable() {
+  helper_mode_available && return 0
+  helper_mode_installed || return 1
+  [ -t 0 ] || [ -t 1 ]
 }
 
 # ------------------------------------------------- phase-one output decoding

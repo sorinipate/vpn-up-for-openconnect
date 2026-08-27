@@ -251,6 +251,46 @@ writing another one:
     is an exit code, which took a second run to diagnose. A harness whose failure
     mode is "the harness dies" cannot report anything.
 
+-------------------------------------------- the install-path self-check (11.1)
+
+vu_self_trusted() is asserted from both sides, because either alone would be a
+test that cannot fail:
+
+  t/test_state.c        REFUSES the test binary, which runs from a user-owned
+                        helper/build. It first proves vu_proc_identity works, so
+                        a refusal cannot silently be "could not read my own
+                        path", and it SKIPS loudly if the build tree itself
+                        passes the owner-0 walk (make test run as root from a
+                        root-owned directory), rather than reporting a failure
+                        that says nothing about the code.
+  t/integration/run.sh  ACCEPTS the installed copy on a root-owned prefix, and
+                        refuses the SAME binary run as root from the build
+                        directory. Also asserts that `version` still runs from
+                        anywhere - doctor depends on that exemption, and the
+                        passwordless probe depends on it too.
+
+Which command each caller uses is not interchangeable, and conflating them is the
+mistake to watch for: `version` is above the root gate (so it never performs the
+walk) and answers "does sudo authorize this without a password"; `list` is below
+it and answers "is this install path trusted". An install verification built on
+`version` would report success on an untrusted path.
+
+------------------------------------------- sudo's credential cache versus policy
+
+run.sh has a section proving that `sudo -n` answers a question about the CACHE
+while `sudo -k -n` answers one about POLICY. It cannot be an argv assertion - only
+a real sudo shows the difference - and on a GitHub runner it cannot be asserted
+at all: the runner user holds NOPASSWD: ALL (which is why this script can use
+`sudo -n` freely), so `sudo -k -n <anything>` succeeds and every "must fail" leg
+becomes unassertable.
+
+It therefore detects that case and skips loudly, with two spaces of indent so it
+does not trip the CI guard that fails the job on a line starting with SKIPPED.
+The honest consequence: **that section is effectively unexercised in CI today**,
+and closing it needs a container or VM with ordinary sudoers. The unit-level half
+- that every probe carries -k - is asserted in tests/helperinstall.bats and does
+run everywhere.
+
 ---------------------------------------------------------- what is NOT tested yet
 
 By design, because it needs something this corpus does not have:

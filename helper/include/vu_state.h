@@ -192,6 +192,29 @@ typedef struct {
 
 bool vu_proc_identity(pid_t pid, vu_proc *out, vu_err *e);
 
+/*
+ * Is THIS executable running from a path we are willing to hand root to?
+ *
+ * Design §11.1: "the load-bearing part is not the path but the check", and each
+ * binary repeats the walk on its own path. Resolves the running image (Linux
+ * /proc/self/exe, macOS proc_pidpath) and runs it through vu_path_trusted with
+ * owner 0, so a root-owned binary sitting under a directory the caller can write
+ * is refused before it does any privileged work.
+ *
+ * SCOPE, and this is easy to overclaim: it prevents a LEGITIMATE binary being
+ * run as root from an untrusted path. It says nothing about a malicious binary
+ * that is already installed as root on a trusted path — code cannot attest to
+ * its own provenance, and the install-time trust assumption in SECURITY.md is
+ * where that is dealt with instead.
+ *
+ * Called after the root gate in both binaries, NOT at the top of main(): the
+ * diagnostic commands (`version`, and vpn-up-admin's unprivileged
+ * `verify-closure`) deliberately run from anywhere, because their job is to
+ * answer questions about a machine that may not have an installation yet. §11.1
+ * records that exemption.
+ */
+bool vu_self_trusted(vu_err *e);
+
 /* Write pid, start token and endpoint into the (already locked) profile dir.
  * Called BEFORE execve, with getpid(): execve replaces the image rather than
  * forking, so the pid recorded here is exactly the OpenConnect pid. */

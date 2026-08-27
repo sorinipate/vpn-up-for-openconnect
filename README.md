@@ -229,6 +229,8 @@ vpn-up remove-profile "Old VPN"    # remove profile + secret + logs + service
 vpn-up status                      # all running profiles, gateways, uptime
 vpn-up logs -f                     # follow the connection log
 vpn-up stop                        # stop all VPNs (or: stop "Frankfurt VPN")
+vpn-up doctor                      # environment, secret backend, privilege boundary
+vpn-up install-helper              # install the root-owned privileged helper
 ```
 
 Each profile keeps its own log and PID/state files under `~/.config/vpn-up`, so `status`, `stop`, and `logs` are profile-aware. You can connect multiple different profiles at once; starting the same profile twice is refused. Whether two tunnels coexist cleanly still depends on the routes and DNS settings pushed by their gateways — split-tunnel or non-overlapping routes are the safest fit.
@@ -348,9 +350,35 @@ Prompt mode is a compatibility mode, not a hardened boundary: a user-writable `o
 >
 > Earlier versions of this README described the rule below as safe because it is "scoped to the one binary." **That was wrong, and is retracted.** sudoers matches the *command*, not its *arguments*: when a rule names a command with no arguments, the user may run it with whatever arguments they choose. Several `openconnect` flags execute another program as root — `--script`, `--script-tun`, `--csd-wrapper`, and `--config`/`--xmlconfig`, which can name those from a file. So the rule below is equivalent to passwordless root for your account, usable by anything running as your user, whether or not it goes through `vpn-up`.
 >
-> Filtering inside `vpn-up` cannot fix this — the rule permits `openconnect` directly, bypassing `vpn-up` entirely. The boundary has to move into sudoers. A root-owned privileged helper that builds the `openconnect` invocation itself, with sudoers permitting only *that* helper, is the planned fix (see [SECURITY.md](SECURITY.md#known-limitations)). Until it ships, treat the rule below as a deliberate trade-off — appropriate on a single-user machine you trust, not on a shared or managed one.
+> Filtering inside `vpn-up` cannot fix this — the rule permits `openconnect` directly, bypassing `vpn-up` entirely. The boundary has to move into sudoers, and it now can:
 
-If you accept that trade-off:
+#### The supported route: `install-helper`
+
+```bash
+vpn-up install-helper                  # root-owned helper; connects ask for your password
+vpn-up install-helper --passwordless   # also authorize unattended connects
+vpn-up doctor                          # what this machine's boundary actually looks like
+```
+
+This installs a root-owned `vpn-up-helper`, which builds the `openconnect` command line itself from a closed set of validated options, and a separate `vpn-up-admin` that approves endpoints and is **never** passwordless. Sudoers then names only the helper — a binary that is safe for any arguments — instead of `openconnect`, which is not.
+
+It also **retires the legacy rule below on every run**, with or without `--passwordless`: leaving the old arbitrary-root grant in place next to a hardened boundary is worse than either alone, because it looks fixed.
+
+Requirements and limits, honestly:
+
+| | |
+|---|---|
+| Needs | a C toolchain — Xcode command line tools on macOS, `cc` on Linux (the helper is compiled from this checkout, as you, and installed as root) |
+| Linux | works with a distro-packaged `openconnect` |
+| macOS | **currently refused.** Verifying the dynamic-library closure needs Mach-O/dyld support that is not written yet, so helper mode fails closed rather than claiming a boundary nobody has checked |
+| Homebrew | refused on every platform — the prefix is owned by the installing user (see the caveat below) |
+| Assumes | that no process running as your user tampers with the build while you install; read ["What installation itself assumes"](SECURITY.md#what-installation-itself-assumes) before using `--passwordless` |
+
+Without `--passwordless` you still get the closed schema, the approved-endpoint binding and the closure check — a password per connect is the only cost, and a login service is the only thing that needs more.
+
+#### The legacy rule (deprecated)
+
+Kept documented because machines still carry it and because `install-helper` is not available everywhere yet. It is equivalent to passwordless root for your account — a deliberate trade-off, appropriate on a single-user machine you trust, not on a shared or managed one. `vpn-up doctor` reports it, and `install-helper` removes it.
 
 ```bash
 # Verify the real path first — it varies by platform and by Homebrew version:
