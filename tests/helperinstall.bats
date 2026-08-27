@@ -77,6 +77,14 @@ EOS
   # real walk still runs here, so a walk that crashed or stopped early would
   # still show up in these tests. Any test that needs the truth calls
   # use_real_stat.
+  # Preserved under other names BEFORE being shadowed, so a test that needs the
+  # truth restores it by name. The previous version of use_real_stat re-sourced
+  # helperinstall.sh instead, which also reset vu_sudo and the sandbox path
+  # overrides above - a footgun waiting for its first victim.
+  eval "_real_file_owner_uid() $(declare -f file_owner_uid | tail -n +2)"
+  eval "_real_file_mode() $(declare -f file_mode | tail -n +2)"
+  eval "_real_acl_extended() $(declare -f _vu_acl_extended | tail -n +2)"
+
   file_owner_uid() { echo 0; }
   file_mode() { echo 755; }
   _vu_acl_extended() { return 1; }
@@ -147,10 +155,9 @@ EOS
 # filesystem actually says. Without this they would be asserting against setup's
 # stubs, which is the shape of a test that cannot fail.
 use_real_stat() {
-  file_owner_uid() { stat -c '%u' "$1" 2>/dev/null || stat -f '%u' "$1" 2>/dev/null; }
-  file_mode()      { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null; }
-  unset -f _vu_acl_extended
-  source "$BATS_TEST_DIRNAME/../helperinstall.sh"
+  file_owner_uid()   { _real_file_owner_uid "$@"; }
+  file_mode()        { _real_file_mode "$@"; }
+  _vu_acl_extended() { _real_acl_extended "$@"; }
 }
 
 legacy_line() { printf '%s ALL=(root) NOPASSWD: /usr/sbin/openconnect' "$(id -un)"; }
@@ -484,25 +491,46 @@ sudo_log()     { cat "$LOG"; }
   [ "$status" -ne 0 ]
 }
 
-@test "ACL handling is platform-correct: base entries on Linux are not an ACL" {
-  # Getting this wrong rejects every stock system utility, because on Linux the
-  # ordinary mode bits ARE three base ACL entries and getfacl prints them for
-  # every file. `getfacl -s` is what distinguishes an extended ACL.
+@test "ACL handling is platform-correct, and detects a real ACL" {
+  # Two failure modes, opposite directions, and both matter:
+  #
+  #   too strict - on Linux the ordinary mode bits ARE three base ACL entries, so
+  #                plain getfacl prints something for every file. Treating that as
+  #                "has an ACL" rejects every stock system utility and makes the
+  #                installer unusable. `getfacl -s` is what distinguishes an
+  #                extended entry.
+  #   too loose  - an ACL that grants write past the mode bits is exactly what
+  #                this check exists to catch, so it has to be caught.
+  #
+  # This asserts both, against the REAL implementation. It previously asserted
+  # only the first, against setup's stub, which made it a test that could not
+  # fail - proven by breaking the real function and watching it still pass.
+  use_real_stat
+
+  local d="$BATS_TEST_TMPDIR/acl"
+  mkdir -p "$d"
+
+  # No ACL yet: mode bits alone must not read as one.
+  run _vu_acl_extended "$d"
+  [ "$status" -ne 0 ]
+  # And a real system utility, which is the case that would break the installer.
+  run _vu_acl_extended /usr/bin/install
+  [ "$status" -ne 0 ]
+
   if [ "$(uname)" = Darwin ]; then
-    command -v ls >/dev/null || skip
-    run _vu_acl_extended /usr/bin/install
-    [ "$status" -ne 0 ]
+    # The same idiom helper/t/test_closure.c uses for the §11.5 probe.
+    chmod +a# 0 "everyone allow write" "$d" 2>/dev/null || skip "no ACL support on this filesystem"
   else
-    command -v getfacl >/dev/null 2>&1 || skip "no getfacl"
-    run _vu_acl_extended /usr/bin/install
-    [ "$status" -ne 0 ]
-    local d="$BATS_TEST_TMPDIR/acl"
-    mkdir -p "$d"
-    if setfacl -m "u:$(id -u):rwx" "$d" 2>/dev/null; then
-      run _vu_acl_extended "$d"
-      [ "$status" -eq 0 ]
-    fi
+    command -v setfacl >/dev/null 2>&1 || skip "no setfacl"
+    setfacl -m "u:$(id -u):rwx" "$d" 2>/dev/null || skip "no ACL support on this filesystem"
+    # The premise, asserted rather than assumed: if `getfacl -s` prints nothing
+    # for a directory that demonstrably carries an extended ACL, then the
+    # implementation is built on a false premise and must not skip past it.
+    [ -n "$(getfacl -s -- "$d" 2>/dev/null)" ]
   fi
+
+  run _vu_acl_extended "$d"
+  [ "$status" -eq 0 ]
 }
 
 # --- dry run ----------------------------------------------------------------
