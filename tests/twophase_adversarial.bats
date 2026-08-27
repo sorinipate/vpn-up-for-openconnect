@@ -200,6 +200,12 @@ setup() {
 @test "doctor fails when vpn-up-admin is reachable without a password" {
   export VPN_UP_HELPER_DIR="$BATS_TEST_TMPDIR/bin"
   mkdir -p "$VPN_UP_HELPER_DIR" "$BATS_TEST_TMPDIR/stub"
+  # Both binaries present, because the check now answers this by EXECUTING them
+  # (`sudo -k -n <bin> version`) rather than by asking sudo -l about a path: -l
+  # cannot distinguish "not permitted" from "listing needs a password", and it
+  # honours the credential cache. Installed is also the case that matters.
+  printf '#!/bin/sh\nexit 0\n' > "$VPN_UP_HELPER_DIR/vpn-up-admin"
+  chmod +x "$VPN_UP_HELPER_DIR/vpn-up-admin"
   # A sudo that says "yes, passwordless" for anything asked of it — which is
   # exactly the misconfiguration this check exists to find.
   printf '#!/bin/sh\nexit 0\n' > "$BATS_TEST_TMPDIR/stub/sudo"
@@ -215,7 +221,8 @@ setup() {
   export VPN_UP_HELPER_DIR="$BATS_TEST_TMPDIR/bin"
   mkdir -p "$VPN_UP_HELPER_DIR" "$BATS_TEST_TMPDIR/stub"
   printf '#!/bin/sh\nexit 0\n' > "$VPN_UP_HELPER_DIR/vpn-up-helper"
-  chmod +x "$VPN_UP_HELPER_DIR/vpn-up-helper"
+  printf '#!/bin/sh\nexit 0\n' > "$VPN_UP_HELPER_DIR/vpn-up-admin"
+  chmod +x "$VPN_UP_HELPER_DIR/vpn-up-helper" "$VPN_UP_HELPER_DIR/vpn-up-admin"
 
   # Passwordless for the helper, password required for the admin tool: the
   # intended configuration.
@@ -233,6 +240,35 @@ STUB
   PATH="$BATS_TEST_TMPDIR/stub:$PATH" run doctor_privilege_boundary
   [ "$status" -eq 0 ]
   [[ "$output" == *"vpn-up-admin is not reachable without a password"* ]]
+}
+
+@test "doctor reports a passwordless rule naming a vpn-up-admin that is not installed yet" {
+  # An execution probe cannot ask about a binary that does not exist, but a rule
+  # naming that path is still a rule and takes effect the moment something is
+  # installed there. So the uninstalled case falls back to policy listing - and a
+  # NEGATIVE listing result is reported as unproven, never as an OK, because
+  # `sudo -l` also fails when listing itself needs a password.
+  export VPN_UP_HELPER_DIR="$BATS_TEST_TMPDIR/nothing-installed"
+  mkdir -p "$BATS_TEST_TMPDIR/stub"
+  printf '#!/bin/sh\nexit 0\n' > "$BATS_TEST_TMPDIR/stub/sudo"
+  chmod +x "$BATS_TEST_TMPDIR/stub/sudo"
+
+  PATH="$BATS_TEST_TMPDIR/stub:$PATH" run doctor_privilege_boundary
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not even installed yet"* ]]
+}
+
+@test "doctor never claims vpn-up-admin is safe when it cannot prove it" {
+  export VPN_UP_HELPER_DIR="$BATS_TEST_TMPDIR/nothing-installed"
+  mkdir -p "$BATS_TEST_TMPDIR/stub"
+  # A sudo that refuses everything, including listing - the listpw case.
+  printf '#!/bin/sh\nexit 1\n' > "$BATS_TEST_TMPDIR/stub/sudo"
+  chmod +x "$BATS_TEST_TMPDIR/stub/sudo"
+
+  PATH="$BATS_TEST_TMPDIR/stub:$PATH" run doctor_privilege_boundary
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"cannot be proven either way"* ]]
+  [[ "$output" != *"is not reachable without a password"* ]]
 }
 
 @test "doctor accepts vpn-up-admin in an authenticated rule" {

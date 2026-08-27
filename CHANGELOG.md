@@ -8,6 +8,50 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 ## [Unreleased]
 ### Added
 
+- **`vpn-up install-helper` / `uninstall-helper` — helper mode is now
+  installable, so the privilege boundary is real rather than latent.** The
+  installer builds the two binaries from this checkout *as you*, installs them
+  root-owned on a path it has verified from `/` downward, and refuses outright on
+  a machine whose OpenConnect execution closure it cannot verify — which today
+  means macOS is refused and Homebrew is refused everywhere, rather than helper
+  mode claiming a boundary nobody has checked. Needs a C toolchain.
+  - **The legacy `NOPASSWD: openconnect` rule is retired on every run**, whether
+    or not you ask for a passwordless helper rule. Installing a hardened boundary
+    while leaving the old arbitrary-root grant in place is worse than either
+    alone, because it looks fixed. Only a file that byte-matches one this
+    project's own documentation produced is touched; anything else is reported
+    and left strictly alone.
+  - **Passwordless authorization is opt-in** (`--passwordless`), and writes
+    `/etc/sudoers.d/vpn-up-<uid>` naming *only* `vpn-up-helper`, with a numeric
+    uid subject. Without it you still get the closed argument schema, the
+    approved-endpoint binding and the closure check, at the cost of one password
+    per connect. `SECURITY.md` now states what installation itself assumes and
+    why that makes the rule opt-in.
+  - If a post-install check finds the boundary broken — `vpn-up-admin`
+    passwordless-reachable through some other rule — the run removes the rule *it*
+    created and fails. It never restores a retired legacy rule: rollback goes to
+    *no* passwordless rule, never back to arbitrary root.
+  - `uninstall-helper` removes privilege before it removes the executable, and
+    keeps the binaries if it cannot prove the helper is no longer
+    passwordless-reachable. `--purge` removes only the invoking user's approvals.
+  - `--dry-run` shows the intended changes and makes none, and says plainly that
+    it read no root-only state and is not a security verdict.
+
+### Fixed
+
+- **`sudo -n` was being read as "is this passwordless?" — it is not.** sudo
+  caches a successful authentication, so anything you are merely *allowed* to run
+  looks passwordless for minutes after you type your password. `doctor` could
+  therefore report the helper as available on a machine where a login service
+  would hang at boot on a password prompt, and could print
+  `[OK] vpn-up-admin is not reachable without a password` when the check had
+  simply failed. Every passwordless probe now uses `sudo -k -n`, which ignores
+  the cached credentials, and an unprovable answer is reported as unprovable
+  instead of as a pass.
+- Both privileged binaries now re-verify their own install path before doing any
+  privileged work (design §11.1), so a root-owned helper sitting under a
+  directory you can write is refused rather than trusted.
+
 - **Two-phase OpenConnect plumbing (not yet switchable on).** `vpn-up` can now
   authenticate *unprivileged* with `openconnect --authenticate`, parse the
   resulting session descriptor without `eval`, and hand only the cookie to a

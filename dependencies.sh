@@ -64,10 +64,25 @@ check_dependencies() {
 # then connects there "legitimately".
 #
 # The check is on EFFECTIVE PASSWORDLESS REACHABILITY, not on whether a name
-# appears in a sudoers file. `sudo -n -l <command>` asks sudo's own policy
-# whether that exact command can run without a password, which is the question
-# that matters and is not answerable by grepping /etc/sudoers.d: rules can come
-# from LDAP, from includes, from Defaults targetpw, or from an alias.
+# appears in a sudoers file: rules can come from LDAP, from includes, from
+# Defaults targetpw, or from an alias, none of which grepping /etc/sudoers.d
+# would find.
+#
+# Two corrections to how that used to be asked here, both of which produced a
+# green line that meant nothing:
+#
+#   1. `sudo -n -l <cmd>` was read as "not permitted" whenever it failed, but it
+#      also fails when LISTING itself needs a password (listpw). That printed
+#      "[OK] vpn-up-admin is not reachable without a password" for a machine
+#      where it might well be.
+#   2. `sudo -n` honours the credential cache, so anything the user is merely
+#      allowed to run looks passwordless for minutes after they authenticate.
+#
+# Both are fixed by executing OUR OWN binaries with `sudo -k -n`: -k makes sudo
+# ignore the cached credentials, and `version` cannot fail on its own, so a
+# non-zero exit means sudo refused. Safe to execute because both binaries are
+# root-owned on a trusted path - which is emphatically not true of openconnect,
+# and the legacy-grant check below therefore never executes it.
 #
 # vpn-up-admin in an ORDINARY authenticated rule is legitimate administrator
 # policy and passes. Only passwordless reachability fails.
@@ -85,19 +100,37 @@ doctor_privilege_boundary() {
   h="$(helper_bin)"; a="$(admin_bin)"
 
   if [ -x "$h" ]; then
-    if sudo -n -l "$h" >/dev/null 2>&1; then
+    if sudo -k -n "$h" version >/dev/null 2>&1; then
       echo "  [OK] vpn-up-helper is reachable without a password (this is the intended rule)"
     else
-      echo "  [..] vpn-up-helper is installed but not passwordless; helper mode will not"
-      echo "       run unattended. See SECURITY.md for the sudoers rule."
+      echo "  [..] vpn-up-helper is installed but not passwordless; helper mode works"
+      echo "       interactively and will not run unattended. Authorize it with:"
+      echo "       ${PROGRAM_NAME} install-helper --passwordless"
     fi
   else
     echo "  [..] vpn-up-helper not installed at $h (prompt mode is in use)"
+    echo "       Install it with: ${PROGRAM_NAME} install-helper"
   fi
 
-  # The invariant. Checked even when the binary is not installed at this path,
-  # because a rule naming a path that does not exist yet is still a rule.
-  if sudo -n -l "$a" >/dev/null 2>&1; then
+  # The invariant. When the binary is absent the question cannot be asked by
+  # execution, so it is reported as unproven rather than as a pass: a rule naming
+  # a path that does not exist yet is still a rule, and would take effect the
+  # moment something is installed there.
+  if [ ! -x "$a" ]; then
+    # Nothing to execute, so fall back to asking sudo's policy about the path. A
+    # rule naming a path that does not exist yet is still a rule and would take
+    # effect the moment something is installed there, so an affirmative answer is
+    # still reported. A negative one is NOT reported as an OK: `sudo -l` also
+    # fails when listing needs a password, and when the command does not resolve.
+    if sudo -k -n -l "$a" >/dev/null 2>&1; then
+      echo "  [!!] a passwordless rule names $a, which is not even installed yet."
+      echo "       Remove it: it would take effect the moment that path exists."
+      rc=1
+    else
+      echo "  [..] vpn-up-admin is not installed; its passwordless reachability"
+      echo "       cannot be proven either way yet"
+    fi
+  elif sudo -k -n "$a" version >/dev/null 2>&1; then
     echo "  [!!] vpn-up-admin IS REACHABLE WITHOUT A PASSWORD."
     echo "       This breaks the approval boundary: anything holding the passwordless"
     echo "       grant can approve an endpoint and then connect to it. Remove"
@@ -141,6 +174,61 @@ doctor_execution_closure() {
 
   # Indent its report so it reads as part of doctor's output.
   "$a" verify-closure 2>&1 | sed 's/^/  /'
+  return 0
+}
+
+# ------------------------------------------------------------- legacy grants
+#
+# The rule this project used to document - NOPASSWD on the openconnect binary -
+# is equivalent to passwordless root (SECURITY.md). doctor reports it whether or
+# not the helper is installed, because that grant is the actual finding.
+#
+# Detection is by POLICY LISTING, never by execution. Running a possibly
+# user-writable openconnect under sudo to discover whether it can be run under
+# sudo would execute attacker-controlled code as root to answer the question.
+doctor_legacy_grants() {
+  echo
+  echo "Legacy passwordless openconnect grant:"
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "  [..] sudo not found; nothing to check"
+    return 0
+  fi
+  # helperinstall.sh owns the probe and the exact list of documented paths.
+  command -v vu_report_legacy_grants >/dev/null 2>&1 || . "${PROGRAM_PATH}/helperinstall.sh"
+  if ! vu_tools_resolve >/dev/null 2>&1; then
+    echo "  [..] could not resolve a trusted sudo; skipping"
+    return 0
+  fi
+  vu_report_legacy_grants || true
+  return 0
+}
+
+# Installed state and manifest drift. A changed hash is not an attack signal -
+# anyone who can write a root-owned path can rewrite the manifest too - it is
+# how you notice an installation that no longer matches this checkout.
+doctor_helper_install() {
+  echo
+  echo "Privileged helper installation:"
+  local h a m
+  h="$(helper_bin)"; a="$(admin_bin)"; m="$(_vu_manifest_file)"
+  if [ ! -x "$h" ] || [ ! -x "$a" ]; then
+    echo "  [..] not installed (prompt mode). Install with: ${PROGRAM_NAME} install-helper"
+    return 0
+  fi
+  echo "  [OK] installed in $(helper_dir)"
+  if [ -r "$m" ]; then
+    echo "  -    policy ABI $(_vu_manifest_value policy-abi || echo unknown)"
+    local recorded actual
+    for pair in "helper-sha256:$h" "admin-sha256:$a"; do
+      recorded="$(_vu_manifest_value "${pair%%:*}" || true)"
+      actual="$(_vu_sha256 "${pair#*:}" 2>/dev/null || true)"
+      if [ -n "${recorded:-}" ] && [ -n "${actual:-}" ] && [ "$recorded" != "$actual" ]; then
+        echo "  [..] ${pair##*/} differs from the manifest (reinstalled outside install-helper?)"
+      fi
+    done
+  else
+    echo "  [..] no manifest at $m; this installation was not made by install-helper"
+  fi
   return 0
 }
 
@@ -197,8 +285,11 @@ doctor() {
   # helper_bin/admin_bin come from twophase.sh, which vpn-up.command sources at
   # startup. Sourced here only if something called doctor without it.
   command -v helper_bin >/dev/null 2>&1 || . "${PROGRAM_PATH}/twophase.sh"
+  command -v install_helper >/dev/null 2>&1 || . "${PROGRAM_PATH}/helperinstall.sh"
   local boundary_rc=0
+  doctor_helper_install
   doctor_privilege_boundary || boundary_rc=$?
+  doctor_legacy_grants
   doctor_execution_closure
 
   echo

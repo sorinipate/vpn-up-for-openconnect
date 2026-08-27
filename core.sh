@@ -279,7 +279,7 @@ connect() {
   # unprivileged, and let vpn-up-helper establish the tunnel from the cookie.
   # Prompt mode stays the fallback and the compatibility path — it keeps
   # extraArgs and split tunnelling working, at the cost of a sudo password.
-  if [ "${VPN_UP_FORCE_PROMPT_MODE:-FALSE}" != TRUE ] && helper_mode_available; then
+  if [ "${VPN_UP_FORCE_PROMPT_MODE:-FALSE}" != TRUE ] && helper_mode_usable; then
     if profile_id_ensure "${VPN_NAME}" >/dev/null; then
       connect_via_helper
       return $?
@@ -371,7 +371,7 @@ stop() {
   # pid in root-owned state and verifies process identity before signalling, so
   # asking it is both the correct and the only way to stop one. Prompt-mode
   # tunnels still go through the pid-file path below.
-  if [ -n "$requested" ] && [ "${VPN_UP_FORCE_PROMPT_MODE:-FALSE}" != TRUE ] && helper_mode_available; then
+  if [ -n "$requested" ] && [ "${VPN_UP_FORCE_PROMPT_MODE:-FALSE}" != TRUE ] && helper_mode_usable; then
     if load_profile_fields "$requested" 2>/dev/null && [ -n "${VPN_PROFILE_ID:-}" ]; then
       local out
       if out="$(stop_via_helper 2>&1)"; then

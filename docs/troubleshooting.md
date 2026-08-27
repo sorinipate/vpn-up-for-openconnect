@@ -48,7 +48,18 @@ wait for your next legitimate `sudo openconnect`.
 > [Known limitations](https://github.com/sorinipate/vpn-up-for-openconnect/blob/main/SECURITY.md#known-limitations)
 > before installing one.
 
-If you accept that trade-off (it is required for the login service):
+
+**Prefer the privileged helper.** `vpn-up install-helper` installs a root-owned
+`vpn-up-helper` that builds the `openconnect` command line itself, so sudoers
+names only that helper instead of `openconnect`. It needs a C toolchain, works
+today with a distro-packaged `openconnect` on Linux, and currently refuses on
+macOS (the dyld/Mach-O closure check is not written yet) and on any Homebrew
+install. It also **removes the legacy rule below** whenever it runs. Add
+`--passwordless` for unattended reconnects, after reading
+[what installation assumes](https://github.com/sorinipate/vpn-up-for-openconnect/blob/main/SECURITY.md#what-installation-itself-assumes).
+
+If you keep the legacy rule instead (it is what the login service needs until the
+helper is available on your platform):
 
 ```bash
 command -v openconnect     # verify the real path first

@@ -34,6 +34,11 @@ or removes ambiguity that the implementation would otherwise have to invent:
   `--non-inter` prevents any root-side prompt instead.
 - **`--route`/vpn-slice removed from v1** (§12), because a root-owned Python
   entry point drags an interpreter and its whole import closure into the TCB.
+- **Installation is opt-in about privilege, mandatory about retirement**
+  (§14, amended during the installer step). `install-helper` retires the legacy
+  `NOPASSWD: openconnect` rule on every run and writes a passwordless rule only
+  with `--passwordless`; installation's own trust assumption is stated rather
+  than implied, and §17.2/§17.6 record how it ships and what would close the gap.
 - Plus a set of specification fixes: `CONNECT_URL` required, full-length
   canonical fingerprints, `--force-dpd`, proxy preserved, `--useragent`
   restored, IPv6 authorities, semantic rather than shell-shaped validation.
@@ -694,8 +699,37 @@ by the unprivileged user. That rules out the Homebrew prefix — including
 
 The load-bearing part is not the path but the **check**: the installer walks from
 `/` to the target and refuses if any component is not root-owned or is
-group/world-writable. Each binary repeats the walk on its own path at startup.
+group/world-writable. Each binary repeats the walk on its own path.
 Path choice is then only a default that passes the check.
+
+#### When each binary performs the walk — amended during the installer step
+
+Revision 3 said "at startup", which the implementation does not do, so the
+specification is corrected to what the code guarantees:
+
+> **All root-gated operational and admin commands perform the self-path trust
+> walk before privileged work. `version` and unprivileged `verify-closure` are
+> diagnostic exceptions and do not attest installation-path trust.**
+
+The exemption is not a convenience. Those two commands exist to answer questions
+about machines that have **no** installation — `doctor` asks an uninstalled binary
+whether the closure would pass, and `sudo -k -n <bin> version` is how
+passwordless reachability is probed — and neither claims anything about a path.
+The consequence is that the two questions must not be conflated, and the
+installer's own verification therefore uses `list`, which is root-gated:
+
+| Question | Command | Why |
+|---|---|---|
+| may this run as root without a password? | `version` | Above the gate: sudo either authorizes the command or it does not, independent of what the program then does. `version` cannot fail on its own, so a non-zero exit means sudo refused. |
+| does the installed path pass this check? | `list` | Below the gate, so it performs the walk on the real path as root. Read-only, and it succeeds on a fresh install (an absent approvals directory is "nothing approved yet", not an error). |
+
+The walk also reads the running image from the OS (`/proc/self/exe`,
+`proc_pidpath`) rather than `argv[0]`, which the caller controls entirely.
+
+And it claims less than it appears to: it prevents a **legitimate** binary being
+run as root from an untrusted path. It says nothing about a malicious binary
+already installed as root — code cannot attest to its own provenance. That gap is
+the install-time trust assumption in §14.
 
 ### 11.2 Compiled, in C
 
@@ -1070,6 +1104,96 @@ is installed.
 request) the approval registry, reporting what it removed. `setup.sh --uninstall`
 calls it.
 
+### Install-time trust — amended during the installer step
+
+Everything above describes what installation *does*. This is what it *assumes*,
+and it needs saying plainly because the installer is the mechanism that turns
+this design into a standing root trust boundary:
+
+> The runtime boundary defends against an arbitrary process running as the
+> invoking user **after** installation. Installation itself does not. The
+> interactive installation ceremony assumes the source tree and the build
+> artefacts are not being maliciously modified by another process running as that
+> user while it runs.
+
+An unprivileged build followed by a privileged install does not close that: a
+same-UID process can replace `helper/build/vpn-up-helper` in the window before
+`install` runs, and root would then bless it, on the trusted path, where the
+§11.1 self-check cannot help — the attacker wrote the code performing it.
+
+Provenance root could verify independently is not reachable inside this
+repository, because any key, manifest or formula VPN Up ships lives in a
+user-writable tree. Real provenance means a distribution channel: a distro
+package, or a release signed with a key obtained out of band. That is §17.6.
+
+Four consequences, which are requirements and not preferences:
+
+1. **Passwordless authorization is opt-in.** `install-helper` installs the
+   binaries and writes **no** sudoers rule; `install-helper --passwordless` adds
+   one. Without it, connecting costs one interactive password and still gets the
+   closed schema, Model B binding and the closure check. A locally built binary
+   does not become root-reachable-without-a-password as a side effect of an
+   install.
+
+2. **Legacy retirement is NOT opt-in.** Every run inspects
+   `/etc/sudoers.d/vpn-up` and retires an exactly-matching legacy
+   `NOPASSWD: …/openconnect` rule. Installing a hardened boundary while leaving
+   the old arbitrary-root grant in place is worse than either alone, because it
+   looks fixed:
+
+   ```
+   before                    install-helper           + --passwordless
+   NOPASSWD openconnect  ->  no NOPASSWD rule     ->  NOPASSWD vpn-up-helper
+   (arbitrary root)          (interactive sudo)       (helper only, one uid)
+   ```
+
+   Retirement is announced and confirmed, and says so when a login service is
+   installed — that user loses unattended reconnects until `--passwordless` plus
+   an approval is in place.
+
+3. **Per-UID sudoers files.** New rules go to `/etc/sudoers.d/vpn-up-<uid>`,
+   matching a registry and state root that are already `SUDO_UID` namespaced, so
+   a second user on the machine does not collide with the first's file. The
+   subject is written numerically (`#<uid> ALL=(root) NOPASSWD: …`), which
+   sudoers supports explicitly and which removes username quoting from the
+   problem. The shared legacy path stays known only as a thing to *retire*.
+
+4. **Rollback is asymmetric.** If a post-activation check fails — for example
+   `vpn-up-admin` turns out to be passwordless-reachable through some other rule
+   — the run removes the rule **it** created, leaves the binaries installed, and
+   exits non-zero. It never restores a retired legacy rule: rolling back into
+   arbitrary root because a later check failed would undo the one unambiguous
+   improvement of the run. The transaction rolls back to *no VPN Up NOPASSWD
+   rule*, never to an insecure state.
+
+One measured fact behind the directory rule, because it is easy to get backwards:
+`install -d -m 0755` applied to a directory that is **already** mode 700 leaves it
+**755**. So an installer that runs `install -d -o 0 -g 0 -m 0755` over its whole
+target chain rewrites administrator-owned directories to fit — and can loosen a
+deliberately tight one. `install-helper` therefore **verifies** every existing
+component and **creates** only missing ones; an existing component that fails the
+walk is a refusal, not something to normalise.
+
+Uninstall inherits the ordering: **privilege comes down before the binaries do**,
+and the destructive half is gated on proving it came down. If passwordless
+reachability of the helper cannot be disproved afterwards — another rule names it —
+the binaries stay. A stale grant pointing at this constrained helper is safer
+than one pointing at a path whose lifecycle nobody controls any more.
+
+Two things every privilege question here must respect, because both produced
+green results that meant nothing before they were fixed:
+
+- **`sudo -n` is not a policy probe.** It answers "can this run right now
+  without prompting", which is also true for minutes after the user
+  authenticates — and this installer guarantees a warm cache. Every passwordless
+  probe uses `sudo -k -n`, which ignores the cached credentials without
+  invalidating them.
+- **Never execute a possibly user-writable binary to discover whether it can be
+  executed as root.** Our own binaries are root-owned on a trusted path and are
+  probed by execution; `openconnect` is probed by policy listing only, and an
+  unlistable or unrecognised answer is reported as *cannot prove absence*, never
+  as absence.
+
 The sudoers rule for the helper still cannot constrain arguments, and that is
 fine by §2: the helper *is* the argument filter, and sudoers only has to name a
 program that is safe for all inputs.
@@ -1125,9 +1249,14 @@ implementation (§16 step 3).
 11. Real OpenConnect integration environment — the two §18 items marked
     "integration test, not source inspection", plus the OpenConnect facts §6
     and §17.5 depend on
-12. Linux hardened service
-13. MacPorts / macOS closure research and implementation
-14. macOS hardened service
+12. **`install-helper` / `uninstall-helper`** — §14, plus the §11.1 self-path
+    check in both binaries. Not numbered in revision 3, but it belongs here:
+    everything above is inert until the binaries sit on a root-owned path, and
+    step 13's service preflight ("helper installed; helper rule present;
+    `sudo -n` works") cannot be exercised before it exists.
+13. Linux hardened service
+14. MacPorts / macOS closure research and implementation
+15. macOS hardened service
 
 Steps 4–7 encode a deliberate rule: **build and break the policy engine before
 introducing root execution.** Feed it hostile argv, registry, URL, proxy and
@@ -1152,14 +1281,30 @@ binary loading a user-writable library fails the invariant just as surely. If
 MacPorts fails, macOS helper mode has no packaged source and §11.6's matrix row
 changes.
 
-### 17.2 Build and distribution for the compiled binaries
+### 17.2 Build and distribution for the compiled binaries — **ANSWERED, installer step**
 
-C is decided; how it ships is not. Compile at install time (needs a toolchain —
-Xcode CLT on macOS, `cc` on Linux) or ship prebuilt per-architecture artefacts
-(needs signing, notarization on macOS, and a release pipeline this project does
-not have)? Compiling at `install-helper` time is the inclination: the source is
-small and auditable, and the user is already running an interactive `sudo`
-operation. But it makes the toolchain a hard dependency of helper mode.
+**Compile at install time, unprivileged; install privileged.** `install-helper`
+runs `make` as the invoking user and hands only the resulting artefacts to
+`sudo`.
+
+Compiling rather than shipping binaries, because the only distribution channel
+this project has is `release-tap.yml`, which rewrites a Homebrew formula's `url`
+and `sha256` to point at a source tarball. Prebuilt artefacts would need
+per-architecture builds, macOS code signing and notarization, and a release
+pipeline that does not exist — while the source is a few thousand lines of
+dependency-free C99 that a reviewer can read. The cost is real and is stated in
+the docs: **helper mode requires a C toolchain** (Xcode CLT on macOS, `cc` on
+Linux).
+
+The build being unprivileged is the security half of the answer. A root compile
+would put `CC`, `CPATH`, `LIBRARY_PATH`, compiler spec files and any wrapper
+earlier in `PATH` inside the root TCB, for nothing: the source tree is writable
+by the user either way, which is exactly what §14's install-time trust assumption
+concedes. `make` as you, `install` as root — and no shell script and no compiler
+runs as root at any point, which is what keeps §11.2's argument intact.
+
+This does **not** make installation safe against a same-UID adversary. See §14
+and §17.6.
 
 ### 17.3 Does any protocol need the client certificate at connect, not just auth?
 
@@ -1200,6 +1345,23 @@ Kept as a test (`helper/t/integration/openconnect-probe.sh`) rather than written
 down as a fact, because the answer is version-dependent: if a future OpenConnect
 adds the scheme, this section says to consider adding it too, and a test will say
 so where a note in a document would not.
+
+### 17.6 Provenance root can verify independently
+
+§14 concedes a trusted workspace for the duration of the interactive
+installation, because nothing shipped inside a user-writable checkout can
+authenticate that checkout. Closing it needs an input root can verify without
+trusting the invoking user:
+
+- a **distro package** — root-owned, signed by the distribution, and patched by
+  it, which also solves the update problem this project does not otherwise have;
+- or a **signed release** verified against a key obtained out of band, which
+  implies a release pipeline with signing (and notarization on macOS).
+
+Until one exists, the passwordless rule stays opt-in (§14). When one does, the
+rule can reasonably default on for installations that came through it, and the
+assumption paragraph in `SECURITY.md` changes rather than being deleted: an
+install from a user-writable checkout will still carry it.
 
 ---
 
