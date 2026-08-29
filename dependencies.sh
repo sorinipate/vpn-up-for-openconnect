@@ -293,6 +293,52 @@ doctor_rate_limiter_state() {
   return 0
 }
 
+# ---------------------------------------------- orphaned PKCS#11 PIN files
+#
+# A staged PIN file (core.sh, _prepare_pkcs11_pin) is a plaintext credential
+# that normally lives for as long as its tunnel session does -- possibly
+# hours -- so age alone cannot tell a live session's PIN file apart from an
+# orphaned one left behind by an abnormal termination (review round 8, HIGH
+# #2: run_admitted_connection's TERM/INT trap, and connect_via_helper's
+# early removal once a cookie is obtained, close the common cases, but not
+# an unhandled SIGKILL or a signal delivered to this shell alone without
+# reaching its tunnel child). So this uses the same liveness test as
+# attempt-owner reclaim (§3.5, outcome.sh) rather than an age threshold: the
+# owning process's pid is embedded in the filename itself
+# (".${PROGRAM_NAME}.pin.<pid>.XXXXXX"), and only a file whose pid is
+# demonstrably dead is reported. Like the lock checks above, this is
+# diagnostic only -- it never removes anything itself.
+#
+# The same pid-reuse caveat §3.5 already documents applies here too, in the
+# opposite direction: if this exact pid was reused by an unrelated process
+# before doctor runs, a genuinely orphaned file reads as "still owned" and is
+# silently skipped. That is a false negative in a diagnostic check, not a
+# safety gap -- nothing privileged ever trusts this file's mere presence.
+doctor_pin_files() {
+  echo
+  echo "PKCS#11 PIN files:"
+  local dir="${DATA_DIR}/pids" f found=0 base rest pid
+  [ -d "$dir" ] || { echo "  [OK] no PIN files found"; return 0; }
+  for f in "$dir"/."${PROGRAM_NAME}".pin.*; do
+    [ -e "$f" ] || continue
+    base="${f##*/}"
+    rest="${base#."${PROGRAM_NAME}".pin.}"
+    pid="${rest%%.*}"
+    case "$pid" in
+      ''|*[!0-9]*) pid="" ;;
+    esac
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      continue   # a live session still legitimately needs this file
+    fi
+    found=1
+    echo "  [!!] Orphaned PKCS#11 PIN file detected: $f"
+    echo "       Its owning process (pid ${pid:-unknown}) is no longer running."
+    echo "       This file holds a plaintext PIN; remove it: rm -f '$f'"
+  done
+  [ "$found" = 0 ] && echo "  [OK] no orphaned PIN files found"
+  return 0
+}
+
 doctor() {
   echo "=== vpn-up doctor ==="
   echo "- OS         : $(uname -a)"
@@ -353,6 +399,7 @@ doctor() {
   doctor_legacy_grants
   doctor_execution_closure
   doctor_rate_limiter_state
+  doctor_pin_files
 
   echo
   echo "Config preview:"

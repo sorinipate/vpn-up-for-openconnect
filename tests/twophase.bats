@@ -397,6 +397,30 @@ _helper_argv_setup() {
   [ "$(head -n 1 "$ARGV")" = "$BATS_TEST_TMPDIR/bin/vpn-up-helper" ]
 }
 
+@test "connect_via_helper removes a staged PKCS#11 PIN file as soon as the cookie is obtained" {
+  # Once phase_one_authenticate returns, run_openconnect_helper hands the
+  # cookie to the privileged helper and never touches the certificate/key/PIN
+  # again -- so a staged PIN file (core.sh, _prepare_pkcs11_pin) has finished
+  # its job right here, rather than needing to survive for the whole,
+  # possibly hours-long tunnel session the way it does in prompt mode (review
+  # round 8, HIGH #2). This asserts the file is gone by the time
+  # run_openconnect_helper -- the only thing left to run -- is even reached.
+  _helper_argv_setup
+  _VPN_PIN_FILE="$BATS_TEST_TMPDIR/pinfile"
+  printf '1234' > "$_VPN_PIN_FILE"
+  phase_one_authenticate() { return 0; }
+  local seen="$BATS_TEST_TMPDIR/seen-at-dispatch"
+  run_openconnect_helper() {
+    if [ -e "$_VPN_PIN_FILE" ]; then echo "still-present" > "$seen"; else echo "gone" > "$seen"; fi
+    return 0
+  }
+
+  connect_via_helper
+  [ "$(cat "$seen")" = "gone" ]
+  [ -z "$_VPN_PIN_FILE" ]
+  [ ! -e "$BATS_TEST_TMPDIR/pinfile" ]
+}
+
 @test "stop asks sudo interactively too" {
   # A `-n` here could not stop a tunnel this same session started, and stop's
   # caller then falls through to the pid-file path - which never finds a

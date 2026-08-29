@@ -340,6 +340,32 @@ EOF
   if grep -qF "1234-should-not-leak" <<<"$output"; then false; fi
 }
 
+# --- an empty stored secret must not read as PRESENT on the real Keychain
+# codepath (review round 8, BLOCKER #1) ---
+#
+# Every other test above stubs bare `secrets_get`, which exercises _secret_check's
+# GENERIC (openssl/file) branch -- that branch already required a non-empty
+# value. The actual round-8 bug lived only in the Keychain/Secret Service tri-state
+# probes (encryption.sh), which this file never sources, so none of the tests
+# above could have caught it. This test sources encryption.sh and forces the
+# keychain branch, self-contained to this one @test (bats runs each test in its
+# own process, so this cannot affect any other test in this file).
+@test "connection_preflight does not bypass the TOTP-seed check on an empty Keychain value" {
+  source "$BATS_TEST_DIRNAME/../encryption.sh"
+  secrets_backend() { echo keychain; }
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_PASSWD="s3cret"
+  VPN_TOKEN_MODE=totp
+  # A real empty Keychain entry: `security -w ""` succeeds, and the later
+  # lookup returns rc=0 with nothing on stdout -- reproduced directly against
+  # the real `security` binary on this machine (see tests/secrets.bats).
+  security() { printf ''; return 0; }
+  run connection_preflight SERVICE
+  [ "$status" -eq "$VPN_RC_CONFIG" ]
+  [[ "$output" == *"token_secret"* ]]
+}
+
 # Preflight is only a snapshot (invariant 8); admission may then wait, and the
 # backend can fail in between. These exercise the ACTUAL fetch in
 # run_admitted_connection, not just preflight's existence check.

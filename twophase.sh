@@ -445,6 +445,19 @@ connect_via_helper() {
   print_primary "Authenticating as %s (unprivileged) ...\n" "${USER:-$(id -un)}"
   phase_one_authenticate || return "$VPN_RC_PREAUTH"
 
+  # The cookie is now all the privileged tunnel phase needs (run_openconnect_helper
+  # below hands it a COOKIE, never the certificate/key/PIN again) -- so a staged
+  # PKCS#11 PIN file (_VPN_PIN_FILE, core.sh) has finished its job the moment
+  # phase_one_authenticate returns, rather than needing to survive for the whole,
+  # possibly hours-long tunnel session the way it does in prompt mode (where
+  # openconnect itself, not a short-lived helper handoff, is what reads it).
+  # Review round 8 (HIGH #2) flagged this as the easiest place to shrink a
+  # plaintext credential's exposure window; run_admitted_connection's own
+  # end-of-function cleanup (core.sh) still runs afterward too, as a harmless
+  # no-op once this has already removed the file.
+  _shred_pin_file "${_VPN_PIN_FILE:-}"
+  _VPN_PIN_FILE=""
+
   if [ -n "${AUTH_HOST}" ] && [ "${VPN_UP_VERBOSE:-FALSE}" = TRUE ]; then
     print_warning "Gateway reported host %s\n" "${AUTH_HOST}"
   fi

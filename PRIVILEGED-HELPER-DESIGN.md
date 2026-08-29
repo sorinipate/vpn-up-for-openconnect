@@ -1479,6 +1479,112 @@ a plausible thing for a future change to erode without noticing:
    `_secret_check` exists there is no reason to keep a second, weaker
    version of the same check beside it, so `service install` uses it too.
 
+   **The unified tri-state secret check was not actually unified: an empty
+    stored value read as PRESENT on Keychain and Secret Service, but as
+    ABSENT on the OpenSSL/file backend.** `_secret_check`'s generic
+    (openssl/file) branch already required `[ -n "$val" ]` before reporting
+    PRESENT, but `_secret_check_keychain` and `_secret_check_secrettool`
+    both reported PRESENT on any successful lookup, empty value included —
+    reproduced directly against a real Keychain: `security
+    add-generic-password -a k -s ns -w ""` succeeds, and the later `-w`
+    lookup returns rc=0 with nothing on stdout. Every field this check
+    gates — password, TOTP seed, PKCS#11 PIN — is exactly as unusable
+    empty as it is absent, so this let an accidentally-empty stored secret
+    on either native backend sail past `connection_preflight`'s existence
+    check: reproduced directly for the TOTP case, where preflight's
+    `token_secret` check continued past the missing-seed branch and
+    `run_admitted_connection` reached its interactive `read -r -s -p` with
+    no tty to answer it under `SERVICE` — precisely the bypass invariant
+    8's existence checks exist to prevent, just reached through a different
+    door than round 7's PKCS#11-predicate gap. Both native probes now
+    return ABSENT (1) for an empty value, matching the generic branch;
+    `set-secret` also now refuses an empty value outright, so this class of
+    misconfiguration can no longer be created through the one command meant
+    to store these fields (an already-guarded wizard path in `setup.sh`
+    never allowed it in the first place).
+   **A staged PKCS#11 PIN file had exactly one cleanup path — the end of
+    `run_admitted_connection` — which an abnormal termination never
+    reaches.** The PIN is written to a `mktemp`-named, mode-0600 file for
+    OpenConnect's `pin-source` attribute (§ above, finding on staged-PIN
+    checking); the only code that ever removed it was the epilogue at the
+    end of `run_admitted_connection`, reached solely when dispatch
+    (`connect_via_helper`/`run_openconnect`) *returns*. Reproduced directly:
+    sending TERM to the process while dispatch was blocked mid-tunnel left
+    the plaintext PIN on disk indefinitely, since nothing else ever ran that
+    cleanup, and the file's name is no longer even deterministic (round 7)
+    for a later run to happen to overwrite. This is fixed at two points,
+    deliberately not by giving `release_attempt_owner`'s existing TERM/INT
+    handling a wider job — that handler stays signal-free by design (§3.0:
+    a locked cleanup on a signal can deadlock the very process it's meant to
+    clean up), and PIN cleanup does not need the state lock at all, so it is
+    safe to run from a signal in a way owner release is not:
+    - `run_admitted_connection` now installs an unlocked `trap ... TERM
+      INT` the moment the PIN file is staged, which removes it and then
+      re-raises the signal against itself (`$BASHPID`, not `$$` — the two
+      differ inside a subshell, which only matters for testing this in
+      isolation; in `vpn-up.command`'s normal, un-subshelled invocation
+      they are the same process). Verified empirically against real bash
+      signal semantics before relying on this: a trap set on a signal bash
+      is already blocked delivering to a foreground child (the tunnel
+      process, in the dispatch call this brackets) does not run until that
+      child itself exits — so this fires promptly precisely when a
+      supervisor's kill also reaches the tunnel process, which is how both
+      systemd's control-group kill and launchd's process-group signal
+      actually terminate a supervised job. A signal delivered to this shell
+      alone, with the tunnel child left untouched, is not covered by this
+      trap.
+    - `connect_via_helper` now removes the PIN file immediately once
+      `phase_one_authenticate` returns a cookie, rather than waiting for
+      the whole function to return: past that point the privileged tunnel
+      phase (`run_openconnect_helper`) is handed only the cookie and never
+      touches the certificate, key, or PIN again, so the file has finished
+      its job long before the (possibly hours-long) tunnel session ends —
+      unlike prompt mode, where OpenConnect itself is what reads
+      `pin-source`, for as long as it runs.
+    - `vpn-up doctor` gains a diagnostic-only check (`doctor_pin_files`,
+      mirroring the existing stuck-lock checks in shape): the PIN file's
+      owning process's pid is now embedded in its own filename
+      (`.<program>.pin.<pid>.XXXXXX`), and a file whose pid is
+      demonstrably dead — the same liveness test §3.5 already uses for
+      attempt-owner reclaim, never age, since a live session's PIN file is
+      expected to survive for hours — is reported, never auto-removed. The
+      same pid-reuse caveat §3.5 already documents applies here too, in the
+      opposite direction: a reused pid reads a genuinely orphaned file as
+      still-owned and silently skips it, a false negative in a diagnostic
+      check rather than a safety gap, since nothing privileged ever trusts
+      this file's presence.
+    An unhandled `SIGKILL`, or a signal delivered to this process alone
+    without reaching its tunnel child, is covered by neither the trap nor
+    the early helper-mode removal — `doctor_pin_files` is the only backstop
+    for those, by design (diagnostic, not automatic), matching how the
+    existing stuck-lock cases are handled.
+   **`pin-source=file:<path>` embedded the PIN file's path completely
+    unescaped**, even though `DATA_DIR` — and so the PIN file's path — is
+    configurable via `VPN_UP_HOME`/`XDG_CONFIG_HOME` and is not guaranteed
+    to be URI-safe. Reproduced directly: a path containing a space and `&`
+    produced `pkcs11:...?pin-source=file:/tmp/VPN Up/pin&copy#1`, which is
+    not a valid representation of that filename under RFC 7512 — a space is
+    not a valid `pk11-qattr` character, and `&`/`#` are themselves pkcs11-URI
+    delimiters (query-attribute separator, fragment start), so a conforming
+    parser would read `copy#1` as a fragment and `Up/pin` as an unrelated,
+    unintended query attribute. A small percent-encoder (`_uri_encode`) now
+    escapes everything outside `[A-Za-z0-9._~/-]` before the path is
+    appended; `/` is deliberately left unescaped, since it is not a
+    delimiter to the *outer* pkcs11 URI and must survive as the path
+    separator for the nested `file:` value to remain usable.
+   **Correcting a wrong stored PKCS#11 PIN did not clear the attempt-rate
+    history the way correcting a wrong password does.** `secrets_set`'s
+    field switch (encryption.sh) clears history on `password` and clears
+    both history and the TOTP-step reservation on `token_secret`, but had no
+    case for `key_password` at all — a PKCS#11 PIN is exactly as capable of
+    driving the repeated-PREAUTH/backoff cycle a wrong password already
+    correctly resets for, so a service stuck in an open breaker over a bad
+    stored PIN stayed asleep for the rest of it even after an operator
+    corrected the PIN via `set-secret ... key_password`. `key_password` now
+    clears history the same way `password` does; no TOTP-step reset is
+    needed, since a PIN correction has nothing to do with which TOTP step
+    was already reserved.
+
 **The state file** (`${DATA_DIR}/state/<slug>.<sha256>.state`, per profile,
 mode `0600`) is a new input that gates whether an unattended attempt is
 admitted — worth recording explicitly as a security invariant rather than

@@ -67,11 +67,24 @@ secrets_delete_keychain() { local k="$1"; security delete-generic-password -a "$
 # BLOCKER #2), and for the openssl vault backend the equivalent pattern is
 # worse than just a race -- it decrypts the vault twice, prompting for the
 # passphrase twice in an interactive session. One fetch, reused by the caller.
+#
+# An empty stored value is treated as ABSENT (return 1), not PRESENT --
+# reproduced directly against a real Keychain: `security add-generic-password
+# -w ""` succeeds, and the later `-w` lookup returns rc=0 with an empty
+# result. Every field this gates (password, token_secret, key_password) is
+# useless empty, so a bare rc==0 here previously let a SERVICE profile with an
+# empty stored secret sail through connection_preflight's existence check --
+# reproduced directly for the TOTP case: an empty-but-"present" token_secret
+# let preflight continue past the missing-seed check, reaching the
+# interactive `read` in run_admitted_connection with no tty to answer it. The
+# openssl/file backend below (the generic branch, this file's secrets_get()
+# path) already required non-empty; this brings Keychain in line with it.
 _secret_check_keychain() {
   local k="$1" out
   out="$(security find-generic-password -a "$k" -s "${SECRETS_NAMESPACE}" -w 2>/dev/null)"
   case $? in
-    0)  printf '%s' "$out"; return 0 ;;
+    0)  [ -n "$out" ] || return 1
+        printf '%s' "$out"; return 0 ;;
     44) return 1 ;;
     *)  return 2 ;;
   esac
@@ -126,6 +139,10 @@ _secret_check_secrettool() {
   err="$(cat "$errfile" 2>/dev/null)"
   rm -f "$errfile" 2>/dev/null
   if [ "$rc" -eq 0 ]; then
+    # An empty stored value is ABSENT, not PRESENT -- see the matching
+    # comment on _secret_check_keychain above for why this cannot be a bare
+    # rc==0 check.
+    [ -n "$out" ] || return 1
     printf '%s' "$out"
     return 0
   fi
@@ -282,6 +299,14 @@ secrets_set() {
     case "$field" in
       password)     attempt_history_clear "$profile" ;;
       token_secret) attempt_history_clear "$profile"; totp_step_reservation_clear "$profile" ;;
+      # A PKCS#11 PIN is a first-class unattended credential too (see
+      # _pkcs11_pin_needed, core.sh): a wrong stored PIN can drive the same
+      # repeated-PREAUTH/backoff cycle a wrong password does, so correcting
+      # it must clear the same history rather than leaving the service
+      # asleep for the rest of an already-open breaker. No TOTP-step reset is
+      # needed here -- a PIN correction has nothing to do with TOTP step
+      # exclusivity.
+      key_password) attempt_history_clear "$profile" ;;
     esac
   fi
   return "$rc"

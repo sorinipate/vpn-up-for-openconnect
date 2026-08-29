@@ -190,6 +190,45 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
     secret, or PKCS#11 PIN now use the same backend-aware present/absent/
     error distinction as the runtime preflight, instead of a raw lookup that
     read a transient backend error the same way as "nothing stored."
+  - **An empty stored secret read as PRESENT on Keychain and Secret Service,
+    but as ABSENT on the OpenSSL/file backend — the two native tri-state
+    probes never checked for emptiness.** Reproduced directly against a real
+    Keychain: `security add-generic-password -w ""` succeeds, and the later
+    lookup returns success with an empty value; the same is true of
+    `secret-tool`. Every field this gates (password, TOTP seed, PKCS#11 PIN)
+    is unusable empty, so a service with an accidentally-empty stored secret
+    on either native backend sailed past preflight's existence check — for
+    TOTP specifically, reaching an interactive prompt with no tty to answer
+    it, exactly the bypass the existence check exists to prevent. Both native
+    probes now treat an empty value the same as "not found"; `set-secret` also
+    now refuses to store an empty value in the first place.
+  - **A PKCS#11 PIN, staged in a plaintext transient file for the life of a
+    connection attempt, was cleaned up only when `run_admitted_connection`
+    returned normally** — an abnormal termination (a supervisor's TERM, a
+    crash) left the file on disk indefinitely, since nothing else ever ran
+    that cleanup. `run_admitted_connection` now installs a TERM/INT handler
+    the moment the PIN is staged that removes the file (this needs no lock,
+    unlike releasing attempt ownership); the helper-mode path additionally
+    removes it as soon as a session cookie is obtained, since the privileged
+    tunnel phase never touches the certificate/key/PIN again after that
+    point. `vpn-up doctor` also now reports (never auto-clears) a PIN file
+    whose owning process — its pid is embedded in the filename — is no
+    longer alive, the same liveness-not-age test already used for attempt-
+    owner reclaim.
+  - **A PKCS#11 PIN file's path was embedded in the `pin-source=file:...`
+    URI attribute completely unescaped**, even though `DATA_DIR` (and so the
+    PIN file's path) is configurable via `VPN_UP_HOME`/`XDG_CONFIG_HOME` and
+    is not guaranteed to be URI-safe: a space is not a valid character there,
+    and `&`/`#`/`%` are themselves pkcs11-URI delimiters. The path is now
+    percent-encoded before it's appended.
+  - **Correcting a wrong stored PKCS#11 PIN via `set-secret ... key_password`
+    left the rate limiter's attempt history untouched** — `secrets_set`'s
+    field switch cleared history on a corrected `password` or `token_secret`
+    but had no case for `key_password` at all, so a service stuck in backoff
+    over a bad stored PIN would stay asleep for the rest of an already-open
+    breaker even after the PIN was fixed. `key_password` now clears history
+    the same way `password` does (no TOTP-step reset is needed for a PIN
+    change).
 
 ### Fixed
 

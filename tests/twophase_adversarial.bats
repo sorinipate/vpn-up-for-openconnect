@@ -360,3 +360,49 @@ STUB
   # implying everything is fine.
   [[ "$output" == *"SECURITY.md"* ]]
 }
+
+# --- orphaned PKCS#11 PIN files (review round 8, HIGH #2) ------------------
+#
+# A staged PIN file legitimately survives for as long as its tunnel session
+# does -- possibly hours -- so this uses the same liveness test (kill -0) as
+# attempt-owner reclaim (§3.5), never age, to tell a live session's PIN file
+# apart from one an abnormal termination left behind. Diagnostic only: like
+# the lock checks above, doctor never removes anything itself.
+
+@test "doctor_pin_files reports a PIN file whose owning pid is dead" {
+  local f="$DATA_DIR/pids/.${PROGRAM_NAME}.pin.99999.abc123"
+  printf '1234' > "$f"
+  # pid 99999 is not expected to exist on any test runner.
+  ! kill -0 99999 2>/dev/null
+
+  run doctor_pin_files
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Orphaned PKCS#11 PIN file"* ]]
+  [[ "$output" == *"$f"* ]]
+  [ -e "$f" ]   # diagnostic only -- never removed by doctor itself
+}
+
+@test "doctor_pin_files does not flag a PIN file whose owning process is alive" {
+  # A live, still-connecting/connected session legitimately keeps this file
+  # for as long as it runs -- age must never be the signal here.
+  local f="$DATA_DIR/pids/.${PROGRAM_NAME}.pin.$$.def456"
+  printf '1234' > "$f"
+
+  run doctor_pin_files
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Orphaned"* ]]
+  [[ "$output" == *"no orphaned PIN files found"* ]]
+}
+
+@test "doctor_pin_files reports OK when the pids directory has no PIN files" {
+  run doctor_pin_files
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no orphaned PIN files found"* ]]
+}
+
+@test "doctor_pin_files reports OK when no state directory exists at all" {
+  rm -rf "$DATA_DIR/pids"
+  run doctor_pin_files
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no PIN files found"* ]]
+}

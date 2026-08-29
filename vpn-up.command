@@ -132,6 +132,10 @@ case "${1:-}" in
   set-secret) shift; profile="${1:-}"; field="${2:-}"; { [ -z "$profile" ] || [ -z "$field" ]; } && { echo "Usage: $0 set-secret <profile> <field>"; exit 1; }
               [ "$field" = "sudo_password" ] && { echo "Storing the sudo password is not supported (it would defeat sudo's protection). See the sudoers rule in the README." >&2; exit 1; }
               read -r -s -p "Enter value for ${profile}.${field}: " value; echo
+              if [ -z "$value" ]; then
+                echo "Refusing to store an empty value for ${profile}.${field}; nothing was changed." >&2
+                exit 1
+              fi
               if secrets_set "${profile}" "${field}" "${value}"; then
                 echo "Saved secret for ${profile}.${field}."
               else

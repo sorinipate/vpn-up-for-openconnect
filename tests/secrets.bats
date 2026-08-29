@@ -98,7 +98,7 @@ setup() {
 # published secret-tool.c source instead -- see PRIVILEGED-HELPER-DESIGN.md).
 
 @test "_secret_check_keychain: found is present, errSecItemNotFound (44) is absent, anything else is backend error" {
-  security() { return 0; }
+  security() { echo "the-secret-value"; return 0; }   # a real found lookup always has a value on stdout
   if _secret_check_keychain "k"; then rc=0; else rc=$?; fi
   [ "$rc" -eq 0 ]
 
@@ -127,6 +127,31 @@ setup() {
   secret-tool() { echo "the-secret-value"; return 0; }
   local out; out="$(_secret_check_secrettool "k")"
   [ "$out" = "the-secret-value" ]
+}
+
+# --- empty stored value is ABSENT, not PRESENT (review round 8, BLOCKER #1) ---
+#
+# Reproduced directly against a real Keychain on this machine:
+# `security add-generic-password -w ""` succeeds, and the later `-w` lookup
+# returns rc=0 with empty output -- a bare rc==0 check (the previous code)
+# reads that as PRESENT, while the openssl/file backend's own check
+# (core.sh's _secret_check, generic branch: `[ -n "$val" ]`) already treated
+# the identical case as ABSENT. That divergence let an empty stored
+# password/token_secret/key_password sail past connection_preflight's
+# existence checks on Keychain/Secret Service specifically, reaching a phase-4
+# path with an unusable empty credential -- for TOTP, reaching the
+# interactive `read` in run_admitted_connection with no tty to answer it.
+
+@test "_secret_check_keychain: an empty stored value is absent, not present" {
+  security() { printf ''; return 0; }   # rc=0, empty output -- exactly what a real empty Keychain entry returns
+  if _secret_check_keychain "k"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 1 ]
+}
+
+@test "_secret_check_secrettool: an empty stored value is absent, not present" {
+  secret-tool() { printf ''; return 0; }
+  if _secret_check_secrettool "k"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 1 ]
 }
 
 # --- tri-state via stderr, not D-Bus reachability (review round 5) ---
@@ -390,4 +415,50 @@ _seed_vault() {   # one good entry, so there is something to lose
   [ "$status" -ne 0 ]
   [ "$(cat "$SECRETS_PLAIN")" = "$_before" ]
   [ "$(secrets_get_file "$(secrets_key 'Work VPN' password)")" = "original-pw" ]
+}
+
+# --- secrets_set's attempt-history side effect (review round 8, MEDIUM #4) ---
+#
+# key_password was missing from secrets_set's field switch entirely: a
+# service repeatedly refused for a wrong stored PKCS#11 PIN would build up
+# attempt history and possibly open the one-hour breaker (outcome.sh) exactly
+# as a wrong password does, but correcting the PIN via `set-secret ...
+# key_password` left that history untouched -- the service would stay asleep
+# for the rest of an already-open breaker even though the credential
+# responsible for the attempts had just been fixed.
+
+@test "secrets_set clears attempt history on key_password, same as password" {
+  _use_file_backend
+  source "$BATS_TEST_DIRNAME/../logging.sh"
+
+  local f; f="$(attempt_state_file "Work VPN")"
+  local token; token="$(_state_lock "$f")"
+  _state_read "$f"
+  ST_ATTEMPTS="1 2 3"
+  _state_persist_current "$f" "Work VPN"
+  _state_unlock "$f" "$token"
+
+  secrets_set "Work VPN" key_password "1234"
+
+  _state_read "$f"
+  [ -z "$ST_ATTEMPTS" ]
+}
+
+@test "secrets_set on key_password does not touch the TOTP step reservation" {
+  # Unlike token_secret, a corrected PIN has nothing to do with which TOTP
+  # step was already reserved -- only the attempt history should clear.
+  _use_file_backend
+  source "$BATS_TEST_DIRNAME/../logging.sh"
+
+  local f; f="$(attempt_state_file "Work VPN")"
+  local token; token="$(_state_lock "$f")"
+  _state_read "$f"
+  ST_TOTP_STEP=42
+  _state_persist_current "$f" "Work VPN"
+  _state_unlock "$f" "$token"
+
+  secrets_set "Work VPN" key_password "1234"
+
+  _state_read "$f"
+  [ "$ST_TOTP_STEP" -eq 42 ]
 }

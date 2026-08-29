@@ -170,6 +170,69 @@ XML
   [ -z "$leftover" ]
 }
 
+# --- abnormal termination must not abandon the PIN file (review round 8, HIGH #2) ---
+#
+# The only cleanup used to live at the very end of run_admitted_connection,
+# reached only when dispatch RETURNS -- reproduced directly: TERM'ing the
+# owning process mid-tunnel left the plaintext PIN file behind indefinitely.
+# The fix is an unlocked TERM/INT trap installed the moment the PIN is
+# staged (it needs no lock -- only release_attempt_owner does; see the
+# design doc for why a locked signal handler was rejected there).
+#
+# This drives the signal from INSIDE the dispatch stub (a synchronous
+# self-`kill`, not a real blocking child) deliberately: verified empirically
+# against real bash semantics first (a plain script, outside this suite) that
+# a trap set on a signal bash is already blocked delivering to a genuinely
+# blocking foreign child (e.g. `sleep`) does NOT run until that child exits --
+# so a test that tried to reproduce a real supervisor's kill by putting the
+# dispatch stub in its own process group and signalling the whole group is
+# possible in principle, but manipulating real process groups from inside a
+# bats test proved unsafe in practice (an earlier version of this test did
+# exactly that and ended up delivering TERM to bats' own test runner). A
+# synchronous self-signal with nothing left blocking after it avoids that
+# entirely, and still genuinely exercises the trap handler and its cleanup.
+@test "a TERM received while a PIN is staged removes the file before the process exits" {
+  _write_profiles
+  load_profile_fields "PKCS VPN"
+  VPN_PASSWD=""
+  SERVER_CERTIFICATE="pin-sha256:abc"
+  secrets_get() {
+    case "$2" in
+      key_password) echo "918273"; return 0 ;;
+      password) echo "s3cret"; return 0 ;;
+      *) echo ""; return 0 ;;
+    esac
+  }
+  local pinfile_seen="$BATS_TEST_TMPDIR/pinfile_seen"
+  run_openconnect() {
+    printf '%s' "$_VPN_PIN_FILE" > "$pinfile_seen"
+    # $$ inside a backgrounded subshell still names the ORIGINATING shell
+    # (bats' own test-runner process, here), not this subshell -- a classic
+    # bash gotcha, confirmed by an earlier version of this test that
+    # accidentally TERM'd bats itself via a bare `kill -TERM $$`. $BASHPID is
+    # this subshell's own real pid, matching what run_admitted_connection's
+    # trap does in production, where it runs un-subshelled and $$ already
+    # names the right process.
+    kill -TERM "$BASHPID"
+  }
+
+  ( run_admitted_connection "PKCS VPN" SERVICE ) &
+  local bgpid=$!
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "$bgpid" 2>/dev/null || break
+    command sleep 0.3
+  done
+  if kill -0 "$bgpid" 2>/dev/null; then
+    kill -9 "$bgpid" 2>/dev/null   # never expected: proves this test's own guard failed, not the code under test
+  fi
+  wait "$bgpid" 2>/dev/null || true
+
+  local pinfile; pinfile="$(cat "$pinfile_seen" 2>/dev/null)"
+  [ -n "$pinfile" ]     # sanity: the PIN really was staged before the signal
+  [ ! -e "$pinfile" ]
+}
+
 @test "a service with a PKCS#11 certificate and no stored PIN is CONFIG, never prompts" {
   _write_profiles
   load_profile_fields "PKCS VPN"
@@ -332,4 +395,39 @@ XML
   run _append_pkcs11_pin_source "pkcs11:id=%01?type=cert" "/run/pin"
   [ "$status" -eq 0 ]
   [ "$output" = "pkcs11:id=%01?type=cert&pin-source=file:/run/pin" ]
+}
+
+# --- pin-source percent-encoding (review round 8, MEDIUM #3) ---
+#
+# DATA_DIR (and so the PIN file's path) is configurable via VPN_UP_HOME /
+# XDG_CONFIG_HOME and is not guaranteed to be URI-safe. A space is not a valid
+# pk11-qattr character, and '&' / '#' / '%' are themselves delimiters within a
+# pkcs11 URI (query-attribute separator, fragment start, percent-encoding
+# escape) -- reproduced directly: an earlier version emitted
+# "pkcs11:...?pin-source=file:/tmp/VPN Up/pin&copy#1" verbatim, which a URI
+# parser reads as a "copy#1" fragment and an unintended "Up/pin" query
+# attribute, not as that literal filename.
+
+@test "_append_pkcs11_pin_source percent-encodes a space in the PIN file path" {
+  run _append_pkcs11_pin_source "pkcs11:id=%01" "/tmp/VPN Up/pin"
+  [ "$status" -eq 0 ]
+  [ "$output" = "pkcs11:id=%01?pin-source=file:/tmp/VPN%20Up/pin" ]
+}
+
+@test "_append_pkcs11_pin_source percent-encodes &, #, and % in the PIN file path" {
+  run _append_pkcs11_pin_source "pkcs11:id=%01" "/tmp/pin&copy#1%done"
+  [ "$status" -eq 0 ]
+  [ "$output" = "pkcs11:id=%01?pin-source=file:/tmp/pin%26copy%231%25done" ]
+}
+
+@test "_append_pkcs11_pin_source leaves '/' unescaped in the PIN file path" {
+  # '/' is not a delimiter to the OUTER pkcs11 URI and must survive as the
+  # path separator for the nested file: value to remain a usable path.
+  run _append_pkcs11_pin_source "pkcs11:id=%01" "/tmp/a/b/c"
+  [ "$status" -eq 0 ]
+  [ "$output" = "pkcs11:id=%01?pin-source=file:/tmp/a/b/c" ]
+}
+
+@test "_uri_encode round-trips a plain path unchanged" {
+  [ "$(_uri_encode "/tmp/normal/path.XXXXXX")" = "/tmp/normal/path.XXXXXX" ]
 }

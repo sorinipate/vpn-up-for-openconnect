@@ -81,6 +81,21 @@ EOF
   [[ "$output" == *"not supported"* ]]
 }
 
+@test "set-secret refuses to store an empty value" {
+  # A stored value that is empty is useless for every field this command can
+  # target (review round 8, BLOCKER #1): Keychain and Secret Service accept
+  # and store an empty secret without complaint, and until this fix
+  # _secret_check's OWN Keychain/Secret Service probes read that back as
+  # PRESENT rather than ABSENT -- so an accidentally-empty `set-secret` could
+  # silently defeat connection_preflight's existence checks. This never
+  # reaches secrets_set at all (an empty EOF read on stdin here never touches
+  # any real secrets backend), so it is safe to run against whatever backend
+  # this machine actually has.
+  run "$CLI" set-secret "CLI VPN" password < /dev/null
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Refusing to store an empty value"* ]]
+}
+
 @test "delete-secret requires profile and field" {
   run "$CLI" delete-secret onlyone
   [ "$status" -eq 1 ]

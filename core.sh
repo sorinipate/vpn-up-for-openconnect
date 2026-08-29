@@ -577,6 +577,33 @@ run_admitted_connection() {
     rc=$?
   fi
 
+  # A staged PIN file is a plaintext credential that, left alone, only gets
+  # cleaned up at this function's own end (below) -- reached only when
+  # dispatch RETURNS. Review round 8 (HIGH #2) reproduced directly: sending
+  # TERM to the owning shell while dispatch was blocked left the file behind
+  # indefinitely, since nothing ran the cleanup below. This does not need
+  # _state_lock (only release_attempt_owner does; see the design doc for why
+  # a locked signal handler was rejected there) so it is safe to run
+  # unlocked from a trap. Verified empirically against real bash behaviour:
+  # a trap set on a signal bash is already blocked delivering to a foreground
+  # child does not run until that child itself has exited -- so this fires
+  # promptly only once the tunnel process (openconnect/sudo, in the dispatch
+  # below) has also been signalled, which is how both systemd's control-group
+  # kill and launchd's process-group signal terminate a supervised job in
+  # practice. A signal delivered to this shell alone, with the tunnel child
+  # left untouched, is NOT covered here; doctor_pin_files (dependencies.sh)
+  # is the diagnostic backstop for that case and for an unhandled SIGKILL.
+  if [ -n "$_VPN_PIN_FILE" ]; then
+    # $BASHPID, not $$: $$ names the ORIGINATING shell even from inside a
+    # subshell, while $BASHPID is always this actual running instance's own
+    # pid -- the correct target for "re-raise this signal against myself."
+    # In vpn-up.command's normal, un-subshelled invocation the two are
+    # identical, so this changes nothing there; it only matters when this
+    # code runs inside a subshell (as a test harness legitimately might).
+    trap '_shred_pin_file "$_VPN_PIN_FILE"; trap - TERM INT; kill -TERM "$BASHPID"' TERM
+    trap '_shred_pin_file "$_VPN_PIN_FILE"; trap - TERM INT; kill -INT  "$BASHPID"' INT
+  fi
+
   if [ "$rc" = 0 ] && [ "${VPN_AUTH_MODE:-password}" != sso ] && [ "$VPN_TOKEN_MODE" = totp ]; then
     local seed=""
     # One fetch, not check-then-fetch: _secret_check's stdout IS the value on
@@ -653,10 +680,10 @@ run_admitted_connection() {
   # Single cleanup point for both dispatch modes: openconnect (prompt mode,
   # directly) or phase_one_authenticate (helper mode, unprivileged) has
   # already read the PIN by the time either returns, regardless of outcome.
-  if [ -n "${_VPN_PIN_FILE:-}" ] && [ -e "$_VPN_PIN_FILE" ]; then
-    if command -v shred >/dev/null 2>&1; then shred -u "$_VPN_PIN_FILE" 2>/dev/null || rm -f "$_VPN_PIN_FILE"
-    else rm -f "$_VPN_PIN_FILE"; fi
-  fi
+  # (Helper mode may already have removed it earlier still -- see
+  # connect_via_helper, twophase.sh -- in which case this is a harmless no-op.)
+  trap - TERM INT
+  _shred_pin_file "${_VPN_PIN_FILE:-}"
   unset _VPN_PIN_FILE
 
   release_attempt_owner "$name"
@@ -806,6 +833,32 @@ generate_totp() {
   printf '%s\n' "$1" | oathtool --totp -b - 2>/dev/null
 }
 
+# Percent-encode a byte string for use as a pkcs11: URI query-attribute value
+# (RFC 7512). DATA_DIR (and so the PIN file path) is configurable via
+# VPN_UP_HOME/XDG_CONFIG_HOME and is not guaranteed to be URI-safe -- a space
+# is not a valid pk11-qattr character, and '&' / '#' / '%' are themselves
+# delimiters within the pkcs11 URI (query-attribute separator, fragment
+# start, and the percent-encoding escape itself). Reproduced directly: an
+# unencoded path of "/tmp/VPN Up/pin&copy#1" produced
+# "pkcs11:...?pin-source=file:/tmp/VPN Up/pin&copy#1", which is not a valid
+# representation of that filename -- a URI parser would read "copy#1" as a
+# fragment and "Up/pin" as an unrelated, unintended query attribute. Leaves
+# '/' unescaped: it is not a delimiter to the OUTER pkcs11 URI (only '&', '#'
+# and '=' are, within the query component), and it must survive as the path
+# separator for the nested 'file:' value to remain a usable path.
+_uri_encode() {
+  local LC_ALL=C
+  local s="$1" i c out=""
+  for (( i=0; i<${#s}; i++ )); do
+    c="${s:i:1}"
+    case "$c" in
+      [A-Za-z0-9._~/-]) out+="$c" ;;
+      *) out+="$(printf '%%%02X' "'$c")" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
 # Securely supply a PKCS#11 PIN (e.g. a YubiKey PIV smartcard) to openconnect
 # WITHOUT placing it on argv: reference a transient 0600 file via the RFC 7512
 # 'pin-source' URI attribute. Best-effort — if the local GnuTLS build ignores
@@ -819,7 +872,7 @@ _append_pkcs11_pin_source() {
     *) printf '%s' "$uri"; return ;;
   esac
   case "$uri" in *\?*) sep='&' ;; esac
-  printf '%s%spin-source=file:%s' "$uri" "$sep" "$pinfile"
+  printf '%s%spin-source=file:%s' "$uri" "$sep" "$(_uri_encode "$pinfile")"
 }
 
 # True when a stored PKCS#11 PIN (key_password) is relevant: either the
@@ -839,6 +892,16 @@ _pkcs11_pin_needed() {
   case "$cert" in pkcs11:*) return 0 ;; esac
   case "$key"  in pkcs11:*) return 0 ;; esac
   return 1
+}
+
+# Shared by run_admitted_connection's normal cleanup and its TERM/INT trap
+# below -- one definition of "how a staged PIN file is destroyed", so the two
+# call sites can't drift apart on shred-vs-rm fallback behaviour.
+_shred_pin_file() {
+  local f="${1:-}"
+  [ -n "$f" ] && [ -e "$f" ] || return 0
+  if command -v shred >/dev/null 2>&1; then shred -u "$f" 2>/dev/null || rm -f "$f"
+  else rm -f "$f"; fi
 }
 
 # Fetches a PKCS#11 PIN (the 'key_password' secret) for a pkcs11: client
@@ -883,7 +946,14 @@ _prepare_pkcs11_pin() {
       if ! ( umask 077; mkdir -p "${DATA_DIR}/pids" ) 2>/dev/null \
           || ! chmod 700 "${DATA_DIR}/pids" 2>/dev/null; then
         fail="create the VPN state directory"
-      elif ! tmp="$(mktemp "${DATA_DIR}/pids/.${PROGRAM_NAME}.pin.XXXXXX" 2>/dev/null)"; then
+      # $$ is embedded ahead of mktemp's own random suffix so a leftover file
+      # from an abnormal termination (review round 8, HIGH #2) can still be
+      # matched to its owning process by `vpn-up doctor` (doctor_pin_files,
+      # dependencies.sh) via a liveness check -- the same kill-0-not-age
+      # pattern already used for attempt ownership (§3.5) -- rather than by
+      # guessing from age alone, which would either flag a still-connected
+      # multi-hour session or silently ignore a genuinely orphaned file.
+      elif ! tmp="$(mktemp "${DATA_DIR}/pids/.${PROGRAM_NAME}.pin.$$.XXXXXX" 2>/dev/null)"; then
         fail="create a PIN file"
       elif ! ( umask 077; printf '%s' "$pin" > "$tmp" ); then
         fail="write the PIN file"
