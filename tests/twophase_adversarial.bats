@@ -314,7 +314,11 @@ STUB
   VPN_PROFILE_ID="11111111-2222-3333-4444-555555555555"
   PATH="$BATS_TEST_TMPDIR/stub:$PATH" run stop_via_helper
   [ -f "$BATS_TEST_TMPDIR/argv" ]
-  run grep -cE '^-n$|^stop$|^--profile-id$' "$BATS_TEST_TMPDIR/argv"
+  # This line used to `run grep -cE '^-n$|^stop$|^--profile-id$'` and then
+  # assert nothing at all, so it passed whatever the argv was - including the
+  # `-n` it appeared to be checking for. Assert what the command must contain.
+  grep -qx -- "stop" "$BATS_TEST_TMPDIR/argv"
+  grep -qx -- "--profile-id" "$BATS_TEST_TMPDIR/argv"
   # No numeric argument other than the profile UUID may appear.
   run grep -E '^[0-9]+$' "$BATS_TEST_TMPDIR/argv"
   [ "$status" -ne 0 ]
