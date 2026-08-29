@@ -657,8 +657,16 @@ root. The bug is arbitrary root becoming *ambient*. So `vpn-up` keeps two modes:
 - **prompt mode** (default, unchanged) — `sudo openconnect`, `extraArgs`
   honoured verbatim, single-phase, sudo prompts. Anyone needing an exotic flag
   keeps working exactly as today, at the cost of a password per connect.
-- **helper mode** — `sudo -n vpn-up-helper`, two-phase, closed schema, no
+- **helper mode** — `sudo vpn-up-helper`, two-phase, closed schema, no
   `extraArgs`, Model B enforced. Required for the login service.
+
+  Plain `sudo`, not `sudo -n`. Since the passwordless rule became opt-in
+  (`install-helper --passwordless`, §14), helper mode has two tiers: it is used
+  interactively wherever it is merely installed, at the cost of one password,
+  and without a prompt where the rule exists. `-n` would make the interactive
+  tier fail at the moment of connecting — after phase one had already spent the
+  user's password and second factor. The password is asked for *before* phase
+  one instead, so a refusal costs nothing.
 
 A profile using `extraArgs` in helper mode gets a clear error naming the flag
 and the two ways forward. To keep helper mode useful, a **tunable table**,
@@ -1205,8 +1213,15 @@ program that is safe for all inputs.
 Shape unchanged: the launchd agent / systemd user unit supervises a foreground
 process and restarts it on drop. What it supervises becomes `vpn-up` in helper
 mode, which performs phase one and then execs
-`sudo -n vpn-up-helper connect …`; with `--background` gone there is no
+`sudo vpn-up-helper connect …`; with `--background` gone there is no
 daemonization anywhere in the chain.
+
+The service depends on the passwordless rule, but it does not get there by
+passing `-n`: `helper_mode_usable()` sends any run without a terminal to prompt
+mode precisely so nothing can block on a prompt nobody will answer, and a
+service run therefore reaches the helper only when `helper_mode_available()` —
+the cache-independent `sudo -k -n` probe — already said the policy is
+passwordless.
 
 Each restart re-runs phase one, so it needs the stored password or TOTP seed —
 already the case today, and already unprivileged. (Duo `push` profiles issue a
@@ -1215,7 +1230,7 @@ is worth documenting for flapping links, along with a backoff so a failing
 gateway is not re-authenticated in a tight loop.)
 
 `service install` preflight gains: helper installed; helper rule present;
-`sudo -n` works against the helper; the closure checks pass; the profile is
+`sudo -k -n` works against the helper; the closure checks pass; the profile is
 expressible in the closed schema (no `extraArgs`, no `--route`); and an approval
 record exists for it. Failing any of those is a clear error at install time
 rather than a silent failure at login.

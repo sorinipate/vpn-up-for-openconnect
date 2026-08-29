@@ -218,7 +218,9 @@ XML
   set_profile_paths "Helper VPN"
 
   ARGV="$BATS_TEST_TMPDIR/argv"; STDIN="$BATS_TEST_TMPDIR/stdin"
-  sudo() { shift; printf '%s\n' "$@" > "$ARGV"; cat > "$STDIN"; return 0; }
+  # Records sudo's WHOLE argv, flags included. The stub used to `shift` first,
+  # which discarded exactly the thing that later turned out to be wrong.
+  sudo() { printf '%s\n' "$@" > "$ARGV"; cat > "$STDIN"; return 0; }
   write_connection_state() { :; }
   run_hooks() { :; }
 
@@ -250,7 +252,7 @@ XML
   set_profile_paths "Helper VPN"
 
   ARGV="$BATS_TEST_TMPDIR/argv"
-  sudo() { shift; printf '%s\n' "$@" > "$ARGV"; cat >/dev/null; return 0; }
+  sudo() { printf '%s\n' "$@" > "$ARGV"; cat >/dev/null; return 0; }
   write_connection_state() { :; }
   run_hooks() { :; }
 
@@ -272,7 +274,7 @@ XML
   set_profile_paths "Helper VPN"
 
   ARGV="$BATS_TEST_TMPDIR/argv"
-  sudo() { shift; printf '%s\n' "$@" > "$ARGV"; cat >/dev/null; return 0; }
+  sudo() { printf '%s\n' "$@" > "$ARGV"; cat >/dev/null; return 0; }
   write_connection_state() { :; }
   run_hooks() { :; }
 
@@ -308,4 +310,200 @@ XML
   sudo() { return 0; }
   run helper_mode_available
   [ "$status" -eq 0 ]
+}
+
+# --- how the privileged step is invoked ------------------------------------
+#
+# The tier split (helper_mode_installed / helper_mode_available) decides WHETHER
+# helper mode is used; these decide what actually reaches sudo. They exist
+# because the split shipped without them: `install-helper` made helper mode
+# reachable without a passwordless rule, while connect and stop still passed
+# `sudo -n`, so the interactive tier could not work at all.
+#
+# It failed intermittently rather than always, which is why nothing noticed: a
+# warm sudo credential cache makes `-n` succeed, and the installer leaves one
+# warm. Assert on argv, not on behaviour, or the cache decides the verdict.
+
+_helper_argv_setup() {
+  _write_profile
+  load_profile_fields "Helper VPN"
+  translate_extra_args ""
+  AUTH_CONNECT_URL="https://vpn.example.com"
+  AUTH_COOKIE="c"; AUTH_RESOLVE=""
+  QUIET=FALSE
+  set_profile_paths "Helper VPN"
+  export VPN_UP_HELPER_DIR="$BATS_TEST_TMPDIR/bin"
+  ARGV="$BATS_TEST_TMPDIR/argv"
+  write_connection_state() { :; }
+  run_hooks() { :; }
+}
+
+@test "connect asks sudo interactively: no -n, and it names the helper" {
+  _helper_argv_setup
+  sudo() { printf '%s\n' "$@" > "$ARGV"; cat >/dev/null; return 0; }
+
+  run run_openconnect_helper
+  [ "$status" -eq 0 ]
+
+  # -n here means "fail instead of prompting", which is exactly wrong on a
+  # machine whose passwordless rule was never installed - and the failure lands
+  # AFTER phase one has spent the user's password and second factor.
+  ! grep -qx -- "-n" "$ARGV"
+  grep -qx -- "$BATS_TEST_TMPDIR/bin/vpn-up-helper" "$ARGV"
+  # The first word must be the helper: no flag may precede it.
+  [ "$(head -n 1 "$ARGV")" = "$BATS_TEST_TMPDIR/bin/vpn-up-helper" ]
+}
+
+@test "stop asks sudo interactively too" {
+  # A `-n` here could not stop a tunnel this same session started, and stop's
+  # caller then falls through to the pid-file path - which never finds a
+  # helper-mode tunnel, because the helper keeps its pid in root-owned state.
+  _helper_argv_setup
+  sudo() { printf '%s\n' "$@" > "$ARGV"; return 0; }
+
+  run stop_via_helper
+  [ "$status" -eq 0 ]
+  ! grep -qx -- "-n" "$ARGV"
+  [ "$(head -n 1 "$ARGV")" = "$BATS_TEST_TMPDIR/bin/vpn-up-helper" ]
+  grep -qx -- "stop" "$ARGV"
+}
+
+@test "the passwordless probe still carries -k, and connect still does not" {
+  # Two different questions. The probe asks about POLICY and must ignore the
+  # credential cache; the connect asks sudo to do the work and must be willing
+  # to prompt. One file, opposite requirements.
+  _helper_argv_setup
+  mkdir -p "$VPN_UP_HELPER_DIR"
+  printf '#!/bin/sh\nexit 0\n' > "$VPN_UP_HELPER_DIR/vpn-up-helper"
+  chmod 755 "$VPN_UP_HELPER_DIR/vpn-up-helper"
+
+  PROBE="$BATS_TEST_TMPDIR/probe"
+  sudo() { printf '%s\n' "$@" > "$PROBE"; return 0; }
+  run helper_mode_available
+  [ "$status" -eq 0 ]
+  grep -qx -- "-k" "$PROBE"
+  grep -qx -- "-n" "$PROBE"
+}
+
+@test "sudo is authorized before phase one, not after it" {
+  # Ordering is the whole point: a Duo push cannot be recalled, so discovering
+  # that sudo will not authorize the helper must happen first.
+  _helper_argv_setup
+  ORDER="$BATS_TEST_TMPDIR/order"
+  : > "$ORDER"
+  helper_mode_available() { return 1; }             # interactive tier
+  sudo() { echo "sudo $1" >> "$ORDER"; return 0; }
+  phase_one_authenticate() { echo "phase-one" >> "$ORDER"; return 1; }
+
+  run connect_via_helper
+  [ "$status" -ne 0 ]
+  [ "$(head -n 1 "$ORDER")" = "sudo -v" ]
+  grep -qx -- "phase-one" "$ORDER"
+}
+
+@test "a refused sudo aborts before phase one spends a second factor" {
+  _helper_argv_setup
+  helper_mode_available() { return 1; }
+  sudo() { return 1; }                              # user cancelled or failed
+  RAN="$BATS_TEST_TMPDIR/ran"
+  phase_one_authenticate() { : > "$RAN"; return 0; }
+
+  run connect_via_helper
+  [ "$status" -ne 0 ]
+  [ ! -e "$RAN" ]
+}
+
+@test "a passwordless machine is not prompted for nothing" {
+  # `sudo -v` validates the user in general, so on a machine whose only rule is
+  # NOPASSWD for the helper it would prompt - for a password not needed.
+  _helper_argv_setup
+  helper_mode_available() { return 0; }
+  CALLED="$BATS_TEST_TMPDIR/called"
+  sudo() { : > "$CALLED"; return 0; }
+
+  run helper_sudo_prepare
+  [ "$status" -eq 0 ]
+  [ ! -e "$CALLED" ]
+}
+
+# --- a refusal is not a disconnection --------------------------------------
+
+@test "a sudo refusal does not fire the disconnected hooks" {
+  # The tunnel never existed. Announcing a disconnection runs the user's
+  # `disconnected` hook for a connection that never happened.
+  _helper_argv_setup
+  HOOKS="$BATS_TEST_TMPDIR/hooks"
+  run_hooks() { echo "$1" >> "$HOOKS"; }
+  sudo() { echo "sudo: a password is required" >&2; cat >/dev/null; return 1; }
+
+  run run_openconnect_helper
+  [ "$status" -ne 0 ]
+  [ ! -e "$HOOKS" ]
+}
+
+@test "a helper refusal does not fire the disconnected hooks either" {
+  # The helper execs OpenConnect on success, so a line under its own name can
+  # only have come from a refusal before that exec.
+  _helper_argv_setup
+  HOOKS="$BATS_TEST_TMPDIR/hooks"
+  run_hooks() { echo "$1" >> "$HOOKS"; }
+  sudo() {
+    echo "vpn-up-helper: profile a7d1bb99 is not approved for this user."
+    cat >/dev/null; return 1
+  }
+
+  run run_openconnect_helper
+  [ "$status" -ne 0 ]
+  [ ! -e "$HOOKS" ]
+}
+
+@test "a tunnel that ran still reports its disconnection" {
+  # The narrowing must not swallow the real case, or `disconnected` hooks stop
+  # firing altogether and nothing downstream ever cleans up.
+  _helper_argv_setup
+  HOOKS="$BATS_TEST_TMPDIR/hooks"
+  run_hooks() { echo "$1" >> "$HOOKS"; }
+  sudo() {
+    echo "Connected as 10.0.0.2, using SSL"
+    echo "Session terminated by server"
+    cat >/dev/null; return 1
+  }
+
+  run run_openconnect_helper
+  [ "$status" -ne 0 ]
+  grep -qx -- "disconnected" "$HOOKS"
+}
+
+@test "a silent run is treated as a tunnel, not as a refusal" {
+  # --quiet is supported, so no output is ambiguous. Ambiguity keeps the old
+  # behaviour rather than inventing a verdict.
+  _helper_argv_setup
+  HOOKS="$BATS_TEST_TMPDIR/hooks"
+  run_hooks() { echo "$1" >> "$HOOKS"; }
+  sudo() { cat >/dev/null; return 0; }
+
+  run run_openconnect_helper
+  [ "$status" -eq 0 ]
+  grep -qx -- "disconnected" "$HOOKS"
+}
+
+@test "an earlier session in the log does not decide this run's verdict" {
+  # The check reads only what THIS run appended, from the byte offset taken
+  # before it. The log is append-only across sessions, so a successful tunnel
+  # yesterday would otherwise supply the non-refusal line that makes today's
+  # refusal look like a disconnection - and every later run in that log would
+  # inherit the wrong answer permanently.
+  _helper_argv_setup
+  mkdir -p "$(dirname "$LOG_FILE_PATH")"
+  cat > "$LOG_FILE_PATH" <<'OLD'
+Connected as 10.0.0.2, using SSL
+Session terminated by server
+OLD
+  HOOKS="$BATS_TEST_TMPDIR/hooks"
+  run_hooks() { echo "$1" >> "$HOOKS"; }
+  sudo() { echo "sudo: a password is required" >&2; cat >/dev/null; return 1; }
+
+  run run_openconnect_helper
+  [ "$status" -ne 0 ]
+  [ ! -e "$HOOKS" ]
 }

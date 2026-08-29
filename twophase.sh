@@ -68,6 +68,34 @@ helper_mode_usable() {
   [ -t 0 ] || [ -t 1 ]
 }
 
+# Authorize the privileged step BEFORE phase one spends anything.
+#
+# The interactive tier means sudo WILL ask for a password, and where it asks
+# matters. Two reasons this is a separate, earlier step instead of letting the
+# connect command prompt for itself:
+#
+#   1. Phase one consumes real credentials - a password, a TOTP code, a Duo
+#      push, an SSO browser round trip. Finding out afterwards that sudo will
+#      not authorize the helper wastes all of it, and a Duo push cannot be
+#      recalled.
+#   2. The cookie reaches the helper through a pipe. sudo reads its password
+#      from the terminal rather than from stdin, so the two do not actually
+#      collide - but a prompt surfacing in the middle of that pipeline is the
+#      same collision run_openconnect already avoids by validating up front, and
+#      helper mode has no reason to be the exception.
+#
+# `sudo -v` only when the helper is NOT already passwordless: -v validates the
+# user in general rather than for one command, so a machine whose only rule is
+# `NOPASSWD: /...:/vpn-up-helper` would be prompted by it for nothing.
+#
+# This is not a security control. sudoers decides what may run as root; this
+# decides only when the person is asked.
+helper_sudo_prepare() {
+  helper_mode_available && return 0
+  print_warning "Establishing the tunnel needs your password.\n"
+  sudo -v
+}
+
 # ------------------------------------------------- phase-one output decoding
 
 # Strict decoder for `openconnect --authenticate` output.
@@ -312,21 +340,87 @@ run_openconnect_helper() {
   [ "${QUIET:-FALSE}" = TRUE ] && args+=("--quiet")
   [ "${#HELPER_TUNABLES[@]}" -gt 0 ] && args+=("${HELPER_TUNABLES[@]}")
 
+  # Where this run's output starts, so a refusal can be told from a session that
+  # ended (see _helper_run_had_tunnel below). Taken before anything is written.
+  local mark=0
+  [ -f "${LOG_FILE_PATH:-}" ] && mark=$(( $(wc -c < "$LOG_FILE_PATH" 2>/dev/null || printf 0) ))
+
   write_connection_state
+
+  # Plain `sudo`, NOT `sudo -n`.
+  #
+  # `-n` was correct while helper mode existed only behind a passwordless rule.
+  # It is wrong now that `install-helper` writes that rule only with
+  # `--passwordless`: on an interactive-tier machine `-n` fails right here,
+  # AFTER phase one has already spent the user's password and second factor, and
+  # with no fallback - and it fails only sometimes, because a warm sudo
+  # credential cache makes `-n` succeed. helper_sudo_prepare() has already put
+  # the prompt somewhere sensible; if that cache lapsed during a slow SSO round
+  # trip, sudo asks again on the terminal rather than discarding the session.
+  #
+  # Unattended callers never reach this: helper_mode_usable() sends a run with
+  # no terminal to prompt mode precisely so nothing blocks on a prompt.
   # shellcheck disable=SC2024  # the log is opened by this user; the root child inherits the fd
-  printf '%s\n' "${AUTH_COOKIE}" | sudo -n "$h" "${args[@]}" 2>&1 | tee -a "$LOG_FILE_PATH"
+  printf '%s\n' "${AUTH_COOKIE}" | sudo "$h" "${args[@]}" 2>&1 | tee -a "$LOG_FILE_PATH"
   local rc="${PIPESTATUS[1]}"
 
   unset AUTH_COOKIE
   rm -f "$PID_FILE_PATH" "$STATE_FILE_PATH"
-  notify "VPN Up" "Disconnected from ${VPN_NAME:-VPN}"
-  run_hooks disconnected "${VPN_NAME:-}" "${VPN_HOST:-}"
+
+  # A refusal is not a disconnection. Announcing one fires the user's
+  # `disconnected` hooks for a tunnel that never existed.
+  if _helper_run_had_tunnel "$mark"; then
+    notify "VPN Up" "Disconnected from ${VPN_NAME:-VPN}"
+    run_hooks disconnected "${VPN_NAME:-}" "${VPN_HOST:-}"
+  fi
   return "$rc"
+}
+
+# Did this run actually get a tunnel, or was it turned away at the door?
+#
+# The evidence is what the run appended to the log from byte $1 onwards. Both
+# refusal shapes announce themselves, each on a line of its own:
+#
+#   sudo: a password is required               <- sudo never ran the helper
+#   vpn-up-helper: profile ... is not approved <- the helper refused before exec
+#
+# That second prefix is a dependable marker *because* the helper execs
+# OpenConnect on success: once the tunnel is up there is no vpn-up-helper
+# process left to print anything under that name. So a run whose every non-blank
+# line carries one of those two prefixes never had a tunnel. Both prefixes are
+# fixed strings our own code and sudo emit, not a parsed report format.
+#
+# Deliberately conservative the other way. Silence is ambiguous - `--quiet` is a
+# supported option - so no output at all counts as a tunnel, leaving the
+# previous behaviour in place wherever the evidence does not clearly say
+# otherwise. An OpenConnect that started and then failed to reach the gateway
+# DID run, and still reports a disconnection, exactly as prompt mode does.
+_helper_run_had_tunnel() {
+  local mark="$1" chunk line saw_refusal=0
+  [ -f "${LOG_FILE_PATH:-}" ] || return 0
+  chunk="$(tail -c "+$((mark + 1))" "$LOG_FILE_PATH" 2>/dev/null)" || return 0
+  [ -n "$chunk" ] || return 0
+  while IFS= read -r line; do
+    case "$line" in
+      "") continue ;;
+      "sudo: "*|"vpn-up-helper: "*) saw_refusal=1 ;;
+      *) return 0 ;;
+    esac
+  done <<< "$chunk"
+  [ "$saw_refusal" -eq 1 ] && return 1
+  return 0
 }
 
 # Full helper-mode connect: translate, authenticate, hand off.
 connect_via_helper() {
   translate_extra_args "${VPN_EXTRA_ARGS:-}" || return 1
+
+  # Ask for the sudo password here, before phase one, or not at all. Failing
+  # after authentication would burn a second factor for nothing.
+  if ! helper_sudo_prepare; then
+    print_danger "sudo authentication failed; cannot start the tunnel.\n"
+    return 1
+  fi
 
   print_primary "Authenticating as %s (unprivileged) ...\n" "${USER:-$(id -un)}"
   phase_one_authenticate || return 1
@@ -345,7 +439,13 @@ stop_via_helper() {
   local h; h="$(helper_bin)"
   # No pid is passed: the helper reads it from root-owned state and verifies the
   # process identity before signalling, so a recycled pid is never touched.
-  sudo -n "$h" stop --profile-id "${VPN_PROFILE_ID}"
+  #
+  # Plain `sudo` for the same reason as connect: with the passwordless rule
+  # opt-in, `-n` would refuse to stop a tunnel this very session started, and
+  # stop's caller would then fall through to the pid-file path - which cannot
+  # find a helper-mode tunnel, because the helper keeps its pid in root-owned
+  # state. The result was a tunnel that could not be stopped at all.
+  sudo "$h" stop --profile-id "${VPN_PROFILE_ID}"
 }
 
 # ------------------------------------------------------------------ approval

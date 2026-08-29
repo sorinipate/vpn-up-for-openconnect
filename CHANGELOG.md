@@ -39,6 +39,27 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ### Fixed
 
+- **Interactive helper mode could not actually connect.** Making the passwordless
+  rule opt-in gave helper mode a second tier — installed, but reached through a
+  normal `sudo` prompt — and the two places that actually invoke `sudo` were left
+  passing `-n`, which means *fail rather than prompt*. So `install-helper` without
+  `--passwordless` selected helper mode and then refused itself: connect failed
+  **after** phase one had already spent the password and second factor, with no
+  fallback, and stop could not stop a tunnel the same session had started. It
+  failed only intermittently, which is why it went unnoticed — a warm sudo
+  credential cache makes `-n` succeed, and the installer leaves one warm. Connect
+  and stop now use plain `sudo`; the probes that ask about *policy* keep
+  `sudo -k -n`, which is a different question.
+- **The sudo password is asked for before phase one, not after it.** A refusal now
+  costs nothing; previously it arrived once a Duo push had already been sent and a
+  TOTP code already consumed.
+- **A refusal is no longer announced as a disconnection.** When sudo or the helper
+  turned the connect away, `vpn-up` still cleared the connection state, notified
+  "Disconnected", and ran the user's `disconnected` hooks — for a tunnel that had
+  never existed. The announcement now requires evidence that the tunnel ran; a run
+  that produced only `sudo:` or `vpn-up-helper:` refusal lines is not a session
+  that ended. Silence stays ambiguous and is treated as a session, since `--quiet`
+  is supported.
 - **`sudo -n` was being read as "is this passwordless?" — it is not.** sudo
   caches a successful authentication, so anything you are merely *allowed* to run
   looks passwordless for minutes after you type your password. `doctor` could
