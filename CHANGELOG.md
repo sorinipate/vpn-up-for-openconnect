@@ -37,7 +37,59 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
   - `--dry-run` shows the intended changes and makes none, and says plainly that
     it read no root-only state and is not a security verdict.
 
+- **A login service can no longer retry unattended authentication forever,
+  including a rejected Duo push, with nothing to slow it down.** `KeepAlive`/
+  `Restart=always` used to relaunch `vpn-up start <profile>` every 30s
+  unconditionally; a denied or ignored MFA push cost nothing to repeat. A new
+  admission gate (`outcome.sh`) now limits how often an unattended attempt may
+  *begin*, before any credential is touched — a sliding 2-hour window, an
+  exponential backoff (1m → 2m → 4m → 8m → 16m → 30m), and a temporary
+  1-hour breaker past six attempts. It never asks whether OpenConnect
+  actually succeeded: that question has no reliable answer (OpenConnect 9.21
+  returns the same exit code for a DNS failure, a TLS failure and a rejected
+  credential), so the design deliberately avoids depending on it.
+  - launchd's `KeepAlive` is now the `SuccessfulExit=false` dictionary and
+    systemd's is `Restart=on-failure`, not `Restart=always`: exiting 0 now
+    means *stop supervising* (a permanent, human-actionable condition — a
+    missing dependency, a rejected certificate, an unproven sudo policy),
+    and any other exit means *restart* (self-healing conditions, including
+    "no network" and "already running", both of which are free — they never
+    touch the admission gate at all).
+  - TOTP codes are now reserved a step *before* being generated, exclusively:
+    a session that ran long enough to respawn with no delay (`launchd`'s
+    `ThrottleInterval` has no floor after that) could otherwise regenerate
+    the exact code the gateway just consumed.
+  - **Fixing a stopped service requires an explicit restart afterward**
+    (`launchctl kickstart` / `systemctl --user restart`) once the underlying
+    problem is fixed — same as the existing sudoers-rule case. A missing
+    TOTP seed is the one common case this applies to; `vpn-up set-secret`
+    does not restart a stopped service on its own.
+  - The state this keeps (`${DATA_DIR}/state/`) is per-profile, user-owned,
+    and never read by `vpn-up-helper` or `vpn-up-admin` as authorization
+    input — it is an availability-only, same-UID-writable advisory to the
+    unprivileged process, not a privileged control.
+
 ### Fixed
+
+- **`run_openconnect` always returned 0, regardless of whether OpenConnect
+  actually connected.** Its stdin pipeline ended on `tee`, whose own exit
+  status (not OpenConnect's) is what a pipeline reports by default, and the
+  function's last statement was an `unset` that always succeeds — so nothing
+  a service supervisor asked ever reflected reality. Every branch now
+  captures `PIPESTATUS` at the right index and returns a real outcome code.
+- **A service could enter the interactive setup wizard with no terminal to
+  answer it**, and two other places (`require_bin`, `check_file_existence`)
+  terminated the process directly rather than returning a status a service
+  supervisor could act on — both found while making the above fix meaningful
+  end to end. Neither is a regression from today's unconditional restart
+  behaviour, but both are exactly the terminal cases this change exists to
+  handle correctly, so both are fixed alongside it.
+- **`sudo -n -v` in prompt mode's own service-mode check (`run_openconnect`)
+  read a possibly-warm sudo credential cache, not policy** — a third,
+  previously unfixed instance of the same cache-vs-policy bug already fixed
+  elsewhere in this project (`service.sh`, `twophase.sh`). Routed through the
+  same cache-independent, listing-only probes (`vu_helper_passwordless`,
+  `vu_legacy_grant_state`) used everywhere else.
 
 - **Interactive helper mode could not actually connect.** Making the passwordless
   rule opt-in gave helper mode a second tier — installed, but reached through a

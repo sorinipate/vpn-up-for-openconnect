@@ -368,12 +368,18 @@ run_openconnect_helper() {
   rm -f "$PID_FILE_PATH" "$STATE_FILE_PATH"
 
   # A refusal is not a disconnection. Announcing one fires the user's
-  # `disconnected` hooks for a tunnel that never existed.
+  # `disconnected` hooks for a tunnel that never existed. The same check also
+  # feeds the outcome code below (0/POLICY/ATTEMPT_FAILED, outcome.sh) — this
+  # is diagnostics/supervisor-instruction only and never feeds admit_attempt.
+  local had_tunnel=1
   if _helper_run_had_tunnel "$mark"; then
     notify "VPN Up" "Disconnected from ${VPN_NAME:-VPN}"
     run_hooks disconnected "${VPN_NAME:-}" "${VPN_HOST:-}"
+  else
+    had_tunnel=0
   fi
-  return "$rc"
+  local outcome; outcome="$(outcome_from_run "$rc" "$had_tunnel")"
+  return "$outcome"
 }
 
 # Did this run actually get a tunnel, or was it turned away at the door?
@@ -411,19 +417,18 @@ _helper_run_had_tunnel() {
   return 0
 }
 
-# Full helper-mode connect: translate, authenticate, hand off.
+# Authenticate, then hand off to the tunnel.
+#
+# Narrower than it used to be: `translate_extra_args` now runs in
+# connection_preflight() and `helper_sudo_prepare`'s interactive `sudo -v`
+# now runs in run_admitted_connection()'s epilogue (core.sh) — both before
+# this is ever reached, per the design's four-phase split. By the time this
+# runs, only phase_one_authenticate (-> VPN_RC_PREAUTH) and
+# run_openconnect_helper (-> 0/VPN_RC_POLICY/VPN_RC_ATTEMPT_FAILED) remain
+# its own concern.
 connect_via_helper() {
-  translate_extra_args "${VPN_EXTRA_ARGS:-}" || return 1
-
-  # Ask for the sudo password here, before phase one, or not at all. Failing
-  # after authentication would burn a second factor for nothing.
-  if ! helper_sudo_prepare; then
-    print_danger "sudo authentication failed; cannot start the tunnel.\n"
-    return 1
-  fi
-
   print_primary "Authenticating as %s (unprivileged) ...\n" "${USER:-$(id -un)}"
-  phase_one_authenticate || return 1
+  phase_one_authenticate || return "$VPN_RC_PREAUTH"
 
   if [ -n "${AUTH_HOST}" ] && [ "${VPN_UP_VERBOSE:-FALSE}" = TRUE ]; then
     print_warning "Gateway reported host %s\n" "${AUTH_HOST}"

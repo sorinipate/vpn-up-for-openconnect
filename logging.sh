@@ -45,6 +45,43 @@ profile_log_file() {
   printf '%s/logs/%s.%s.log' "$DATA_DIR" "$PROGRAM_NAME" "$slug"
 }
 
+# Full, normalized SHA-256 of a profile's EXACT name. Used only to key the
+# rate-limiter's state file (outcome.sh): profile_slug() above is lossy — a
+# tr -c that maps "Work VPN" and "Work/VPN" to the same string — so a file
+# keyed on the slug alone would let two differently-named profiles corrupt
+# each other's attempt-rate guard. The digest carries identity; the slug
+# stays only as a human-readable filename prefix. awk normalizes each tool's
+# own label format (sha256sum's trailing filename marker, openssl dgst's
+# "SHA2-256(stdin)= " prefix) down to the bare hex digest.
+_profile_state_key() {
+  local h
+  if command -v shasum >/dev/null 2>&1; then
+    h="$(printf '%s' "$1" | shasum -a 256 | awk '{print $1}')"
+  elif command -v sha256sum >/dev/null 2>&1; then
+    h="$(printf '%s' "$1" | sha256sum | awk '{print $1}')"
+  elif command -v openssl >/dev/null 2>&1; then
+    h="$(printf '%s' "$1" | openssl dgst -sha256 | awk '{print $NF}')"
+  fi
+  if [ -z "$h" ]; then
+    print_danger "No sha256 tool (need shasum, sha256sum, or openssl); cannot key service state.\n"
+    return 1
+  fi
+  printf '%s' "$h"
+}
+
+# Path to the rate-limiter's per-profile state file (outcome.sh: attempt
+# history, TOTP step reservation, in-progress owner marker). NOT the same
+# file as profile_state_file() above, which records an ACTIVE tunnel's
+# connection details for `status` — this one lives under state/, not pids/,
+# and tracks unattended-attempt admission whether or not a tunnel ever comes
+# up. The slug is capped so a long profile name cannot blow past a
+# filesystem's filename-component limit; the digest never is.
+attempt_state_file() {
+  local key; key="$(_profile_state_key "$1")" || return 1
+  printf '%s/state/%s.%.48s.%s.state' "$DATA_DIR" "$PROGRAM_NAME" \
+    "$(profile_slug "$1")" "$key"
+}
+
 profile_vpn_running() {
   local pidfile statefile pid
   pidfile="$(profile_pid_file "$1")"
@@ -96,11 +133,15 @@ print_success() { _print_color "${SUCCESS:-\x1b[32;1m}" "$@"; }
 print_warning() { _print_color "${WARNING:-\x1b[35;1m}" "$@"; }
 print_danger()  { _print_color "${DANGER:-\x1b[31;1m}"  "$@"; }
 
+# Returns 1 rather than exiting: called from start()'s call tree, which under
+# a service must route every failure through the outcome/service_exit_code
+# mapping (outcome.sh) rather than terminate the process directly (see the
+# CHANGELOG entry for this change). Every call site checks the return value.
 check_file_existence() {
   local file_path="$1"; local file_name="$2"
   if [ ! -f "$file_path" ]; then
     printf "%b%s file missing! \n%b" "${DANGER:-\x1b[31;1m}" "$file_name" "${RESET:-\x1b[0m}"
-    exit 1
+    return 1
   fi
 }
 

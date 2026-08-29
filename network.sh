@@ -26,10 +26,26 @@ verify_gateway_cert() {
     </dev/null >/dev/null 2>&1
 }
 
+# Step-A-only reachability for the connect-time certificate preflight
+# (core.sh): true once a TLS handshake completes and a certificate can be
+# parsed out of it, regardless of whether that certificate is trusted.
+# verify_gateway_cert above additionally requires trust (-verify_return_error
+# makes it fail on an untrusted chain), which conflates "couldn't reach the
+# gateway at all" with "reached it, and the certificate is bad" into one
+# boolean — exactly the distinction connect-time preflight needs to keep
+# separate: the first is transient (VPN_RC_NO_NETWORK, restart), the second
+# is a real, terminal problem (VPN_RC_CONFIG).
+gateway_tls_reachable() {
+  local host port
+  host="$(_host_only "$1")"; port="$(_port_only "$1")"
+  openssl s_client -connect "${host}:${port}" -servername "${host}" \
+    </dev/null 2>/dev/null | openssl x509 -noout >/dev/null 2>&1
+}
+
 # Fetch a profile's gateway pin and write it into <serverCertificate>.
 pin_save() {
   local profile="$1"
-  check_file_existence "$PROFILES_FILE" "Profiles"
+  check_file_existence "$PROFILES_FILE" "Profiles" || return 1
   profiles_xml_ok || return 1
   if ! profile_exists "$profile"; then
     print_danger "Unknown profile '%s'.\n" "$profile"

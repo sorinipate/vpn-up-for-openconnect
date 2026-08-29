@@ -16,6 +16,7 @@ setup() {
   print_primary() { printf -- "$1" "${@:2}"; }
   notify() { :; }
   source "$BATS_TEST_DIRNAME/../logging.sh"
+  source "$BATS_TEST_DIRNAME/../outcome.sh"
   source "$BATS_TEST_DIRNAME/../dependencies.sh"
   source "$BATS_TEST_DIRNAME/../profiles.sh"
   source "$BATS_TEST_DIRNAME/../core.sh"
@@ -72,8 +73,7 @@ XML
   SERVER_CERTIFICATE="pin-sha256:abc"   # skip trust-store lookup
   QUIET=FALSE; BACKGROUND=TRUE          # background branch (no tee/sleep)
 
-  connect
-
+  run_openconnect
   grep -qF -- "--certificate=/etc/vpn/me.pem" "$argv"
   grep -qF -- "--sslkey=/etc/vpn/me.key" "$argv"
 }
@@ -108,8 +108,7 @@ XML
   SERVER_CERTIFICATE="pin-sha256:abc"
   QUIET=FALSE; BACKGROUND=TRUE
 
-  connect
-
+  run_openconnect
   # argv references the PIN file, but never the PIN value itself
   grep -qF -- "pin-source=file:" "$argv"
   grep -qF -- "pkcs11:manufacturer=piv_II;id=%01" "$argv"
@@ -131,8 +130,7 @@ XML
   SERVER_CERTIFICATE="pin-sha256:abc"
   QUIET=FALSE; BACKGROUND=TRUE
 
-  connect
-
+  run_openconnect
   grep -qF -- "--certificate=pkcs11:manufacturer=piv_II;id=%01" "$argv"
   ! grep -qF -- "pin-source=file:" "$argv"
 }

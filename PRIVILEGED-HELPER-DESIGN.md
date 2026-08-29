@@ -1224,16 +1224,114 @@ the cache-independent `sudo -k -n` probe — already said the policy is
 passwordless.
 
 Each restart re-runs phase one, so it needs the stored password or TOTP seed —
-already the case today, and already unprivileged. (Duo `push` profiles issue a
-new push per reconnect. That is today's behaviour too, not a regression, but it
-is worth documenting for flapping links, along with a backoff so a failing
-gateway is not re-authenticated in a tight loop.)
+already the case today, and already unprivileged. Duo `push` profiles issue a
+new push per reconnect, which is what makes §15.1's rate limiter necessary
+rather than cosmetic: without it, a rejected or ignored push costs nothing to
+repeat every 30 s, forever.
 
 `service install` preflight gains: helper installed; helper rule present;
 `sudo -k -n` works against the helper; the closure checks pass; the profile is
 expressible in the closed schema (no `extraArgs`, no `--route`); and an approval
 record exists for it. Failing any of those is a clear error at install time
 rather than a silent failure at login.
+
+### 15.1 The unattended authentication attempt rate limiter
+
+`§17.4`'s open question — is any protocol's cookie single-use in a way that
+makes a fast restart loop fail confusingly, and what should the backoff be —
+is answered here, alongside the runtime bug it surfaced: `KeepAlive`/
+`Restart=always` relaunch `vpn-up start <profile>` on any exit, including a
+clean one, with no bound on how often that re-authenticates. A rejected or
+ignored Duo push cost nothing to repeat every 30 s.
+
+**The central design decision:** the limiter gates *admission* of an
+unattended attempt. It never classifies what OpenConnect returned, never
+waits for it, and OpenConnect's eventual exit status never changes how much
+rate-limit budget was spent — verified directly against OpenConnect 9.21,
+which returns the identical `rc=1` for a DNS failure, a TLS failure, and a
+rejected credential, so no taxonomy exists to classify against in the first
+place. Budget is charged the instant VPN Up decides to attempt an unattended
+authentication, before any credential or one-time value is touched — a Duo
+push is what the limiter protects against, and a Duo push is spent at that
+moment regardless of what happens afterward.
+
+**The eight rate-limiter security invariants**, each independently
+regression-tested (`tests/attemptguard.bats`, `tests/totpstep.bats`) and each
+a plausible thing for a future change to erode without noticing:
+
+1. OpenConnect's outcome never changes admission history.
+2. An unattended attempt is charged the moment it is admitted, before
+   authentication begins — not on OpenConnect's outcome.
+3. Only one process per profile may hold attempt ownership at a time.
+4. No one-time factor (TOTP) is generated before exclusive ownership and the
+   TOTP step reservation are both held.
+5. Any wait invalidates every decision made before it; the next action
+   begins with a fresh locked read, never a resumed one.
+6. This state is never consumed by `vpn-up-helper` or `vpn-up-admin` as
+   authorization input.
+7. A live attempt owner is never reclaimed merely because the connection has
+   run for a long time — only a demonstrably dead owner is stale.
+8. A service attempt is admitted only after every locally decidable,
+   non-authenticating prerequisite has already succeeded (a bad certificate,
+   an unsupported SSO/service or Duo-passcode/service combination, a missing
+   dependency, a missing TOTP seed, unready sudo/helper privilege policy) —
+   those are configuration or policy failures, not attempts, and consume no
+   budget. This is a snapshot guarantee: it holds at the moment preflight is
+   evaluated, not continuously through however long admission might then
+   have to wait. A stale rejection surfacing after admission is charged as
+   an ordinary attempt outcome, not un-charged — re-checking and un-charging
+   would resurrect invariant 1's problem one step later.
+
+**The state file** (`${DATA_DIR}/state/<slug>.<sha256>.state`, per profile,
+mode `0600`) is a new input that gates whether an unattended attempt is
+admitted — worth recording explicitly as a security invariant rather than
+left implicit in a code comment: it is user-owned and same-UID-writable, and
+**no privileged component ever reads it or treats it as authorization
+input**. A same-UID attacker can deny availability (a poisoned
+`open_until_epoch`, clamped to at most an hour) or disable the guard entirely
+(clearing the attempt history), restoring exactly the unguarded behaviour
+that UID already had — neither path grants additional VPN or helper
+authority. The file also carries a TOTP step index (`last_totp_step`) next
+to the profile's other secrets-adjacent state; the index itself is not a
+secret (`floor(time/30)` is derivable by anyone with a clock), only the code
+generated from it is, and that code is never written to disk.
+
+**Exit-status semantics changed to carry this.** Under `VPN_UP_SERVICE`,
+`vpn-up`'s exit status is now a supervisor instruction, not a Unix
+success/failure claim: exit 0 means *stop supervising* (a permanent,
+human-actionable condition — reflected in launchd's `KeepAlive` moving from
+the bare boolean to the `SuccessfulExit=false` dictionary, and systemd's
+`Restart=always` becoming `Restart=on-failure`), any other exit means
+*restart*. Only two conditions are terminal — a config/profile problem that
+needs a human, and a sudo/helper policy refusal before any tunnel — and
+reaching either requires the whole call tree beneath `start()` to route
+every failure through this mapping rather than `exit` directly, which two
+call sites used to do (`require_bin`, `check_file_existence`) and one path
+had no guard at all (a service with no configuration file entering the
+interactive setup wizard). **Fixing a stopped service requires an explicit
+restart afterward** once the underlying problem is fixed (the same operational
+step the passwordless-sudoers case already requires) — building an automatic
+"a relevant secret changed → restart the stopped service" path is deferred,
+not built.
+
+`connect()` is now a four-phase pipeline — `connection_preflight` (mode
+selection, dependency/compatibility/certificate checks, all non-authenticating),
+`admit_attempt` (the serialized rate-limiter transaction above), and
+`run_admitted_connection` (privilege authorization, credential retrieval,
+TOTP/Duo-passcode value entry, dispatch, and the epilogue that releases
+attempt ownership exactly once) — rather than one function that used to spend
+a TOTP code or read a Duo passcode before any of those checks ran.
+
+**What the attempt-owner marker does not, and should not, try to
+guarantee:** it serializes *VPN Up's own* authentication processes against
+each other. It says nothing about whether a privileged tunnel could outlive
+the VPN Up process that started it — if the supervised shell were killed
+unexpectedly after a helper-mode tunnel came up, a replacement process could,
+in principle, reclaim ownership and start a new attempt while an orphaned
+tunnel still existed. `ensure_profile_not_running()` only observes the
+user-side OpenConnect PID file, not root-owned helper state. This is a real
+boundary, not a gap in the rate limiter specifically — reconciling it belongs
+with §17.7's tunnel-up signal and helper-lifecycle work, not with admission.
 
 ### Release gate
 
@@ -1269,9 +1367,14 @@ implementation (§16 step 3).
     everything above is inert until the binaries sit on a root-owned path, and
     step 13's service preflight ("helper installed; helper rule present;
     `sudo -n` works") cannot be exercised before it exists.
-13. Linux hardened service
+13. **Hardened service (Linux classification tier)** — the rate limiter,
+    outcome codes and TOTP-step fix (§15.1) already shipped cross-platform,
+    ahead of this step; what remains here is Linux-first *outcome fidelity*
+    (helper mode's structural `PREAUTH`/`POLICY` distinction) and the closure
+    work below, not the limiter itself.
 14. MacPorts / macOS closure research and implementation
-15. macOS hardened service
+15. macOS hardened service — inherits §15.1 automatically once step 14 lands,
+    since the limiter does not depend on helper mode being available.
 
 Steps 4–7 encode a deliberate rule: **build and break the policy engine before
 introducing root execution.** Feed it hostile argv, registry, URL, proxy and
@@ -1332,12 +1435,22 @@ revision 1's path logic that would return. Check per protocol before v1 scope is
 frozen; it is the only identified case where §4's simplification might not fully
 hold.
 
-### 17.4 Cookie lifetime versus service restart loops
+### 17.4 Cookie lifetime versus service restart loops — **ANSWERED, §15.1**
 
-Phase one's cookie may have a short server-side validity. Interactive use is
-unaffected, and a service that restarts re-authenticates. The question is
-whether any protocol's cookie is single-use in a way that makes a fast restart
-loop fail confusingly, and what the backoff should be (§15).
+The backoff is specified: a sliding 2-hour attempt window, exponential delay
+(1m → 2m → 4m → 8m → 16m → 30m), and a temporary 1-hour breaker past six
+attempts within the window — see §15.1. The fast-restart-loop half of the
+question resolved into something more specific than "does a cookie replay":
+**TOTP codes can collide across a restart**, not because of anything
+protocol-specific about a cookie, but because launchd's `ThrottleInterval` has
+no floor after a session that ran long enough (a drop-and-respawn inside the
+same 30 s RFC 6238 step regenerates the code the gateway just consumed).
+Fixed by reserving the TOTP step before generating a code from it, not after
+— see the reserve-before-generate discussion in §15.1 and
+`tests/totpstep.bats`. Whether a *cookie* itself is single-use per protocol
+remains unverified by direct probe, but no longer matters for the restart-loop
+concern the question was originally about: the rate limiter bounds the loop
+regardless of cookie semantics.
 
 ### 17.5 Does `https://` work as a proxy scheme? — **ANSWERED, step 11**
 
@@ -1377,6 +1490,26 @@ Until one exists, the passwordless rule stays opt-in (§14). When one does, the
 rule can reasonably default on for installations that came through it, and the
 assumption paragraph in `SECURITY.md` changes rather than being deleted: an
 install from a user-writable checkout will still carry it.
+
+### 17.7 A structured tunnel-up/down signal
+
+Nothing in §15.1's rate limiter depends on knowing whether a tunnel actually
+came up — that is the whole point of gating admission rather than trying to
+classify outcomes. But a real signal would still let step 13 do better:
+accurate `connected`/`disconnected` hooks, real diagnostics, and a way to
+answer §15.1's closing question (whether an orphaned privileged tunnel can
+outlive the VPN Up process that started it) instead of merely documenting the
+boundary.
+
+OpenConnect invokes `--script` with `$reason=connect/disconnect/reconnect`,
+which the helper already pins (`helper/src/exec.c:82`) — well positioned,
+since the script path is already part of the closed, root-verified schema.
+**Prompt mode must not get an equivalent**: OpenConnect runs as root there, so
+a user-writable script executed as root is the exact arbitrary-root
+escalation this project exists to eliminate. The helper's state root is
+root-owned 0700 (`helper/src/state.c:307-309`), so any such channel is a
+deliberate, reviewed addition to the privileged ABI, not an incidental one —
+observability upgrade only, never a safety dependency.
 
 ---
 

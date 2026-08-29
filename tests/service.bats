@@ -44,6 +44,15 @@ setup() {
   [[ "$output" == *"<key>KeepAlive</key>"* ]]
   # well-formed XML
   printf '%s\n' "$output" | xmlstarlet val -q -
+  # KeepAlive must be the SuccessfulExit=false DICTIONARY, not the bare
+  # boolean: exit 0 (service_exit_code(), outcome.sh) is a permanent
+  # condition and must STOP the job, not relaunch it. XPath, not a substring,
+  # so a regression to the bare `<true/>` form (which also happens to
+  # contain "KeepAlive" as a string) is actually caught.
+  local n
+  n="$(printf '%s\n' "$output" | xmlstarlet sel -t -v \
+    "count(//key[.='KeepAlive']/following-sibling::dict[1]/key[.='SuccessfulExit']/following-sibling::false)")"
+  [ "$n" -ge 1 ]
 }
 
 @test "write_systemd_unit produces a unit with restart and service env" {
@@ -51,7 +60,11 @@ setup() {
   [ "$status" -eq 0 ]
   [[ "$output" == *'ExecStart='*'start "Work VPN"'* ]]
   [[ "$output" == *"Environment=VPN_UP_SERVICE=1"* ]]
-  [[ "$output" == *"Restart=always"* ]]
+  # on-failure, not always: exit 0 (service_exit_code(), outcome.sh) means a
+  # permanent condition and must STOP the unit, not restart it.
+  [[ "$output" == *"Restart=on-failure"* ]]
+  [[ "$output" == *"StartLimitIntervalSec=300"* ]]
+  [[ "$output" == *"StartLimitBurst=20"* ]]
 }
 
 @test "_service_path_for uses slugged per-profile filenames" {

@@ -23,8 +23,8 @@ export PROGRAM_NAME PROGRAM_PATH DATA_DIR
 export CONFIGURATION_FILE="${DATA_DIR}/${PROGRAM_NAME}.config"
 export PROFILES_FILE="${DATA_DIR}/${PROGRAM_NAME}.profiles"
 
-( umask 077; mkdir -p "${DATA_DIR}/logs" "${DATA_DIR}/pids" )
-chmod 700 "${DATA_DIR}" "${DATA_DIR}/logs" "${DATA_DIR}/pids" 2>/dev/null || true
+( umask 077; mkdir -p "${DATA_DIR}/logs" "${DATA_DIR}/pids" "${DATA_DIR}/state" )
+chmod 700 "${DATA_DIR}" "${DATA_DIR}/logs" "${DATA_DIR}/pids" "${DATA_DIR}/state" 2>/dev/null || true
 
 # One-time migration of legacy state from the old in-repo config/ directory.
 for _legacy_file in "${PROGRAM_NAME}.config" "${PROGRAM_NAME}.profiles" \
@@ -40,6 +40,7 @@ unset _legacy_file
 # Source modules
 . "${PROGRAM_PATH}/logging.sh"
 . "${PROGRAM_PATH}/ui.sh"
+. "${PROGRAM_PATH}/outcome.sh"
 . "${PROGRAM_PATH}/dependencies.sh"
 . "${PROGRAM_PATH}/encryption.sh"
 . "${PROGRAM_PATH}/network.sh"
@@ -92,7 +93,23 @@ EOF
 }
 
 case "${1:-}" in
-  start)      check_dependencies; start "${2:-}" ;;
+  # The one place that maps an outcome code (outcome.sh) to an exit status
+  # and actually exits. Nothing in check_dependencies/start's call tree may
+  # `exit` on its own -- every failure returns an outcome here instead, so a
+  # service always gets the right supervisor instruction (0 = stop this
+  # permanent condition, non-zero = restart) rather than an unmapped raw
+  # exit status. `if cmd; then ...; else rc=$?; fi`, never `cmd; rc=$?`, so a
+  # `set -e` a sourced user config might set can't skip past this either.
+  start)
+    outcome="$VPN_RC_CONFIG"
+    if check_dependencies; then
+      if start "${2:-}"; then outcome=0; else outcome=$?; fi
+    fi
+    if [ -n "${VPN_UP_SERVICE:-}" ]; then
+      exit "$(service_exit_code "$outcome")"
+    fi
+    exit "$outcome"
+    ;;
   stop)       stop "${2:-}" ;;
   status)     status ;;
   restart)    "$0" stop "${2:-}"; "$0" start "${2:-}" ;;

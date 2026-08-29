@@ -177,7 +177,32 @@ secrets_delete_file() {
 }
 
 # ----- Unified API -----
-secrets_set() { local profile="$1"; local field="$2"; local value="$3"; local b; b="$(secrets_backend)"; local k; k="$(secrets_key "$profile" "$field")"; case "$b" in keychain) secrets_set_keychain "$k" "$value" ;; secret-tool) secrets_set_secrettool "$k" "$value" ;; openssl) secrets_set_openssl "$k" "$value" ;; file) secrets_set_file "$k" "$value" ;; esac; }
+#
+# secrets_set clears the rate limiter's attempt history on a successful
+# password change (outcome.sh: attempt_history_clear) — the natural repair
+# workflow once a stored credential was wrong — and additionally clears the
+# TOTP step reservation on a token_secret change, since a new seed makes any
+# previously reserved step meaningless. Neither clear applies to any other
+# field, and neither ever runs on a failed write.
+secrets_set() {
+  local profile="$1"; local field="$2"; local value="$3"; local b rc=0; b="$(secrets_backend)"
+  local k; k="$(secrets_key "$profile" "$field")"
+  case "$b" in
+    keychain)    secrets_set_keychain "$k" "$value" ;;
+    secret-tool) secrets_set_secrettool "$k" "$value" ;;
+    openssl)     secrets_set_openssl "$k" "$value" ;;
+    file)        secrets_set_file "$k" "$value" ;;
+  esac
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    command -v attempt_history_clear >/dev/null 2>&1 || . "${PROGRAM_PATH}/outcome.sh"
+    case "$field" in
+      password)     attempt_history_clear "$profile" ;;
+      token_secret) attempt_history_clear "$profile"; totp_step_reservation_clear "$profile" ;;
+    esac
+  fi
+  return "$rc"
+}
 secrets_get() { local profile="$1"; local field="$2"; local b; b="$(secrets_backend)"; local k; k="$(secrets_key "$profile" "$field")"; case "$b" in keychain) secrets_get_keychain "$k" ;; secret-tool) secrets_get_secrettool "$k" ;; openssl) secrets_get_openssl "$k" ;; file) secrets_get_file "$k" ;; esac; }
 secrets_delete() { local profile="$1"; local field="$2"; local b; b="$(secrets_backend)"; local k; k="$(secrets_key "$profile" "$field")"; case "$b" in keychain) secrets_delete_keychain "$k" ;; secret-tool) secrets_delete_secrettool "$k" ;; openssl) secrets_delete_openssl "$k" ;; file) secrets_delete_file "$k" ;; esac; }
 

@@ -16,6 +16,7 @@ XML
   print_warning() { :; }; print_danger() { :; }; print_success() { :; }; print_primary() { :; }
   notify() { :; }
   source "$BATS_TEST_DIRNAME/../logging.sh"
+  source "$BATS_TEST_DIRNAME/../outcome.sh"
   source "$BATS_TEST_DIRNAME/../profiles.sh"
   source "$BATS_TEST_DIRNAME/../core.sh"
   # encryption.sh supplies secrets_delete_profile (and SECRET_FIELDS); the real

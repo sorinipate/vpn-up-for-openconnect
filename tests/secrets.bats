@@ -10,6 +10,7 @@ setup() {
   mkdir -p "$DATA_DIR"
   print_danger() { printf -- "$1" "${@:2}" >&2; }
   export -f print_danger
+  source "$BATS_TEST_DIRNAME/../outcome.sh"
   source "$BATS_TEST_DIRNAME/../encryption.sh"
   export _VAULT_PASSPHRASE="test-pass-123"
 }

@@ -14,6 +14,7 @@ setup() {
   print_primary() { printf -- "$1" "${@:2}"; }
   notify() { :; }
   source "$BATS_TEST_DIRNAME/../logging.sh"
+  source "$BATS_TEST_DIRNAME/../outcome.sh"
   source "$BATS_TEST_DIRNAME/../profiles.sh"
   source "$BATS_TEST_DIRNAME/../core.sh"
   source "$BATS_TEST_DIRNAME/../twophase.sh"
@@ -387,15 +388,20 @@ _helper_argv_setup() {
 
 @test "sudo is authorized before phase one, not after it" {
   # Ordering is the whole point: a Duo push cannot be recalled, so discovering
-  # that sudo will not authorize the helper must happen first.
+  # that sudo will not authorize the helper must happen first. This is now
+  # run_admitted_connection's responsibility (core.sh), not
+  # connect_via_helper's -- the interactive sudo -v call moved out to phase 4
+  # per the design's privilege-split correction (see CHANGELOG).
   _helper_argv_setup
   ORDER="$BATS_TEST_TMPDIR/order"
   : > "$ORDER"
+  _VPN_CONNECT_MODE="helper"
   helper_mode_available() { return 1; }             # interactive tier
   sudo() { echo "sudo $1" >> "$ORDER"; return 0; }
+  migrate_or_fetch_password() { return 0; }
   phase_one_authenticate() { echo "phase-one" >> "$ORDER"; return 1; }
 
-  run connect_via_helper
+  run run_admitted_connection "Helper VPN" INTERACTIVE
   [ "$status" -ne 0 ]
   [ "$(head -n 1 "$ORDER")" = "sudo -v" ]
   grep -qx -- "phase-one" "$ORDER"
@@ -403,12 +409,14 @@ _helper_argv_setup() {
 
 @test "a refused sudo aborts before phase one spends a second factor" {
   _helper_argv_setup
+  _VPN_CONNECT_MODE="helper"
   helper_mode_available() { return 1; }
   sudo() { return 1; }                              # user cancelled or failed
+  migrate_or_fetch_password() { return 0; }
   RAN="$BATS_TEST_TMPDIR/ran"
   phase_one_authenticate() { : > "$RAN"; return 0; }
 
-  run connect_via_helper
+  run run_admitted_connection "Helper VPN" INTERACTIVE
   [ "$status" -ne 0 ]
   [ ! -e "$RAN" ]
 }

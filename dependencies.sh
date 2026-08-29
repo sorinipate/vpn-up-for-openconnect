@@ -1,11 +1,16 @@
 # dependencies.sh - dependency checks and doctor
 
+# Returns 1 rather than exiting: reached from vpn-up.command's top-level
+# `start)` dispatch, before start() itself runs, so under a service this must
+# route through service_exit_code() (outcome.sh) like every other failure in
+# that call tree, not terminate the process directly. See check_dependencies()
+# below, whose own return value the dispatch now checks.
 require_bin() {
   local bin="$1"; local hint="$2"
   if ! command -v "$bin" >/dev/null 2>&1; then
     print_danger "Missing dependency: %s\n" "$bin"
     [ -n "$hint" ] && print_warning "Hint: %s\n" "$hint"
-    exit 1
+    return 1
   fi
 }
 
@@ -42,14 +47,16 @@ require_oathtool() {
 }
 
 check_dependencies() {
-  require_bin xmlstarlet "Install via: brew install xmlstarlet | apt-get install xmlstarlet"
-  require_bin openconnect "Install via: brew install openconnect | apt-get install openconnect"
+  local rc=0
+  require_bin xmlstarlet "Install via: brew install xmlstarlet | apt-get install xmlstarlet" || rc=1
+  require_bin openconnect "Install via: brew install openconnect | apt-get install openconnect" || rc=1
   if [ "$(uname)" = "Darwin" ]; then
-    require_bin security "macOS provides this by default"
+    require_bin security "macOS provides this by default" || rc=1
   else
     command -v secret-tool >/dev/null 2>&1 || print_warning "Optional: 'secret-tool' for keyring secrets. Falling back to OpenSSL vault.\n"
   fi
   command -v openssl >/dev/null 2>&1 || print_warning "Optional: 'openssl' for encrypted vault fallback.\n"
+  return "$rc"
 }
 
 # ----------------------------------------------------- privilege boundary check
@@ -232,6 +239,60 @@ doctor_helper_install() {
   return 0
 }
 
+# -------------------------------------------- rate-limiter state (outcome.sh)
+#
+# Two residual conditions the locking design in outcome.sh deliberately never
+# auto-recovers, because doing so from the hot path would risk exactly the
+# class of bug that design closes (see PRIVILEGED-HELPER-DESIGN.md's
+# rate-limiter section): a `.lock` directory whose `owner` metadata never
+# appeared (never reclaimed on age — there is no pid to test liveness
+# against), and a `.lock.reclaiming` meta-lock left behind if a process died
+# in the handful of operations between acquiring it and removing it. Both are
+# vanishingly rare (the windows involved are microseconds) and both are
+# reported here, not auto-cleared, so an operator has to make the call.
+_VU_DOCTOR_LOCK_STALE_SECS=60
+
+doctor_rate_limiter_state() {
+  echo
+  echo "Rate-limiter state:"
+  local dir="${DATA_DIR}/state" d found=0 now
+  now="$(date +%s)"
+  [ -d "$dir" ] || { echo "  [OK] no state directory yet"; return 0; }
+
+  # Main lock: the residual case is metadata that never appeared at all --
+  # never auto-reclaimed (see outcome.sh), so ANY age with no readable owner
+  # file is reported, not just an old one.
+  for d in "$dir"/*.lock; do
+    [ -d "$d" ] || continue
+    case "$d" in *.lock.reclaiming) continue ;; esac
+    if [ ! -r "$d/owner" ]; then
+      found=1
+      echo "  [!!] Incomplete VPN state lock detected: $d"
+      echo "       VPN Up cannot determine whether this lock was fully acquired."
+      echo "       No authentication attempt will proceed until it is cleared: rm -rf '$d'"
+    fi
+  done
+
+  # The reclaim meta-lock: its normal lifetime is microseconds and it always
+  # writes metadata immediately, so readability is not the signal here --
+  # age past a generous diagnostic-only threshold is.
+  for d in "$dir"/*.lock.reclaiming; do
+    [ -d "$d" ] || continue
+    local created age
+    created="$(awk -F'=' '/^created=/{print substr($0,9); exit}' "$d/owner" 2>/dev/null)"
+    age=$(( now - ${created:-$now} ))
+    if [ -z "$created" ] || [ "$age" -ge "$_VU_DOCTOR_LOCK_STALE_SECS" ]; then
+      found=1
+      echo "  [!!] Stuck lock-reclaim marker detected: $d"
+      echo "       A process likely died while reclaiming a stale lock; this is not auto-cleared."
+      echo "       No authentication attempt will proceed until it is cleared: rm -rf '$d'"
+    fi
+  done
+
+  [ "$found" = 0 ] && echo "  [OK] no stuck locks found"
+  return 0
+}
+
 doctor() {
   echo "=== vpn-up doctor ==="
   echo "- OS         : $(uname -a)"
@@ -291,6 +352,7 @@ doctor() {
   doctor_privilege_boundary || boundary_rc=$?
   doctor_legacy_grants
   doctor_execution_closure
+  doctor_rate_limiter_state
 
   echo
   echo "Config preview:"

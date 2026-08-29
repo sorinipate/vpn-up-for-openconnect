@@ -20,7 +20,7 @@ XML
   [[ "$output" == *"start [profile]"* ]]
 }
 
-@test "start with no profiles, non-tty: seeds template and exits 1" {
+@test "start with no profiles, non-tty: seeds template and exits VPN_RC_CONFIG" {
   # check_dependencies needs an openconnect binary; CI runners don't have one
   mkdir -p "$BATS_TEST_TMPDIR/bin"
   printf '#!/bin/sh\nexit 0\n' > "$BATS_TEST_TMPDIR/bin/openconnect"
@@ -36,9 +36,32 @@ readonly NOTIFICATIONS=FALSE
 EOF
   chmod 600 "$VPN_UP_HOME/vpn-up.command.config"
   run "$CLI" start < /dev/null
-  [ "$status" -eq 1 ]
+  # 12 = VPN_RC_CONFIG (outcome.sh): a permanent, human-actionable condition,
+  # not the flat "1" every failure used to return.
+  [ "$status" -eq 12 ]
   [[ "$output" == *"Created profile template"* ]]
   [ -f "$VPN_UP_HOME/vpn-up.command.profiles" ]
+}
+
+@test "VPN_UP_SERVICE maps a terminal outcome to exit 0, not the raw code" {
+  # End-to-end through the real top-level dispatch: service_exit_code()
+  # (outcome.sh) must turn a permanent condition into "stop supervising"
+  # (exit 0) for a launchd/systemd job, not leak the raw VPN_RC_CONFIG (12).
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  printf '#!/bin/sh\nexit 0\n' > "$BATS_TEST_TMPDIR/bin/openconnect"
+  chmod 755 "$BATS_TEST_TMPDIR/bin/openconnect"
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+  rm -f "$VPN_UP_HOME/vpn-up.command.profiles"
+  cat > "$VPN_UP_HOME/vpn-up.command.config" <<'EOF'
+readonly BACKGROUND=TRUE
+readonly QUIET=TRUE
+readonly SHOW_BANNER=FALSE
+readonly NOTIFICATIONS=FALSE
+EOF
+  chmod 600 "$VPN_UP_HOME/vpn-up.command.config"
+
+  VPN_UP_SERVICE=1 run "$CLI" start < /dev/null
+  [ "$status" -eq 0 ]
 }
 
 @test "unknown command prints usage" {

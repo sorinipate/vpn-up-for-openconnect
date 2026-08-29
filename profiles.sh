@@ -199,7 +199,7 @@ profile_exists() {
 
 # Tabular overview of all profiles (no secrets shown).
 list_profiles() {
-  check_file_existence "$PROFILES_FILE" "Profiles"
+  check_file_existence "$PROFILES_FILE" "Profiles" || return 1
   profiles_xml_ok || return 1
   xmlstarlet sel -t -m '//VPN' \
       -v name -o $'\t' \

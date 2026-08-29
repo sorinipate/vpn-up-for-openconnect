@@ -13,6 +13,7 @@ setup() {
   print_primary() { printf -- "$1" "${@:2}"; }
   notify() { :; }
   source "$BATS_TEST_DIRNAME/../logging.sh"
+  source "$BATS_TEST_DIRNAME/../outcome.sh"
   source "$BATS_TEST_DIRNAME/../dependencies.sh"
   source "$BATS_TEST_DIRNAME/../profiles.sh"
   source "$BATS_TEST_DIRNAME/../core.sh"
@@ -119,17 +120,17 @@ XML
 
 # --- connect()/service guards for SSO ---
 
-@test "connect refuses SSO in service mode and for the nc protocol" {
+@test "connection_preflight refuses SSO in service mode and for the nc protocol" {
   _write_profiles
   set_profile_paths() { PID_FILE_PATH=x; LOG_FILE_PATH=y; STATE_FILE_PATH=z; }
   require_openconnect_sso() { return 0; }
   load_profile_fields "SSO VPN"
 
-  VPN_UP_SERVICE=1 run connect
+  run connection_preflight SERVICE
   [ "$status" -ne 0 ]
   [[ "$output" == *"cannot run as a service"* ]]
 
-  PROTOCOL="nc" run connect
+  PROTOCOL="nc" run connection_preflight INTERACTIVE
   [ "$status" -ne 0 ]
   [[ "$output" == *"not supported for the 'nc' protocol"* ]]
 }

@@ -25,6 +25,7 @@ setup() {
   print_primary() { printf -- "$1" "${@:2}"; }
 
   source "$BATS_TEST_DIRNAME/../logging.sh"
+  source "$BATS_TEST_DIRNAME/../outcome.sh"
   source "$BATS_TEST_DIRNAME/../twophase.sh"
   source "$BATS_TEST_DIRNAME/../helperinstall.sh"
 
