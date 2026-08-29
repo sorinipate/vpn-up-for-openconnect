@@ -112,7 +112,7 @@ XML
   # argv references the PIN file, but never the PIN value itself
   grep -qF -- "pin-source=file:" "$argv"
   grep -qF -- "pkcs11:manufacturer=piv_II;id=%01" "$argv"
-  ! grep -qF -- "$PIN" "$argv"
+  if grep -qF -- "$PIN" "$argv"; then false; fi
   # the PIN actually lived in a 0600 file (read back inside the stub)
   [ "$(cat "$BATS_TEST_TMPDIR/pincontents")" = "$PIN" ]
   [[ "$(cat "$BATS_TEST_TMPDIR/pinperms")" == -rw------* ]]
@@ -132,7 +132,7 @@ XML
 
   run_openconnect
   grep -qF -- "--certificate=pkcs11:manufacturer=piv_II;id=%01" "$argv"
-  ! grep -qF -- "pin-source=file:" "$argv"
+  if grep -qF -- "pin-source=file:" "$argv"; then false; fi
 }
 
 # --- collision warning includes the cert flags ---

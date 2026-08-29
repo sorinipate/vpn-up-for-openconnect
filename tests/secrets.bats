@@ -85,6 +85,65 @@ setup() {
   [ "$(_security_quote 'a\b')" = '"a\\b"' ]
 }
 
+# --- tri-state existence checks (review round 4) ---
+#
+# A generic "secrets_get's own exit status means present/absent/error" read
+# is correct for the openssl/file backends, but Keychain and Secret Service
+# each fold "absent" and "backend error" into overlapping exit statuses of
+# their own -- these test each backend's OWN probe against exit codes/output
+# verified against real behavior (Keychain: reproduced directly on this
+# machine -- `security find-generic-password` against a nonexistent
+# account/service reliably exits 44; Secret Service: no live D-Bus/secret-tool
+# environment is available here, so this is verified against libsecret's
+# published secret-tool.c source instead -- see PRIVILEGED-HELPER-DESIGN.md).
+
+@test "_secret_check_keychain: found is present, errSecItemNotFound (44) is absent, anything else is backend error" {
+  security() { return 0; }
+  if _secret_check_keychain "k"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 0 ]
+
+  security() { return 44; }
+  if _secret_check_keychain "k"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 1 ]
+
+  security() { return 51; }   # e.g. a locked/unavailable keychain
+  if _secret_check_keychain "k"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 2 ]
+}
+
+@test "_secret_check_secrettool: a successful lookup is present" {
+  secret-tool() { return 0; }
+  if _secret_check_secrettool "k"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 0 ]
+}
+
+@test "_secret_check_secrettool: a failed lookup with the Secret Service reachable is absent" {
+  # secret-tool's own exit status can't distinguish "not found" from a
+  # backend error (both return 1) -- so a failed lookup is only read as
+  # ABSENT once the Secret Service is confirmed reachable on the session bus.
+  secret-tool() { return 1; }
+  command() { [ "$1" = -v ] && [ "$2" = dbus-send ] && return 0 || builtin command "$@"; }
+  dbus-send() { echo "boolean true"; return 0; }
+  if _secret_check_secrettool "k"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 1 ]
+}
+
+@test "_secret_check_secrettool: a failed lookup with the Secret Service NOT reachable is backend error" {
+  secret-tool() { return 1; }
+  command() { [ "$1" = -v ] && [ "$2" = dbus-send ] && return 0 || builtin command "$@"; }
+  dbus-send() { echo "boolean false"; return 0; }
+  if _secret_check_secrettool "k"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 2 ]
+}
+
+@test "_secret_check_secrettool: a failed lookup with no dbus-send available is backend error (safe default)" {
+  # Never guess ABSENT when the health probe itself can't run.
+  secret-tool() { return 1; }
+  command() { [ "$1" = -v ] && [ "$2" = dbus-send ] && return 1 || builtin command "$@"; }
+  if _secret_check_secrettool "k"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 2 ]
+}
+
 @test "secrets_backend honors platform tools and ENCRYPTION_ENABLED" {
   # no keyring tools, encryption on -> openssl vault
   uname() { echo Linux; }

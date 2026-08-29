@@ -144,14 +144,31 @@ _state_lock() {
   while :; do
     if mkdir "$lockdir" 2>/dev/null; then
       local token; token="$$-${RANDOM}-$(date +%s%N 2>/dev/null || date +%s)"
-      {
-        printf 'pid=%s\n' "$$"
-        printf 'token=%s\n' "$token"
-        printf 'created=%s\n' "$(date +%s)"
-      } > "${lockdir}/.owner.tmp" 2>/dev/null
-      mv -f "${lockdir}/.owner.tmp" "${lockdir}/owner" 2>/dev/null
-      printf '%s' "$token"
-      return 0
+      if {
+           printf 'pid=%s\n' "$$"
+           printf 'token=%s\n' "$token"
+           printf 'created=%s\n' "$(date +%s)"
+         } > "${lockdir}/.owner.tmp" 2>/dev/null \
+         && mv -f "${lockdir}/.owner.tmp" "${lockdir}/owner" 2>/dev/null; then
+        printf '%s' "$token"
+        return 0
+      fi
+      # Could not publish this lock's own ownership metadata (a full disk, a
+      # permission surprise) -- reporting success here without checking would
+      # leave _state_unlock unable to ever prove ownership (no owner file, or
+      # a stale one, to match pid/token against), wedging the lock
+      # permanently: no one could unlock it, and it has no metadata for the
+      # dead-pid reclaim path below to act on either. Reproduced directly
+      # (faulting the write) against the previous unchecked version: it
+      # returned 0 with a token, while the lock directory was left with no
+      # readable owner file -- exactly the "wedged, no owner metadata"
+      # condition this design's own §3.3 says must never auto-clear.
+      # We just created this directory ourselves via an uncontested mkdir, so
+      # nothing else can be treating it as its lock yet -- safe to remove it
+      # and retry from the top rather than leave it stranded.
+      rm -rf "$lockdir" 2>/dev/null
+      sleep "$_VU_LOCK_POLL" 2>/dev/null || sleep 1
+      continue
     fi
 
     pid="$(_state_field pid "${lockdir}/owner" 2>/dev/null)"

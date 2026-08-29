@@ -153,8 +153,23 @@ scrub_profile_password() {
 }
 
 migrate_or_fetch_password() {
+  # $1: SERVICE | INTERACTIVE. A backend read error checking the stored
+  # secret does NOT bail out immediately -- a legacy plaintext <password> or
+  # a client certificate are both independent of the secrets backend, so
+  # either lets this proceed exactly as before this check existed. Only when
+  # NEITHER fallback exists does the reason for having nothing left actually
+  # matter: a backend error there is reported as VPN_RC_SECRETS_UNAVAILABLE
+  # (2, for SERVICE only) rather than being folded into the terminal "no
+  # password stored" case below it, which is what invariant 8's SERVICE
+  # preflight already refuses for a genuinely absent secret.
+  local mode="$1"
   # prefer stored secret; migrate plaintext if found
-  local s; s="$(secrets_get "${VPN_NAME}" "password")"
+  local s="" backend_err=0
+  _secret_check "${VPN_NAME}" password
+  case $? in
+    0) s="$(secrets_get "${VPN_NAME}" "password")" ;;
+    2) backend_err=1 ;;
+  esac
   if [ -z "$s" ] && [ -n "$VPN_PASSWD" ]; then
     print_warning "Migrating plaintext password for '%s' to secure storage...\n" "${VPN_NAME}"
     secrets_set "${VPN_NAME}" "password" "${VPN_PASSWD}"
@@ -169,6 +184,10 @@ migrate_or_fetch_password() {
     return 0
   fi
   if [ -z "$s" ]; then
+    if [ "$backend_err" = 1 ] && [ "$mode" = SERVICE ]; then
+      print_danger "Could not read the secrets store to fetch the password for '%s'; will retry.\n" "${VPN_NAME}"
+      return 2
+    fi
     if [ -n "${VPN_UP_SERVICE:-}" ]; then
       print_danger "No stored password for '%s' and service mode cannot prompt. Store one first: %s set-secret '%s' password\n" "${VPN_NAME}" "${DISPLAY_NAME}" "${VPN_NAME}"
       return 1

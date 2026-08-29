@@ -72,7 +72,7 @@ XML
   QUIET=FALSE; BACKGROUND=TRUE
 
   run_openconnect
-  ! grep -qF -- "--proxy" "$argv"
+  if grep -qF -- "--proxy" "$argv"; then false; fi
 }
 
 # --- collision warning ---

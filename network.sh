@@ -64,6 +64,15 @@ fetch_server_pin() {
   printf 'pin-sha256:%s\n' "$pin"
 }
 
+# Whether this openssl(1) build's s_client actually supports
+# -verify_hostname/-verify_ip (added in OpenSSL 1.1.0). Checked by asking
+# s_client itself rather than parsing `openssl version` -- the version string
+# describes the linked library, not necessarily the same build that PATH
+# resolves `openssl` to.
+_openssl_has_verify_hostname() {
+  openssl s_client -help 2>&1 | grep -q -- '-verify_hostname'
+}
+
 # True if the gateway's certificate chain validates against the system trust
 # store AND is valid for this hostname/IP. Used to fail closed when no pin is
 # configured.
@@ -76,16 +85,46 @@ fetch_server_pin() {
 # -verify_ip make that an explicit part of this verification, matching
 # invariant 8's intent that a locally-decidable certificate failure is caught
 # here, before admission, not discovered later.
+#
+# Those two flags are NOT available in every openssl(1) this runs against --
+# confirmed directly against this project's own documented macOS install
+# (`brew install bash openconnect xmlstarlet`, which pulls in neither
+# Homebrew OpenSSL nor a GnuTLS-linked OpenConnect): macOS's own
+# /usr/bin/openssl is LibreSSL, whose s_client rejects -verify_hostname
+# outright ("unknown option -verify_hostname"), which would make every
+# unpinned profile on a stock Mac fail preflight permanently. So this
+# capability-detects rather than assumes the flags exist, and on Darwin
+# without them, uses the platform's own evaluator instead of silently
+# downgrading to chain-only trust: `security verify-cert <url>` performs a
+# real TLS connection and checks BOTH trust and hostname against Apple's own
+# trust store -- confirmed directly (badssl.com test certificates): exits 0
+# for a valid, correctly-named cert, and non-zero alike for an expired cert,
+# a self-signed/untrusted cert, and a hostname mismatch.
 verify_gateway_cert() {
   local host port verify_flag
   host="$(_host_only "$1")"; port="$(_port_only "$1")"
-  if _is_ipv4_literal "$host"; then
-    verify_flag="-verify_ip"
-  else
-    verify_flag="-verify_hostname"
+  if _openssl_has_verify_hostname; then
+    if _is_ipv4_literal "$host"; then
+      verify_flag="-verify_ip"
+    else
+      verify_flag="-verify_hostname"
+    fi
+    openssl s_client -connect "${host}:${port}" -servername "${host}" -verify_return_error \
+      "$verify_flag" "$host" </dev/null >/dev/null 2>&1
+    return $?
   fi
+  if [ "$(uname)" = "Darwin" ] && command -v security >/dev/null 2>&1; then
+    security verify-cert "https://${host}:${port}/" >/dev/null 2>&1
+    return $?
+  fi
+  # No hostname-aware verification available on this platform/openssl build
+  # (an old Linux openssl predating 1.1.0, with no Darwin fallback to use
+  # instead) -- fall back to the chain-only check this function used before
+  # hostname verification was added, rather than failing every unpinned
+  # profile closed outright. A real, documented gap (a wrong-hostname cert
+  # would pass here), not a silent one -- see PRIVILEGED-HELPER-DESIGN.md.
   openssl s_client -connect "${host}:${port}" -servername "${host}" -verify_return_error \
-    "$verify_flag" "$host" </dev/null >/dev/null 2>&1
+    </dev/null >/dev/null 2>&1
 }
 
 # Step-A-only reachability for the connect-time certificate preflight

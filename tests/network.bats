@@ -113,17 +113,86 @@ XML
 @test "verify_gateway_cert asks openssl to verify the hostname for a DNS gateway" {
   source "$BATS_TEST_DIRNAME/../network.sh"
   local argsfile="$BATS_TEST_TMPDIR/openssl-args"
-  openssl() { printf '%s\n' "$*" >> "$argsfile"; return 0; }
+  openssl() {
+    printf '%s\n' "$*" >> "$argsfile"
+    [ "$1 $2" = "s_client -help" ] && echo "-verify_hostname val       expected peer hostname"
+    return 0
+  }
   verify_gateway_cert "vpn.example.com:443"
   grep -q -- '-verify_hostname vpn.example.com' "$argsfile"
-  ! grep -q -- '-verify_ip' "$argsfile"
+  if grep -q -- '-verify_ip' "$argsfile"; then false; fi
 }
 
 @test "verify_gateway_cert asks openssl to verify the IP for an IP-literal gateway" {
   source "$BATS_TEST_DIRNAME/../network.sh"
   local argsfile="$BATS_TEST_TMPDIR/openssl-args"
-  openssl() { printf '%s\n' "$*" >> "$argsfile"; return 0; }
+  openssl() {
+    printf '%s\n' "$*" >> "$argsfile"
+    [ "$1 $2" = "s_client -help" ] && echo "-verify_hostname val       expected peer hostname"
+    return 0
+  }
   verify_gateway_cert "203.0.113.5:443"
   grep -q -- '-verify_ip 203.0.113.5' "$argsfile"
-  ! grep -q -- '-verify_hostname' "$argsfile"
+  if grep -q -- '-verify_hostname' "$argsfile"; then false; fi
+}
+
+# ------------------------------- cross-platform fallback (review round 4) --
+#
+# -verify_hostname/-verify_ip were added in OpenSSL 1.1.0 and are NOT present
+# in every openssl(1) this runs against: confirmed directly against this
+# project's own documented macOS install (`brew install bash openconnect
+# xmlstarlet`, which pulls in neither Homebrew OpenSSL nor a GnuTLS-linked
+# OpenConnect) -- macOS's own /usr/bin/openssl is LibreSSL, whose s_client
+# rejects -verify_hostname outright. Without capability detection, that would
+# make every unpinned profile on a stock Mac fail preflight permanently.
+
+@test "verify_gateway_cert falls back to 'security verify-cert' on Darwin when openssl lacks hostname verification" {
+  source "$BATS_TEST_DIRNAME/../network.sh"
+  uname() { echo "Darwin"; }
+  # A LibreSSL-shaped openssl: answers -help with no -verify_hostname listed,
+  # and must never be asked for -verify_hostname/-verify_ip -- a real
+  # LibreSSL build would reject either with "unknown option".
+  openssl() {
+    if [ "$1 $2" = "s_client -help" ]; then
+      echo "usage: s_client [-4 | -6] [-verify_return_error] ..."
+      return 0
+    fi
+    case "$*" in
+      *-verify_hostname*|*-verify_ip*) echo "unknown option" >&2; return 1 ;;
+    esac
+    return 0
+  }
+  local secargs="$BATS_TEST_TMPDIR/security-args"
+  security() { printf '%s\n' "$*" > "$secargs"; return 0; }
+  run verify_gateway_cert "vpn.example.com:443"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$secargs")" = "verify-cert https://vpn.example.com:443/" ]
+}
+
+@test "verify_gateway_cert propagates a real security verify-cert rejection" {
+  source "$BATS_TEST_DIRNAME/../network.sh"
+  uname() { echo "Darwin"; }
+  openssl() { [ "$1 $2" = "s_client -help" ] && return 0; return 1; }
+  security() { return 1; }   # e.g. hostname mismatch, expired, untrusted
+  run verify_gateway_cert "vpn.example.com:443"
+  [ "$status" -ne 0 ]
+}
+
+@test "verify_gateway_cert falls back to chain-only trust with no hostname check when neither is available" {
+  source "$BATS_TEST_DIRNAME/../network.sh"
+  uname() { echo "Linux"; }
+  local argsfile="$BATS_TEST_TMPDIR/openssl-args"
+  openssl() {
+    if [ "$1 $2" = "s_client -help" ]; then
+      echo "usage: s_client [-verify_return_error] ..."
+      return 0
+    fi
+    printf '%s\n' "$*" >> "$argsfile"
+    return 0
+  }
+  run verify_gateway_cert "vpn.example.com:443"
+  [ "$status" -eq 0 ]
+  grep -q -- '-verify_return_error' "$argsfile"
+  if grep -q -- '-verify_hostname' "$argsfile"; then false; fi
+  if grep -q -- '-verify_ip' "$argsfile"; then false; fi
 }

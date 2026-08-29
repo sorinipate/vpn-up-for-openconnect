@@ -45,10 +45,54 @@ secrets_set_keychain() {
 secrets_get_keychain() { local k="$1"; security find-generic-password -a "$k" -s "${SECRETS_NAMESPACE}" -w 2>/dev/null; }
 secrets_delete_keychain() { local k="$1"; security delete-generic-password -a "$k" -s "${SECRETS_NAMESPACE}" >/dev/null 2>&1 || true; }
 
+# security's own exit status DOES distinguish these on macOS: 44 is
+# errSecItemNotFound specifically (confirmed directly: a lookup against a
+# nonexistent account/service reproducibly exits 44, distinct from any other
+# failure), so a genuinely absent secret must map to ABSENT here, not to a
+# backend error -- a generic "any non-zero exit means the backend errored"
+# reading would make a password that was simply never stored retry forever
+# instead of ever reaching the terminal "store it first" message.
+_secret_check_keychain() {
+  local k="$1"
+  security find-generic-password -a "$k" -s "${SECRETS_NAMESPACE}" -w >/dev/null 2>&1
+  case $? in
+    0)  return 0 ;;
+    44) return 1 ;;
+    *)  return 2 ;;
+  esac
+}
+
 # ----- Linux Secret Service -----
 secrets_set_secrettool() { local k="$1"; local v="$2"; secret-tool store --label="${SECRETS_NAMESPACE}" app "${SECRETS_NAMESPACE}" account "$k" <<<"$v"; }
 secrets_get_secrettool() { local k="$1"; secret-tool lookup app "${SECRETS_NAMESPACE}" account "$k"; }
 secrets_delete_secrettool() { local k="$1"; secret-tool clear app "${SECRETS_NAMESPACE}" account "$k" 2>/dev/null || true; }
+
+# Unlike Keychain, secret-tool's own exit status does NOT distinguish "not
+# found" from a backend/D-Bus error -- both return 1 (libsecret's own
+# secret-tool.c maps a NULL value and an API error to the identical exit
+# code; this project has no Linux Secret Service environment to reproduce
+# that against live, so this is verified against libsecret's published
+# source rather than a live run -- recorded as such in
+# PRIVILEGED-HELPER-DESIGN.md rather than left unstated). What DOES
+# distinguish them structurally, without parsing any locale-dependent,
+# gettext-translated prose: whether the Secret Service is even registered on
+# the session bus at all. If it isn't, this lookup could never have proven
+# absence either way, so that's a backend error; if it is, this process's
+# own failed lookup really does mean "not found".
+_secret_check_secrettool() {
+  local k="$1"
+  if secret-tool lookup app "${SECRETS_NAMESPACE}" account "$k" >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v dbus-send >/dev/null 2>&1 \
+      && dbus-send --session --print-reply \
+           --dest=org.freedesktop.DBus /org/freedesktop/DBus \
+           org.freedesktop.DBus.NameHasOwner \
+           string:org.freedesktop.secrets 2>/dev/null | grep -q 'boolean true'; then
+    return 1
+  fi
+  return 2
+}
 
 # ----- OpenSSL encrypted vault -----
 # Vault contents only ever exist decrypted in shell variables and pipes —
@@ -204,6 +248,12 @@ secrets_set() {
   return "$rc"
 }
 secrets_get() { local profile="$1"; local field="$2"; local b; b="$(secrets_backend)"; local k; k="$(secrets_key "$profile" "$field")"; case "$b" in keychain) secrets_get_keychain "$k" ;; secret-tool) secrets_get_secrettool "$k" ;; openssl) secrets_get_openssl "$k" ;; file) secrets_get_file "$k" ;; esac; }
+# _secret_check() (core.sh) is the tri-state entry point callers use; it
+# dispatches to _secret_check_keychain/_secret_check_secrettool above for
+# those two backends and falls back to a generic secrets_get()-based check
+# (correct for the openssl/file backends) for everything else -- including
+# whenever this file hasn't been sourced at all, which several existing unit
+# tests rely on when they stub secrets_get() directly without a real backend.
 secrets_delete() { local profile="$1"; local field="$2"; local b; b="$(secrets_backend)"; local k; k="$(secrets_key "$profile" "$field")"; case "$b" in keychain) secrets_delete_keychain "$k" ;; secret-tool) secrets_delete_secrettool "$k" ;; openssl) secrets_delete_openssl "$k" ;; file) secrets_delete_file "$k" ;; esac; }
 
 # Every secret field a profile can own. Deleting a profile must clear all of

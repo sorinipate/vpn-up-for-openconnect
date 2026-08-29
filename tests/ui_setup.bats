@@ -67,5 +67,5 @@ EOF
   grep -q '^readonly SHOW_BANNER=FALSE$' "$CONFIGURATION_FILE"
   grep -q '^readonly NOTIFICATIONS=TRUE$' "$CONFIGURATION_FILE"
   # no template placeholders left behind
-  ! grep -q '__' "$CONFIGURATION_FILE"
+  if grep -q '__' "$CONFIGURATION_FILE"; then false; fi
 }

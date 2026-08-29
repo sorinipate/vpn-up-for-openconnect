@@ -59,7 +59,7 @@ XML
   [ "$(generate_totp JBSWY3DPEHPK3PXP)" = "654321" ]
 
   # The seed must not appear anywhere in the process table.
-  ! grep -q "JBSWY3DPEHPK3PXP" "$BATS_TEST_TMPDIR/argv"
+  if grep -q "JBSWY3DPEHPK3PXP" "$BATS_TEST_TMPDIR/argv"; then false; fi
   # It must arrive on stdin instead, and '-' must be the key argument.
   grep -qx -- "JBSWY3DPEHPK3PXP" "$BATS_TEST_TMPDIR/stdin"
   grep -qx -- "-" "$BATS_TEST_TMPDIR/argv"
@@ -113,8 +113,8 @@ XML
   [ "$(sed -n 2p "$stdin")" = "424242" ]
   # argv: password-on-stdin, but NEVER the token flags or a seed
   grep -qF -- "--passwd-on-stdin" "$argv"
-  ! grep -qiE -- "--token-(secret|mode)" "$argv"
-  ! grep -qF -- "JBSWY3DPEHPK3PXP" "$argv"
+  if grep -qiE -- "--token-(secret|mode)" "$argv"; then false; fi
+  if grep -qF -- "JBSWY3DPEHPK3PXP" "$argv"; then false; fi
 }
 
 # --- precedence: SSO wins over token (token branch is skipped) ---
@@ -149,7 +149,7 @@ XML
   run_admitted_connection "Token VPN" INTERACTIVE
 
   grep -qF -- "--external-browser=my-opener" "$argv"
-  ! grep -qF -- "--passwd-on-stdin" "$argv"
+  if grep -qF -- "--passwd-on-stdin" "$argv"; then false; fi
   [ ! -e "$BATS_TEST_TMPDIR/oathtool-called" ]   # token branch was skipped
 }
 

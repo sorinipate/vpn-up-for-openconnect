@@ -67,7 +67,7 @@ setup() {
   # A plausible-looking TOTP code must never appear in the state file --
   # only the step index does. Assert the file has no 6-digit run anywhere
   # except as part of a much larger epoch-derived number (last_totp_step).
-  ! grep -qE '(^|[^0-9])[0-9]{6}([^0-9]|$)' "$f"
+  if grep -qE '(^|[^0-9])[0-9]{6}([^0-9]|$)' "$f"; then false; fi
   grep -q '^last_totp_step=' "$f"
 }
 

@@ -33,13 +33,13 @@ XML
 @test "remove_profile deletes the block, secret, and files; keeps others" {
   touch "$DATA_DIR/pids/${PROGRAM_NAME}.Doomed_VPN.state" "$DATA_DIR/logs/${PROGRAM_NAME}.Doomed_VPN.log"
   remove_profile "Doomed VPN" <<< "y"
-  ! profile_exists "Doomed VPN"
+  if profile_exists "Doomed VPN"; then false; fi
   profile_exists "Keeper VPN"
   # every secret field must be cleared, not just the password
   grep -q "secret-deleted:Doomed VPN.password"     "$BATS_TEST_TMPDIR/calls"
   grep -q "secret-deleted:Doomed VPN.token_secret" "$BATS_TEST_TMPDIR/calls"
   grep -q "secret-deleted:Doomed VPN.key_password" "$BATS_TEST_TMPDIR/calls"
-  ! grep -q "secret-deleted:Keeper VPN" "$BATS_TEST_TMPDIR/calls"
+  if grep -q "secret-deleted:Keeper VPN" "$BATS_TEST_TMPDIR/calls"; then false; fi
   [ ! -e "$DATA_DIR/pids/${PROGRAM_NAME}.Doomed_VPN.state" ]
   [ ! -e "$DATA_DIR/logs/${PROGRAM_NAME}.Doomed_VPN.log" ]
   xmlstarlet val -q "$PROFILES_FILE"
@@ -74,7 +74,7 @@ EOF
   export OUT="$BATS_TEST_TMPDIR/hook-out"
   run_hooks connected "Work VPN" "w.example.com"
   [ "$(cat "$OUT")" = "connected/Work VPN/w.example.com" ]
-  ! grep -q "unsafe ran" "$OUT"
+  if grep -q "unsafe ran" "$OUT"; then false; fi
 }
 
 @test "run_hooks is a no-op without a hooks dir and tolerates failing hooks" {

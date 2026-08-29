@@ -71,7 +71,7 @@ _capture_argv() {
   load_profile_fields "Extra VPN"
   _capture_argv
   # no empty line in the captured argv
-  ! grep -qx -- "" "$ARGV_FILE"
+  if grep -qx -- "" "$ARGV_FILE"; then false; fi
   grep -qx -- "x.example.com" "$ARGV_FILE"
 }
 

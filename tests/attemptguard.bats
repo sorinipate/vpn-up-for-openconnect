@@ -460,6 +460,44 @@ _sf() { attempt_state_file "$1"; }
   [ ! -e "${f}.tmp."* ]     # no leaked temp file either
 }
 
+@test "_state_lock never reports success with unpublished owner metadata" {
+  # Regression test: the owner-metadata write (a tiny printf, then a rename
+  # into place) used to be unchecked -- a fault there (a failed rename; disk
+  # full; a permission surprise) still returned a token via _state_lock,
+  # while the lock directory itself carried no readable owner file for
+  # _state_unlock to ever match against later, wedging the lock permanently.
+  # Faulted via a failing `mv` on the FIRST attempt only (a fault this small
+  # can't be reproduced with a real file-size limit without triggering a
+  # fatal SIGXFSZ instead of an ordinary, checkable failure -- confirmed
+  # directly: ulimit -f 0 on a write this size kills the process outright
+  # rather than returning an error).
+  local f; f="$(_sf "Work VPN")"
+  local lockdir="${f}.lock"
+  local callfile="$BATS_TEST_TMPDIR/mv-calls"
+  : > "$callfile"
+  mv() {
+    case "$3" in
+      */owner)
+        printf 'x' >> "$callfile"
+        [ "$(wc -c < "$callfile")" -eq 1 ] && return 1   # fail only the first rename
+        ;;
+    esac
+    command mv "$@"
+  }
+
+  local token; token="$(_state_lock "$f")"
+  [ -n "$token" ]                    # the (retried) acquisition did succeed...
+  [ -s "${lockdir}/owner" ]          # ...and it is never reported without real metadata on disk
+  _state_unlock "$f" "$token"        # proves _state_unlock can find/match this metadata at all
+
+  # The faulted first attempt actually ran, and a second attempt (the
+  # retry) actually reached the same rename call again -- and did not leave
+  # a wedged lock directory behind for that retry to collide with: it
+  # needed no dead-pid reclaim to succeed, which this SAME still-running
+  # process could never pass the liveness check for.
+  [ "$(cat "$callfile")" = "xx" ]
+}
+
 # ------------------------------------------- breaker expiry doesn't spin
 
 @test "a persistently-failing breaker-expiry persist still sleeps between retries" {

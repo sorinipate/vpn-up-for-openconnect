@@ -229,24 +229,49 @@ write_connection_state() {
 # once, in preflight, rather than repeated.
 _VPN_CONNECT_MODE=""
 
-# secrets_get()'s own exit status distinguishes "this key is not stored"
-# from "the backend itself could not be read" (e.g. the openssl vault failed
-# to decrypt) -- but `[ -z "$(secrets_get ...)" ]` throws that away, since
-# command substitution only keeps the exit status of the FINAL command in an
-# `if`/`[` test, not of the substitution itself. Reproduced directly: a
-# faulted vault decrypt made secrets_get return non-zero, and the bare
-# `-z` test still read that as "no stored password", permanently stopping
-# the service (VPN_RC_CONFIG) for what was actually a transient backend
-# problem -- exactly the kind of condition invariant 8's terminal-failure
-# codes are not meant to cover. Returns: 0 = present, 1 = genuinely absent,
-# 2 = backend error (transient).
+# Distinguishes "this key is not stored" from "the backend itself could not
+# be read" (e.g. the openssl vault failed to decrypt, or a Keychain/Secret
+# Service call errored) -- a bare `[ -z "$(secrets_get ...)" ]` throws that
+# signal away entirely, since command substitution only keeps the exit
+# status of the FINAL command in an `if`/`[` test, not of the substitution
+# itself. Reproduced directly: a faulted vault decrypt made secrets_get
+# return non-zero, and the bare `-z` test still read that as "no stored
+# password", permanently stopping the service (VPN_RC_CONFIG) for what was
+# actually a transient backend problem -- exactly the kind of condition
+# invariant 8's terminal-failure codes are not meant to cover.
+#
+# secrets_get()'s own exit status carries this correctly for the
+# openssl/file backends (secrets_get_openssl's `_vault_decrypt() || return
+# 1` really does mean "backend error"; an empty-but-zero result really does
+# mean "absent") but NOT for Keychain or Linux Secret Service, which fold
+# "absent" and "backend error" into overlapping exit statuses of their own
+# (see _secret_check_keychain / _secret_check_secrettool, encryption.sh, for
+# what each of those two actually distinguishes and how) -- so this dispatches
+# on backend rather than reading secrets_get()'s status directly. Falls back
+# to the generic secrets_get()-based check whenever encryption.sh hasn't been
+# sourced (secrets_backend undefined) -- true of several existing unit tests
+# that stub secrets_get() directly without a real backend behind it -- since
+# that fallback is the openssl/file-backend logic anyway.
 _secret_check() {
-  local profile="$1" field="$2" val
-  if val="$(secrets_get "$profile" "$field")"; then
-    [ -n "$val" ] && return 0
-    return 1
-  fi
-  return 2
+  local profile="$1" field="$2" b="" k val
+  command -v secrets_backend >/dev/null 2>&1 && b="$(secrets_backend)"
+  case "$b" in
+    keychain)
+      k="$(secrets_key "$profile" "$field")"
+      _secret_check_keychain "$k"
+      ;;
+    secret-tool)
+      k="$(secrets_key "$profile" "$field")"
+      _secret_check_secrettool "$k"
+      ;;
+    *)
+      if val="$(secrets_get "$profile" "$field")"; then
+        [ -n "$val" ] && return 0
+        return 1
+      fi
+      return 2
+      ;;
+  esac
 }
 
 connection_preflight() {
@@ -475,28 +500,54 @@ run_admitted_connection() {
 
   VPN_SECOND_FACTOR=""
   if [ "$rc" = 0 ] && [ "${VPN_AUTH_MODE:-password}" != sso ]; then
-    migrate_or_fetch_password || rc="$VPN_RC_CONFIG"
+    # Preflight only proved a secret existed at that snapshot in time
+    # (invariant 8); admission may then have waited, and the backend can
+    # fail in between -- migrate_or_fetch_password returns 2, distinctly
+    # from 1 ("genuinely no password stored"), when the backend itself could
+    # not be read, so that case reaches VPN_RC_SECRETS_UNAVAILABLE (retry)
+    # rather than the terminal VPN_RC_CONFIG a real "no password" gets.
+    migrate_or_fetch_password "$mode"
+    case $? in
+      0) : ;;
+      2) rc="$VPN_RC_SECRETS_UNAVAILABLE" ;;
+      *) rc="$VPN_RC_CONFIG" ;;
+    esac
   fi
 
   if [ "$rc" = 0 ] && [ "${VPN_AUTH_MODE:-password}" != sso ] && [ "$VPN_TOKEN_MODE" = totp ]; then
-    local seed; seed="$(secrets_get "${VPN_NAME}" token_secret)"
-    if [ -z "$seed" ]; then
+    local seed=""
+    _secret_check "${VPN_NAME}" token_secret
+    case $? in
+      0) seed="$(secrets_get "${VPN_NAME}" token_secret)" ;;
+      2)
+        if [ "$mode" = SERVICE ]; then
+          print_danger "Could not read the secrets store to fetch the TOTP secret for '%s'; will retry.\n" "${VPN_NAME}"
+          rc="$VPN_RC_SECRETS_UNAVAILABLE"
+        fi
+        ;;
+      *) : ;;  # genuinely absent -- mode=SERVICE already refused this in
+                # connection_preflight; an interactive caller falls through
+                # to the prompt below, same as before this change.
+    esac
+    if [ "$rc" = 0 ] && [ -z "$seed" ]; then
       # mode=SERVICE already refused this in connection_preflight.
       read -r -s -p "Enter the TOTP secret (base32) for ${VPN_NAME}: " seed; echo
       [ -n "$seed" ] && secrets_set "${VPN_NAME}" token_secret "$seed"
     fi
-    if totp_wait_for_fresh_step "$name"; then
-      VPN_SECOND_FACTOR="$(generate_totp "$seed")"
-      if [ -z "$VPN_SECOND_FACTOR" ]; then
-        print_danger "Could not generate a TOTP code (check the stored secret with: %s set-secret '%s' token_secret).\n" "${DISPLAY_NAME}" "${VPN_NAME}"
+    if [ "$rc" = 0 ]; then
+      if totp_wait_for_fresh_step "$name"; then
+        VPN_SECOND_FACTOR="$(generate_totp "$seed")"
+        if [ -z "$VPN_SECOND_FACTOR" ]; then
+          print_danger "Could not generate a TOTP code (check the stored secret with: %s set-secret '%s' token_secret).\n" "${DISPLAY_NAME}" "${VPN_NAME}"
+          rc="$VPN_RC_CONFIG"
+        fi
+      else
+        # The reservation itself could not be made durable -- generating a
+        # code anyway would spend it with no exclusivity guarantee behind it,
+        # which is exactly the failure this design exists to prevent.
+        print_danger "Could not safely reserve a fresh TOTP step for '%s'; refusing to generate a code.\n" "${VPN_NAME}"
         rc="$VPN_RC_CONFIG"
       fi
-    else
-      # The reservation itself could not be made durable -- generating a
-      # code anyway would spend it with no exclusivity guarantee behind it,
-      # which is exactly the failure this design exists to prevent.
-      print_danger "Could not safely reserve a fresh TOTP step for '%s'; refusing to generate a code.\n" "${VPN_NAME}"
-      rc="$VPN_RC_CONFIG"
     fi
     unset seed
   fi

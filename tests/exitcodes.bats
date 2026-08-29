@@ -282,3 +282,56 @@ EOF
   run connection_preflight SERVICE
   [ "$status" -eq "$VPN_RC_CONFIG" ]
 }
+
+# Preflight is only a snapshot (invariant 8); admission may then wait, and the
+# backend can fail in between. These exercise the ACTUAL fetch in
+# run_admitted_connection, not just preflight's existence check.
+
+@test "a secrets-backend error at the actual password FETCH (post-admission) is SECRETS_UNAVAILABLE, not CONFIG" {
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_PASSWD=""
+  secrets_get() { return 1; }   # backend error, no legacy plaintext, no cert
+  run run_admitted_connection "Work VPN" SERVICE
+  [ "$status" -eq "$VPN_RC_SECRETS_UNAVAILABLE" ]
+}
+
+@test "a genuinely absent password at the actual FETCH is still CONFIG, not SECRETS_UNAVAILABLE" {
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_PASSWD=""
+  export VPN_UP_SERVICE=1
+  secrets_get() { echo ""; return 0; }
+  run run_admitted_connection "Work VPN" SERVICE
+  [ "$status" -eq "$VPN_RC_CONFIG" ]
+}
+
+@test "a backend error at the password FETCH does not block a legacy plaintext fallback" {
+  # A backend hiccup must not block a connection that has another,
+  # backend-independent credential source available -- only when there is
+  # truly nothing else to fall back on does the backend error itself matter.
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_PASSWD="legacy-plaintext"
+  secrets_get() { return 1; }
+  secrets_set() { :; }
+  scrub_profile_password() { :; }
+  run migrate_or_fetch_password SERVICE
+  [ "$status" -eq 0 ]
+}
+
+@test "a secrets-backend error at the actual TOTP seed FETCH (post-admission) is SECRETS_UNAVAILABLE, not CONFIG" {
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_TOKEN_MODE=totp
+  # password fetch must succeed cleanly so the TOTP branch is what's under
+  # test; only the token_secret lookup simulates the backend error.
+  secrets_get() {
+    case "$2" in
+      password) echo "s3cret" ;;
+      token_secret) return 1 ;;
+    esac
+  }
+  run run_admitted_connection "Work VPN" SERVICE
+  [ "$status" -eq "$VPN_RC_SECRETS_UNAVAILABLE" ]
+}

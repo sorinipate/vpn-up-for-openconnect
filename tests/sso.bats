@@ -77,8 +77,8 @@ XML
 
   run_openconnect
   grep -qF -- "--external-browser=my-opener" "$cap"
-  ! grep -qF -- "--passwd-on-stdin" "$cap"
-  ! grep -qF -- "--background" "$cap"   # forced foreground
+  if grep -qF -- "--passwd-on-stdin" "$cap"; then false; fi
+  if grep -qF -- "--background" "$cap"; then false; fi   # forced foreground
 }
 
 @test "run_openconnect (password) still passes --passwd-on-stdin and no external-browser" {
@@ -97,7 +97,7 @@ XML
 
   run_openconnect
   grep -qF -- "--passwd-on-stdin" "$cap"
-  ! grep -qF -- "--external-browser" "$cap"
+  if grep -qF -- "--external-browser" "$cap"; then false; fi
 }
 
 # --- version gate ---

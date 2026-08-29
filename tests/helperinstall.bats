@@ -232,8 +232,8 @@ sudo_log()     { cat "$LOG"; }
   [ -f "$rule" ]
   [ "$(cat "$rule")" = "#$(id -u) ALL=(root) NOPASSWD: $TARGET/vpn-up-helper" ]
   grep -q "NOPASSWD" "$rule"
-  ! grep -q "openconnect" "$rule"
-  ! grep -q "vpn-up-admin" "$rule"
+  if grep -q "openconnect" "$rule"; then false; fi
+  if grep -q "vpn-up-admin" "$rule"; then false; fi
 }
 
 @test "the rule names the user numerically, not by name" {
@@ -352,8 +352,8 @@ sudo_log()     { cat "$LOG"; }
   actual="$(_vu_sha256 "$TARGET/vpn-up-helper")"
   [ "$recorded" = "$actual" ]
   # No source-tree path, and nothing that would matter if it were ever sourced.
-  ! grep -q "$PROGRAM_PATH" "$m"
-  ! grep -qE '[`$();|&]' "$m"
+  if grep -q "$PROGRAM_PATH" "$m"; then false; fi
+  if grep -qE '[`$();|&]' "$m"; then false; fi
 }
 
 # --- probes -----------------------------------------------------------------

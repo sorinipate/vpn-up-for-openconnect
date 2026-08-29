@@ -1297,13 +1297,45 @@ a plausible thing for a future change to erode without noticing:
    CA — a certificate issued for a different hostname is exactly the kind
    of locally-decidable rejection this invariant exists to catch before
    admission, rather than leaving it for OpenConnect's own (real) hostname
-   check to discover after a credential has already been spent.
+   check to discover after a credential has already been spent. Those two
+   flags are capability-detected, not assumed: they were added in OpenSSL
+   1.1.0, and this project's own documented macOS install
+   (`brew install bash openconnect xmlstarlet`) gets neither Homebrew
+   OpenSSL nor a GnuTLS-linked OpenConnect, leaving macOS's own
+   `/usr/bin/openssl` — LibreSSL, which rejects both flags outright — as
+   what `openssl` on PATH actually resolves to. On Darwin without them, the
+   platform's own certificate evaluator (`security verify-cert <url>`,
+   confirmed directly to check both trust and hostname against Apple's
+   trust store) is used instead of silently downgrading to chain-only
+   trust; elsewhere, chain-only trust (this check's pre-existing behaviour)
+   is the final fallback, a real and documented gap rather than a silent one.
    The password/TOTP-seed existence checks distinguish "genuinely not
    stored" from "the secrets backend itself could not be read" (a vault
    decrypt failure, a keyring not yet unlocked): only the former is
    `VPN_RC_CONFIG`; the latter is `VPN_RC_SECRETS_UNAVAILABLE`, a transient
    code that never terminally stops the service over what may be a
-   momentary backend problem.
+   momentary backend problem. This distinction is backend-specific, not a
+   single generic exit-status read: the openssl/file backends' own exit
+   status already carries it correctly, but Keychain and Linux Secret
+   Service each fold "absent" and "backend error" into overlapping exit
+   statuses of their own. Keychain's `security find-generic-password`
+   reliably exits 44 (`errSecItemNotFound`) specifically for "not stored",
+   distinct from every other failure — confirmed directly. Secret Service's
+   `secret-tool lookup` returns the same exit status (1) for "not found" and
+   for a backend/API error alike (verified against libsecret's own
+   published source, not a live Linux/D-Bus environment, which wasn't
+   available to test this against directly) — so that backend is instead
+   read via whether the Secret Service is reachable on the session bus at
+   all, never guessing "absent" when that health check itself can't run.
+   The same distinction carries through past preflight into the actual
+   credential fetch in `run_admitted_connection`, not only preflight's
+   existence check — admission may have waited, and the backend can fail
+   in the interim — without blocking a fallback that doesn't depend on the
+   secrets backend at all (a legacy plaintext `<password>` still on the
+   profile, or a client certificate): only when no such fallback exists
+   does a backend error there matter, surfacing as
+   `VPN_RC_SECRETS_UNAVAILABLE` rather than being folded into the terminal
+   "nothing stored" case beside it.
 
 **The state file** (`${DATA_DIR}/state/<slug>.<sha256>.state`, per profile,
 mode `0600`) is a new input that gates whether an unattended attempt is
@@ -1318,6 +1350,26 @@ authority. The file also carries a TOTP step index (`last_totp_step`) next
 to the profile's other secrets-adjacent state; the index itself is not a
 secret (`floor(time/30)` is derivable by anyone with a clock), only the code
 generated from it is, and that code is never written to disk.
+
+**Both the state file's writes and the lock's own acquisition are checked,
+not assumed to succeed.** The state write itself is staged through a temp
+file and verified before the atomic rename that installs it — replacing an
+earlier version that let a partial write (a disk full mid-write, a vanishing
+state directory) still report success while silently truncating the file,
+which would have dropped fields like the attempt owner or the TOTP step
+reservation to their fail-open defaults on the next read. The lock that
+guards every transaction on that file has the identical guarantee for its
+own ownership metadata: `_state_lock` writes a small `owner` file (pid,
+token, creation time) immediately after `mkdir` succeeds, and that write —
+plus the rename that installs it — is now checked the same way; previously
+neither was, so a fault there could report a successful lock acquisition
+while leaving the lock directory with no readable owner file at all, which
+`_state_unlock` could never later match against (permanently wedging that
+profile's admission, since a metadata-less lock is deliberately never
+auto-reclaimed — see the reclaim-safety argument above). On failure now, the
+just-created (and uncontested, since this process alone knows it exists yet)
+lock directory is removed and the acquisition retried from the top, rather
+than reporting a token that can never be honoured.
 
 **Exit-status semantics changed to carry this.** Under `VPN_UP_SERVICE`,
 `vpn-up`'s exit status is now a supervisor instruction, not a Unix

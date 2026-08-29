@@ -77,20 +77,40 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
     checking for a stored password or TOTP seed is reported as a distinct,
     transient `VPN_RC_SECRETS_UNAVAILABLE` rather than being read the same
     way as "nothing is stored" — the latter would otherwise permanently
-    stop the service over what may resolve itself on the next attempt.
+    stop the service over what may resolve itself on the next attempt. This
+    distinction is now made per-backend rather than by a single generic exit
+    status: Keychain's own "item not found" result (a specific, verified
+    exit code) is read as genuinely absent rather than as a backend error,
+    and Linux Secret Service — whose `secret-tool` cannot tell "not found"
+    from "backend error" apart by exit code alone — is read via whether the
+    Secret Service is even reachable on the session bus, never guessing
+    "absent" when that can't be confirmed. The same distinction now also
+    carries through to the actual credential fetch after admission (not
+    just preflight's existence check), since admission may have waited and
+    the backend can fail in the interim — without blocking a fallback that
+    doesn't need the backend at all (a legacy plaintext password already on
+    the profile, or a client certificate).
   - Certificate preflight distinguishes "could not reach the gateway to
     obtain a certificate at all" (transient, `VPN_RC_NO_NETWORK`) from "got
     one, and it failed trust or pin validation" (`VPN_RC_CONFIG`) — a
     gateway that is merely down no longer permanently stops the service.
     For an unpinned profile, trust validation now also checks the
     certificate is valid for the configured host itself, not only that it
-    chains to a trusted CA.
+    chains to a trusted CA — capability-detected rather than assumed, since
+    this project's own documented macOS install gets LibreSSL, which
+    rejects the hostname-verification flags outright; on Darwin without
+    them, the platform's own certificate evaluator is used instead of
+    silently falling back to chain-only trust.
   - The on-disk state write is now atomic against a partial write (a disk
     full mid-write, a vanishing state directory, ...): the write is
     verified before the file is put in place, so a fault can no longer
     install a truncated state file while still reporting success — which
     would otherwise have silently dropped fields like the attempt owner or
     the TOTP step reservation to their fail-open defaults on the next read.
+    The lock that guards every state transaction has the same guarantee for
+    its own ownership metadata: acquiring the lock can no longer be
+    reported as successful without the owner file that later proves it —
+    otherwise unlockable, permanently wedging that profile's admission.
 
 ### Fixed
 

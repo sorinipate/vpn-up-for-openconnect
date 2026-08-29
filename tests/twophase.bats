@@ -231,7 +231,7 @@ XML
   # The cookie arrives on stdin...
   grep -qx "SUPERSECRETCOOKIE" "$STDIN"
   # ...and appears nowhere in the process table.
-  ! grep -q "SUPERSECRETCOOKIE" "$ARGV"
+  if grep -q "SUPERSECRETCOOKIE" "$ARGV"; then false; fi
 
   grep -qx -- "connect" "$ARGV"
   grep -qx -- "--profile-id" "$ARGV"
@@ -260,9 +260,9 @@ XML
   run run_openconnect_helper
   # A caller-supplied fingerprint is exactly what Model B refuses to trust, so
   # it must not be on the command line at all.
-  ! grep -q -- "--servercert" "$ARGV"
-  ! grep -q -- "--fingerprint" "$ARGV"
-  ! grep -q -- "469bb424" "$ARGV"
+  if grep -q -- "--servercert" "$ARGV"; then false; fi
+  if grep -q -- "--fingerprint" "$ARGV"; then false; fi
+  if grep -q -- "469bb424" "$ARGV"; then false; fi
 }
 
 @test "phase two forwards an approved proxy and the translated tunables" {
@@ -349,7 +349,7 @@ _helper_argv_setup() {
   # -n here means "fail instead of prompting", which is exactly wrong on a
   # machine whose passwordless rule was never installed - and the failure lands
   # AFTER phase one has spent the user's password and second factor.
-  ! grep -qx -- "-n" "$ARGV"
+  if grep -qx -- "-n" "$ARGV"; then false; fi
   grep -qx -- "$BATS_TEST_TMPDIR/bin/vpn-up-helper" "$ARGV"
   # The first word must be the helper: no flag may precede it.
   [ "$(head -n 1 "$ARGV")" = "$BATS_TEST_TMPDIR/bin/vpn-up-helper" ]
@@ -364,7 +364,7 @@ _helper_argv_setup() {
 
   run stop_via_helper
   [ "$status" -eq 0 ]
-  ! grep -qx -- "-n" "$ARGV"
+  if grep -qx -- "-n" "$ARGV"; then false; fi
   [ "$(head -n 1 "$ARGV")" = "$BATS_TEST_TMPDIR/bin/vpn-up-helper" ]
   grep -qx -- "stop" "$ARGV"
 }
