@@ -86,3 +86,33 @@ setup() {
   wait "$bgpid" 2>/dev/null || true
   [ -e "$BATS_TEST_TMPDIR/done-while-locked" ]      # proceeds once released
 }
+
+@test "a clock rollback does not make an older step eligible again" {
+  # Regression test: the freshness check used to be `step == last_totp_step`,
+  # so a clock moving BACKWARDS (the current step now LOWER than the
+  # reserved one) would not match that equality, fall through, and
+  # overwrite the stored reservation with the lower value -- making
+  # historical steps eligible again once the clock was corrected forward.
+  #
+  # Simulated by reserving a step well AHEAD of the real current one (as if
+  # the reservation were made before the clock rolled back ~8h): a correct
+  # implementation must treat "now" as behind the reservation and wait,
+  # never lower it.
+  local f; f="$(attempt_state_file "Work VPN")"
+  local reserved=$(( $(date +%s) / TOTP_STEP_SECS + 1000 ))
+  token="$(_state_lock "$f")"
+  _state_read "$f"
+  ST_TOTP_STEP="$reserved"
+  _state_persist_current "$f" "Work VPN"
+  _state_unlock "$f" "$token"
+
+  ( totp_wait_for_fresh_step "Work VPN"; touch "$BATS_TEST_TMPDIR/rolled-back-succeeded" ) &
+  local bgpid=$!
+  sleep 0.3
+  [ ! -e "$BATS_TEST_TMPDIR/rolled-back-succeeded" ]   # must wait, not "succeed" with a lower step
+  kill "$bgpid" 2>/dev/null || true
+  wait "$bgpid" 2>/dev/null || true
+
+  _state_read "$f"
+  [ "$ST_TOTP_STEP" -eq "$reserved" ]   # never lowered
+}

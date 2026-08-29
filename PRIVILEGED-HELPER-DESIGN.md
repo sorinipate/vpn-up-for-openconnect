@@ -1274,13 +1274,24 @@ a plausible thing for a future change to erode without noticing:
 8. A service attempt is admitted only after every locally decidable,
    non-authenticating prerequisite has already succeeded (a bad certificate,
    an unsupported SSO/service or Duo-passcode/service combination, a missing
-   dependency, a missing TOTP seed, unready sudo/helper privilege policy) —
-   those are configuration or policy failures, not attempts, and consume no
-   budget. This is a snapshot guarantee: it holds at the moment preflight is
-   evaluated, not continuously through however long admission might then
-   have to wait. A stale rejection surfacing after admission is charged as
-   an ordinary attempt outcome, not un-charged — re-checking and un-charging
-   would resurrect invariant 1's problem one step later.
+   dependency, a missing stored password, a missing TOTP seed, unready
+   sudo/helper privilege policy) — those are configuration or policy
+   failures, not attempts, and consume no budget. This is a snapshot
+   guarantee: it holds at the moment preflight is evaluated, not
+   continuously through however long admission might then have to wait. A
+   stale rejection surfacing after admission is charged as an ordinary
+   attempt outcome, not un-charged — re-checking and un-charging would
+   resurrect invariant 1's problem one step later.
+   Certificate preflight itself makes one further distinction: failing to
+   obtain a certificate from the gateway at all (unreachable, timed out) is
+   transient and reported as `VPN_RC_NO_NETWORK`, never charged as a
+   configuration failure — only a certificate that *was* obtained and then
+   fails trust-store or pin validation is `VPN_RC_CONFIG`. Because
+   reachability and trust are checked as two separate TLS transactions, a
+   gateway that disappears between them is treated as transient too: an
+   unpinned profile only reports a genuine certificate failure if the
+   gateway is confirmed still reachable at the moment trust validation
+   fails.
 
 **The state file** (`${DATA_DIR}/state/<slug>.<sha256>.state`, per profile,
 mode `0600`) is a new input that gates whether an unattended attempt is

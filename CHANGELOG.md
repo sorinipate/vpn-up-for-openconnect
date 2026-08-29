@@ -68,6 +68,15 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
     and never read by `vpn-up-helper` or `vpn-up-admin` as authorization
     input — it is an availability-only, same-UID-writable advisory to the
     unprivileged process, not a privileged control.
+  - A service profile with no stored password (and no client certificate)
+    now fails preflight with `VPN_RC_CONFIG` instead of discovering the
+    problem after an attempt has already been admitted — one more
+    locally-decidable, non-authenticating prerequisite alongside the
+    existing certificate and TOTP-seed checks.
+  - Certificate preflight distinguishes "could not reach the gateway to
+    obtain a certificate at all" (transient, `VPN_RC_NO_NETWORK`) from "got
+    one, and it failed trust or pin validation" (`VPN_RC_CONFIG`) — a
+    gateway that is merely down no longer permanently stops the service.
 
 ### Fixed
 

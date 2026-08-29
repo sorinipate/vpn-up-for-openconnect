@@ -155,3 +155,93 @@ EOF
   [ "$status" -eq "$VPN_RC_CONFIG" ]
   [ ! -e "$wizard_called" ]
 }
+
+# ---------------------------------------------------------- load_config
+
+@test "an unsafe config makes load_config return, not exit" {
+  export CONFIGURATION_FILE="$DATA_DIR/cfg"
+  local marker="$BATS_TEST_TMPDIR/reached-after-load-config"
+  echo "readonly BOGUS=1" > "$CONFIGURATION_FILE"
+  chmod 666 "$CONFIGURATION_FILE"   # group/other-writable: unsafe to source
+  local status
+  if ( load_config; rc=$?; touch "$marker"; exit "$rc" ); then
+    status=0
+  else
+    status=$?
+  fi
+  [ "$status" -eq 1 ]
+  [ -e "$marker" ]   # code after load_config's call ran -- no exit happened
+}
+
+@test "start() maps an unsafe config to CONFIG, not an unmapped exit" {
+  export CONFIGURATION_FILE="$DATA_DIR/cfg"
+  echo "readonly BOGUS=1" > "$CONFIGURATION_FILE"
+  chmod 666 "$CONFIGURATION_FILE"
+  run start ""
+  [ "$status" -eq "$VPN_RC_CONFIG" ]
+}
+
+# ------------------------------------------------- certificate preflight
+
+@test "certificate: could not obtain one at all is NO_NETWORK, not CONFIG" {
+  _write_profile
+  load_profile_fields "Work VPN"
+  SERVER_CERTIFICATE="pin-sha256:abc"
+  fetch_server_pin() { return 1; }   # unreachable -- the real function's own contract
+  run _preflight_verify_certificate
+  [ "$status" -eq "$VPN_RC_NO_NETWORK" ]
+}
+
+@test "certificate: a real pin mismatch is still CONFIG" {
+  _write_profile
+  load_profile_fields "Work VPN"
+  SERVER_CERTIFICATE="pin-sha256:configured"
+  fetch_server_pin() { echo "pin-sha256:different"; }
+  run _preflight_verify_certificate
+  [ "$status" -eq "$VPN_RC_CONFIG" ]
+}
+
+@test "unpinned: an ambiguous second-probe failure is treated as transient, not terminal" {
+  # gateway_tls_reachable succeeds once (the preflight check itself), then
+  # verify_gateway_cert fails, then a re-check ALSO fails -- simulating the
+  # gateway vanishing between the two separate TLS transactions. Must not be
+  # reported as a certificate/trust problem.
+  _write_profile
+  load_profile_fields "Work VPN"
+  SERVER_CERTIFICATE=""
+  local calls=0
+  gateway_tls_reachable() { calls=$((calls + 1)); [ "$calls" -eq 1 ]; }
+  verify_gateway_cert() { return 1; }
+  run _preflight_verify_certificate
+  [ "$status" -eq "$VPN_RC_NO_NETWORK" ]
+}
+
+@test "unpinned: a still-reachable gateway failing trust is genuinely CONFIG" {
+  _write_profile
+  load_profile_fields "Work VPN"
+  SERVER_CERTIFICATE=""
+  gateway_tls_reachable() { return 0; }   # reachable both times
+  verify_gateway_cert() { return 1; }     # genuinely untrusted
+  run _preflight_verify_certificate
+  [ "$status" -eq "$VPN_RC_CONFIG" ]
+}
+
+@test "legacy SHA-1 pin still gets a reachability check before the warning" {
+  _write_profile
+  load_profile_fields "Work VPN"
+  SERVER_CERTIFICATE="sha1:legacy-value"
+  gateway_tls_reachable() { return 1; }   # gateway is down
+  run _preflight_verify_certificate
+  [ "$status" -eq "$VPN_RC_NO_NETWORK" ]
+}
+
+# ------------------------------------------------- password existence
+
+@test "a SERVICE profile with no stored password and no client cert is CONFIG in preflight" {
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_PASSWD=""
+  secrets_get() { echo ""; }
+  run connection_preflight SERVICE
+  [ "$status" -eq "$VPN_RC_CONFIG" ]
+}

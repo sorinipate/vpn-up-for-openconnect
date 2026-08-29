@@ -68,6 +68,26 @@ _sf() { attempt_state_file "$1"; }
   [ $((t1 - t0)) -le 2 ]
 }
 
+@test "a future-dated (poisoned or clock-skewed) attempt entry is pruned, not kept forever" {
+  # A naive "age <= WINDOW" test never prunes an entry whose age is
+  # NEGATIVE (a future timestamp), which would otherwise inflate the
+  # attempt count and keep pushing the curve delay's reference point
+  # forward indefinitely.
+  local f; f="$(_sf "Work VPN")"
+  local future=$(( $(date +%s) + 999999 ))
+  token="$(_state_lock "$f")"
+  _state_read "$f"
+  ST_ATTEMPTS="$future"
+  _state_persist_current "$f" "Work VPN"
+  _state_unlock "$f" "$token"
+
+  admit_attempt "Work VPN" SERVICE
+  release_attempt_owner "Work VPN"
+  _state_read "$f"
+  local n=0; for a in $ST_ATTEMPTS; do n=$((n+1)); done
+  [ "$n" -eq 1 ]   # the poisoned future entry was dropped, not kept
+}
+
 @test "the sliding window: attempts far apart don't accumulate" {
   local f; f="$(_sf "Work VPN")"
   local now; now="$(date +%s)"
@@ -282,6 +302,29 @@ _sf() { attempt_state_file "$1"; }
   [ "$ST_OPEN_UNTIL" -le $(( $(date +%s) + 3600 )) ]
 }
 
+@test "the clamp is persisted, not recomputed as a moving target on every read" {
+  # Regression test: an earlier version only clamped ST_OPEN_UNTIL in memory,
+  # so the ON-DISK poison value survived and every subsequent read
+  # recomputed "now + 3600" relative to a NEW now -- making the breaker look
+  # freshly-opened forever instead of expiring within an hour.
+  local f; f="$(_sf "Work VPN")"
+  token="$(_state_lock "$f")"
+  _state_read "$f"
+  ST_OPEN_UNTIL=99999999999
+  _state_persist_current "$f" "Work VPN"
+  _state_unlock "$f" "$token"
+
+  _state_read "$f"   # first read: applies and must persist the clamp
+  local raw; raw="$(_state_field open_until_epoch "$f")"
+  [ "$raw" != 99999999999 ]   # the ON-DISK value itself was corrected
+
+  local first="$raw"
+  sleep 1.1
+  _state_read "$f"   # second read, over a second later
+  local second; second="$(_state_field open_until_epoch "$f")"
+  [ "$first" = "$second" ]   # stable -- not "now + 3600" recomputed each time
+}
+
 # ------------------------------------------------------------------ clears
 
 @test "attempt_history_clear touches only the ring, never the TOTP step" {
@@ -334,4 +377,55 @@ _sf() { attempt_state_file "$1"; }
   [ "$(service_exit_code "$VPN_RC_NO_NETWORK")" -eq "$VPN_RC_SUPERVISOR_RETRY" ]
   [ "$(service_exit_code "$VPN_RC_ALREADY_ACTIVE")" -eq "$VPN_RC_SUPERVISOR_RETRY" ]
   [ "$(service_exit_code "$VPN_RC_PREAUTH")" -eq "$VPN_RC_SUPERVISOR_RETRY" ]
+}
+
+# ------------------------------------------------- persistence must not lie
+#
+# Regression tests for a real review finding: admit_attempt ignored
+# _state_persist_current's own status and returned "admitted" even when the
+# commit never landed on disk -- fault-injected below by stubbing the persist
+# function directly (this codebase's established stubbing idiom), which
+# isolates the commit step from lock acquisition itself.
+
+@test "admit_attempt (INTERACTIVE) never claims admission if the commit fails" {
+  _state_persist_current() { return 1; }
+  run admit_attempt "Work VPN" INTERACTIVE
+  [ "$status" -ne 0 ]
+  local f; f="$(_sf "Work VPN")"
+  [ ! -e "$f" ]   # nothing was ever durably recorded
+}
+
+@test "admit_attempt (SERVICE) retries on commit failure rather than admitting" {
+  local calls=0
+  _state_persist_current() { calls=$((calls + 1)); [ "$calls" -ge 3 ] && return 0; return 1; }
+  admit_attempt "Work VPN" SERVICE
+  [ "$calls" -ge 3 ]   # it kept retrying rather than returning success on the first failure
+}
+
+@test "totp_wait_for_fresh_step never claims a reservation if the commit fails" {
+  _state_persist_current() { return 1; }
+  run totp_wait_for_fresh_step "Work VPN"
+  [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------- an active tunnel is checked
+
+@test "SERVICE admission defers while the profile has a live tunnel, even with no owner recorded" {
+  # Reproduces the exact gap a review finding described: run_openconnect's
+  # background branch releases the owner as soon as OpenConnect finishes
+  # DAEMONIZING, not when the tunnel ends -- so a live tunnel can exist with
+  # attempt_owner_pid=0. profile_vpn_running must be checked independently.
+  profile_vpn_running() { [ "$1" = "Work VPN" ]; }
+  ( admit_attempt "Work VPN" SERVICE; touch "$BATS_TEST_TMPDIR/admitted-despite-live-tunnel" ) &
+  local bgpid=$!
+  sleep 0.3
+  [ ! -e "$BATS_TEST_TMPDIR/admitted-despite-live-tunnel" ]
+  kill "$bgpid" 2>/dev/null || true
+  wait "$bgpid" 2>/dev/null || true
+}
+
+@test "INTERACTIVE admission returns ALREADY_ACTIVE (2) rather than waiting for a live tunnel" {
+  profile_vpn_running() { [ "$1" = "Work VPN" ]; }
+  run admit_attempt "Work VPN" INTERACTIVE
+  [ "$status" -eq 2 ]
 }

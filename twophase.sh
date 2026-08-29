@@ -305,7 +305,10 @@ phase_one_authenticate() {
   fi
 
   if [ "$rc" -ne 0 ]; then
-    print_danger "Authentication failed (openconnect exited %d).\n" "$rc"
+    # "Authentication failed" would overclaim: this non-zero code covers a
+    # DNS failure, a TLS failure and a rejected credential identically (see
+    # VPN_RC_PREAUTH, outcome.sh) -- there is no seam here to tell them apart.
+    print_danger "Authentication or session setup failed (openconnect exited %d).\n" "$rc"
     return 1
   fi
 

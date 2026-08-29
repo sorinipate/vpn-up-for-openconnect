@@ -4,11 +4,24 @@ _host_only() { printf '%s' "${1%%:*}"; }
 _port_only() { local hp="$1"; case "$hp" in *:*) printf '%s' "${hp##*:}" ;; *) printf '443' ;; esac; }
 
 # Compute the RFC 7469 public-key pin (pin-sha256:...) for a gateway.
+#
+# Captures and validates the certificate BEFORE deriving anything from it.
+# The previous form piped s_client straight through x509/pkey/dgst/base64
+# with no check that a certificate was ever actually produced -- when the
+# gateway is unreachable, s_client emits nothing, but `openssl dgst` still
+# happily hashes that empty input and produces a perfectly plausible-looking
+# (and entirely bogus) pin: SHA-256 of the empty string, reproduced directly
+# against 127.0.0.1:1. A caller comparing that against a configured pin sees
+# a mismatch and reports "certificate rejected" for what was actually "could
+# not reach the gateway at all" -- exactly the transient-vs-terminal
+# distinction this project's connect-time preflight depends on getting right.
 fetch_server_pin() {
-  local host port
+  local host port cert pin
   host="$(_host_only "$1")"; port="$(_port_only "$1")"
-  local pin
-  pin="$(openssl s_client -connect "${host}:${port}" -servername "${host}" </dev/null 2>/dev/null \
+  cert="$(openssl s_client -connect "${host}:${port}" -servername "${host}" </dev/null 2>/dev/null)"
+  [ -n "$cert" ] || return 1
+  printf '%s' "$cert" | openssl x509 -noout >/dev/null 2>&1 || return 1
+  pin="$(printf '%s' "$cert" \
     | openssl x509 -pubkey -noout 2>/dev/null \
     | openssl pkey -pubin -outform der 2>/dev/null \
     | openssl dgst -sha256 -binary 2>/dev/null \

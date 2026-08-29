@@ -105,6 +105,21 @@ _state_field() {
 # metadata-less lock for manual clearing instead (dependencies.sh).
 _VU_LOCK_POLL="${VPN_UP_LOCK_POLL:-0.2}"
 
+# KNOWN, DELIBERATE LIMITATION: lock/owner identity below is `$$`, which in
+# bash is the ORIGINAL shell's pid even inside a `( ... ) &` subshell --
+# `BASHPID` is what identifies the actual subprocess there. Real `vpn-up`
+# invocations are always separate top-level processes (never nested
+# subshells of one another calling admit_attempt against the same profile),
+# so this is not a correctness gap in production. It does mean a test or any
+# other caller that backgrounds admit_attempt/totp_wait_for_fresh_step within
+# the SAME shell (rather than a genuinely separate process) can observe
+# misleading liveness: the recorded owner remains the live parent pid even
+# after the backgrounded subshell has "died". Switching to `BASHPID` would
+# need `_state_lock` to stop returning a token via command substitution (a
+# subshell of ITS OWN, with the identical problem one level down) and instead
+# run inline in the caller's shell -- a real change, not a one-line swap, and
+# not made here because the scenario it fixes does not occur in production.
+
 # Reclaim is serialized through a second, much shorter-lived mkdir lock, so at
 # most one process is ever mid-reclaim for a given profile at a time -- this
 # is what closes the gap between "decide this lock looks stale" and "act on
@@ -189,8 +204,19 @@ _state_unlock() {
 # a non-numeric or missing field as its safe default (fail OPEN on field
 # corruption) -- a corrupt state file must never block a connection. This is
 # distinct from lock *acquisition* failure above, which never fails open.
+#
+# Every existing call site already holds _state_lock's lock when it calls
+# this, so when a value needs correcting (the far-future clamp below), this
+# persists the corrected value back to disk once, in the same transaction,
+# rather than only adjusting the in-memory copy. An in-memory-only clamp is a
+# bug, not a simplification: `now + 3600` is recomputed relative to a NEW
+# `now` on every subsequent read, so the on-disk poison value would make the
+# breaker look freshly-opened forever, silently turning "at most one hour"
+# into "indefinitely" -- confirmed by reproduction, not merely reasoned about.
 _state_read() {
-  local f="$1" v
+  local f="$1" v dirty=0
+  ST_PROFILE="$(_state_field profile "$f" 2>/dev/null)"
+
   ST_ATTEMPTS=""
   v="$(_state_field attempts "$f" 2>/dev/null)"
   local tok
@@ -205,7 +231,10 @@ _state_read() {
   # Clamp a poisoned/far-future value: bounds a same-UID attacker's
   # availability cost to at most an hour, per the design's threat model.
   local now; now="$(date +%s)"
-  if [ "$ST_OPEN_UNTIL" -gt $((now + 3600)) ]; then ST_OPEN_UNTIL=$((now + 3600)); fi
+  if [ "$ST_OPEN_UNTIL" -gt $((now + 3600)) ]; then
+    ST_OPEN_UNTIL=$((now + 3600))
+    dirty=1
+  fi
 
   v="$(_state_field last_totp_step "$f" 2>/dev/null)"
   case "$v" in ''|*[!0-9]*) v=0 ;; esac
@@ -222,6 +251,10 @@ _state_read() {
   v="$(_state_field paused "$f" 2>/dev/null)"
   case "$v" in 1) v=1 ;; *) v=0 ;; esac
   ST_PAUSED="$v"
+
+  if [ "$dirty" = 1 ] && [ -n "$ST_PROFILE" ]; then
+    _state_persist_current "$f" "$ST_PROFILE" 2>/dev/null || true
+  fi
 }
 
 # Atomic replace (temp file + mv), matching the vault/secrets-file convention
@@ -273,8 +306,14 @@ _state_persist_current() {
 # decided before a wait survives it. SERVICE and INTERACTIVE genuinely
 # disagree about what admission means: only SERVICE is throttled by the
 # curve/breaker and only SERVICE appends to the attempt ring; INTERACTIVE is
-# only ever blocked by a live owner, so a person at a terminal is never made
-# to wait on the curve.
+# only ever blocked by a live owner (or a tunnel that is already up), so a
+# person at a terminal is never made to wait on the curve.
+#
+# Return contract: 0 = admitted. 2 = the profile already has a tunnel running
+# right now (INTERACTIVE only -- SERVICE just waits for it to end, same as a
+# live owner). 1 = gave up for any other reason (could not even resolve the
+# state path, or the state file could not be durably written after repeated
+# tries).
 _ATTEMPT_WINDOW=7200        # 2h sliding window
 _ATTEMPT_THRESHOLD=6        # attempts within the window before the breaker opens
 _ATTEMPT_CURVE=(0 60 120 240 480 900)   # seconds, indexed by attempts-in-window
@@ -285,10 +324,27 @@ admit_attempt() {
   local profile="$1" mode="$2" f
   f="$(attempt_state_file "$profile")" || return 1
 
-  local token now n delay max_attempt a
+  local token now n delay max_attempt a persist_failures=0
   while :; do
     token="$(_state_lock "$f")"
     _state_read "$f"
+
+    # A tunnel already running for this profile is a stronger signal than
+    # the owner marker and must be checked independently of it: the owner is
+    # released as soon as OpenConnect finishes DAEMONIZING (run_openconnect's
+    # background branch), not when the tunnel itself ends, so an established
+    # background connection can be live with no owner recorded at all. This
+    # closes the exact gap start()'s one-time ensure_profile_not_running()
+    # check leaves open once admission is allowed to wait an arbitrary
+    # amount of time afterward.
+    if profile_vpn_running "$profile"; then
+      _state_unlock "$f" "$token"
+      if [ "$mode" = SERVICE ]; then
+        sleep "$_ATTEMPT_POLL"
+        continue
+      fi
+      return 2
+    fi
 
     if [ "$ST_OWNER_PID" != 0 ]; then
       if kill -0 "$ST_OWNER_PID" 2>/dev/null; then
@@ -312,9 +368,15 @@ admit_attempt() {
     if [ "$mode" = SERVICE ]; then
       now="$(date +%s)"
 
-      local pruned=""
+      # Drop entries outside the window in EITHER direction: a poisoned or
+      # clock-skewed FUTURE timestamp has a negative "age" from now, which a
+      # naive "age <= WINDOW" test never prunes -- it would otherwise keep
+      # inflating the attempt count and keep pushing the curve delay's
+      # reference point into the future indefinitely.
+      local pruned="" age
       for a in $ST_ATTEMPTS; do
-        if [ $((now - a)) -le "$_ATTEMPT_WINDOW" ]; then
+        age=$((now - a))
+        if [ "$age" -ge 0 ] && [ "$age" -le "$_ATTEMPT_WINDOW" ]; then
           pruned="${pruned:+$pruned }$a"
         fi
       done
@@ -328,10 +390,12 @@ admit_attempt() {
       if [ "$ST_OPEN_UNTIL" != 0 ]; then
         # The breaker just expired: retire ONLY the window that triggered it.
         # last_totp_step, paused and any owner are untouched -- there is no
-        # generic "clear state", only this named transition.
+        # generic "clear state", only this named transition. If the write
+        # itself fails, the stale open_until is simply seen again next
+        # iteration and retried -- no outcome is claimed either way here.
         ST_ATTEMPTS=""
         ST_OPEN_UNTIL=0
-        _state_persist_current "$f" "$profile"
+        _state_persist_current "$f" "$profile" || true
         _state_unlock "$f" "$token"
         continue
       fi
@@ -341,11 +405,15 @@ admit_attempt() {
 
       if [ "$n" -ge "$_ATTEMPT_THRESHOLD" ]; then
         ST_OPEN_UNTIL=$((now + _ATTEMPT_BREAKER_SECS))
-        _state_persist_current "$f" "$profile"
-        _state_unlock "$f" "$token"
-        print_warning "Authentication keeps failing for '%s' (%d attempts); pausing for an hour. Fix the stored credential, then run: %s start '%s'\n" \
-          "$profile" "$n" "${DISPLAY_NAME:-vpn-up}" "$profile"
-        notify "VPN Up" "Repeated failures for ${profile}; backing off for an hour"
+        if _state_persist_current "$f" "$profile"; then
+          _state_unlock "$f" "$token"
+          print_warning "Authentication attempts keep being admitted for '%s' (%d in the last window); pausing for an hour. If the stored credential is wrong, fix it, then run: %s start '%s'\n" \
+            "$profile" "$n" "${DISPLAY_NAME:-vpn-up}" "$profile"
+          notify "VPN Up" "Repeated attempts for ${profile}; backing off for an hour"
+        else
+          # The breaker did not actually get recorded -- do not claim it did.
+          _state_unlock "$f" "$token"
+        fi
         sleep "$_ATTEMPT_POLL"
         continue
       fi
@@ -375,9 +443,24 @@ admit_attempt() {
       fi
       ST_ATTEMPTS="${_ring[*]}"
     fi
-    _state_persist_current "$f" "$profile"
+    if _state_persist_current "$f" "$profile"; then
+      _state_unlock "$f" "$token"
+      return 0
+    fi
+    # The commit itself failed to land on disk. Returning "admitted" here
+    # would be the exact failure this whole design exists to prevent: VPN Up
+    # would believe it holds exclusive ownership while nothing durable backs
+    # that belief, and a second process reading the (unchanged) old state
+    # could reach the identical conclusion. Never claim success; retry a
+    # bounded number of times for an interactive caller (a hung terminal
+    # command is worse than a clear failure), and indefinitely for a service,
+    # which is already built to tolerate exactly this kind of wait.
     _state_unlock "$f" "$token"
-    return 0
+    persist_failures=$((persist_failures + 1))
+    if [ "$mode" != SERVICE ] && [ "$persist_failures" -ge 3 ]; then
+      return 1
+    fi
+    sleep "$_ATTEMPT_POLL"
   done
 }
 
@@ -461,22 +544,42 @@ pause_clear() {
 TOTP_STEP_SECS=30   # must match oathtool --totp's implicit default (core.sh)
 
 totp_wait_for_fresh_step() {
-  local profile="$1" f token now step
+  local profile="$1" f token now step persist_failures=0
   [ "${VPN_UP_NO_TOTP_WAIT:-}" = 1 ] && return 0
-  f="$(attempt_state_file "$profile")" || return 0
+  # A missing state file path (e.g. no sha256 tool) must not be read as "no
+  # reservation needed" -- that would silently drop the whole exclusivity
+  # guarantee this function exists to provide. Refuse instead.
+  f="$(attempt_state_file "$profile")" || return 1
   while :; do
     token="$(_state_lock "$f")"
     _state_read "$f"
     now="$(date +%s)"
     step=$(( now / TOTP_STEP_SECS ))
-    if [ "$step" = "$ST_TOTP_STEP" ]; then
+    # <=, not ==: if the clock has moved BACKWARDS far enough that step is
+    # now LOWER than the last reserved step, treating it as "fresh" would
+    # both regenerate an already-used code and overwrite the stored
+    # reservation with a lower value, making old steps eligible again after
+    # the clock is corrected. Only a step strictly ahead of the last
+    # reservation is ever fresh.
+    if [ "$step" -le "$ST_TOTP_STEP" ]; then
       _state_unlock "$f" "$token"
       sleep "$_ATTEMPT_POLL"
       continue
     fi
     ST_TOTP_STEP="$step"
-    _state_persist_current "$f" "$profile"
+    if _state_persist_current "$f" "$profile"; then
+      _state_unlock "$f" "$token"
+      return 0
+    fi
+    # The write itself failed (disk full, state dir vanished, ...). Returning
+    # success here would let the caller generate a code with no reservation
+    # actually recorded -- exactly the failure-open-into-authentication this
+    # exists to prevent. Retry a bounded number of times, then give up.
     _state_unlock "$f" "$token"
-    return 0
+    persist_failures=$((persist_failures + 1))
+    if [ "$persist_failures" -ge 3 ]; then
+      return 1
+    fi
+    sleep "$_ATTEMPT_POLL"
   done
 }

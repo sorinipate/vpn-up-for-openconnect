@@ -43,10 +43,13 @@ run_hooks() {
 }
 
 # Source the config (executable shell) after the safety checks. Safe to call
-# from any command; no-op when the config doesn't exist yet.
+# from any command; no-op when the config doesn't exist yet. Returns 1 rather
+# than exiting: called from start()'s call tree, which under a service must
+# route every failure through the outcome/service_exit_code mapping
+# (outcome.sh) rather than terminate the process directly.
 load_config() {
   [ -f "$CONFIGURATION_FILE" ] || return 0
-  assert_safe_to_source "$CONFIGURATION_FILE" || exit 1
+  assert_safe_to_source "$CONFIGURATION_FILE" || return 1
   # shellcheck disable=SC1090
   source "$CONFIGURATION_FILE"
 }
@@ -80,7 +83,7 @@ start() {
     fi
     setup_wizard
   fi
-  load_config
+  load_config || return "$VPN_RC_CONFIG"
   print_warning "Loaded configuration from %s ...\n" "$CONFIGURATION_FILE"
 
   # A malformed profiles file must fail with a clear message — not be silently
@@ -136,11 +139,12 @@ start() {
       return "$VPN_RC_ALREADY_ACTIVE"
     fi
     if connection_preflight "$mode"; then
-      if admit_attempt "${VPN_NAME}" "$mode"; then
-        run_admitted_connection "${VPN_NAME}" "$mode"; outcome=$?
-      else
-        outcome="$VPN_RC_ATTEMPT_FAILED"
-      fi
+      admit_attempt "${VPN_NAME}" "$mode"
+      case $? in
+        0) run_admitted_connection "${VPN_NAME}" "$mode"; outcome=$? ;;
+        2) outcome="$VPN_RC_ALREADY_ACTIVE" ;;
+        *) outcome="$VPN_RC_ATTEMPT_FAILED" ;;
+      esac
     else
       outcome=$?
     fi
@@ -159,11 +163,12 @@ start() {
           continue
         fi
         if connection_preflight "$mode"; then
-          if admit_attempt "${VPN_NAME}" "$mode"; then
-            run_admitted_connection "${VPN_NAME}" "$mode"; outcome=$?
-          else
-            outcome="$VPN_RC_ATTEMPT_FAILED"
-          fi
+          admit_attempt "${VPN_NAME}" "$mode"
+          case $? in
+            0) run_admitted_connection "${VPN_NAME}" "$mode"; outcome=$? ;;
+            2) outcome="$VPN_RC_ALREADY_ACTIVE" ;;
+            *) outcome="$VPN_RC_ATTEMPT_FAILED" ;;
+          esac
         else
           outcome=$?
         fi
@@ -255,6 +260,19 @@ connection_preflight() {
       return "$VPN_RC_CONFIG"
     fi
     require_openconnect_sso || return "$VPN_RC_CONFIG"
+  fi
+
+  # A missing password (for a profile that isn't cert-only) is exactly as
+  # locally decidable as a missing TOTP seed below, and was previously only
+  # discovered inside migrate_or_fetch_password (profiles.sh) -- AFTER
+  # admission, spending an unattended attempt on something preflight could
+  # have caught. Existence only, matching invariant 8's carve-out: this reads
+  # whether a secret is present, never a one-time value, and never the
+  # password itself into anything that gets submitted here.
+  if [ "${VPN_AUTH_MODE:-password}" != sso ] && [ -z "${VPN_CLIENT_CERT:-}" ] \
+      && [ "$mode" = SERVICE ] && [ -z "$(secrets_get "${VPN_NAME}" password)" ] && [ -z "$VPN_PASSWD" ]; then
+    print_danger "No stored password for '%s' and service mode cannot prompt. Store it first: %s set-secret '%s' password\n" "${VPN_NAME}" "${DISPLAY_NAME}" "${VPN_NAME}"
+    return "$VPN_RC_CONFIG"
   fi
 
   # TOTP eligibility only — a stored seed exists, and oathtool is present.
@@ -351,6 +369,17 @@ _preflight_verify_certificate() {
         # Legacy (SHA-1) pin: preserved exactly as before — a warning, not a
         # preflight rejection. This project does not implement a SHA-1
         # comparison here; OpenConnect itself still honours the pin at connect.
+        # A reachability check still belongs here, though: without one, a
+        # legacy-pin profile with a down gateway sails through preflight and
+        # only fails once admission has already spent an attempt.
+        if ! command -v openssl >/dev/null 2>&1; then
+          print_danger "openssl is required to verify the gateway certificate.\n"
+          return "$VPN_RC_CONFIG"
+        fi
+        if ! gateway_tls_reachable "${VPN_HOST}"; then
+          print_danger "Could not reach %s to check its certificate.\n" "${VPN_HOST}"
+          return "$VPN_RC_NO_NETWORK"
+        fi
         print_warning "serverCertificate uses a legacy (SHA1) pin; SHA1 is deprecated. Run '%s pin %s' to get a pin-sha256 value.\n" "${DISPLAY_NAME}" "${VPN_HOST}"
         ;;
     esac
@@ -364,9 +393,18 @@ _preflight_verify_certificate() {
       return "$VPN_RC_NO_NETWORK"
     fi
     if ! verify_gateway_cert "${VPN_HOST}"; then
-      print_danger "The certificate of %s does NOT validate against the system trust store, and no pin is configured. Refusing to connect.\n" "${VPN_HOST}"
-      print_pin_instructions "${VPN_HOST}"
-      return "$VPN_RC_CONFIG"
+      # Reachability and trust are two SEPARATE TLS transactions, so the
+      # gateway could have gone away in between them -- a conservative
+      # re-check keeps that ambiguous case transient rather than terminal.
+      # Only a gateway that is STILL reachable right now, yet still fails
+      # trust, is reported as an actual certificate problem.
+      if gateway_tls_reachable "${VPN_HOST}"; then
+        print_danger "The certificate of %s does NOT validate against the system trust store, and no pin is configured. Refusing to connect.\n" "${VPN_HOST}"
+        print_pin_instructions "${VPN_HOST}"
+        return "$VPN_RC_CONFIG"
+      fi
+      print_danger "Could not reach %s to check its certificate.\n" "${VPN_HOST}"
+      return "$VPN_RC_NO_NETWORK"
     fi
   fi
   return 0
@@ -411,13 +449,20 @@ run_admitted_connection() {
       read -r -s -p "Enter the TOTP secret (base32) for ${VPN_NAME}: " seed; echo
       [ -n "$seed" ] && secrets_set "${VPN_NAME}" token_secret "$seed"
     fi
-    totp_wait_for_fresh_step "$name"
-    VPN_SECOND_FACTOR="$(generate_totp "$seed")"
-    unset seed
-    if [ -z "$VPN_SECOND_FACTOR" ]; then
-      print_danger "Could not generate a TOTP code (check the stored secret with: %s set-secret '%s' token_secret).\n" "${DISPLAY_NAME}" "${VPN_NAME}"
+    if totp_wait_for_fresh_step "$name"; then
+      VPN_SECOND_FACTOR="$(generate_totp "$seed")"
+      if [ -z "$VPN_SECOND_FACTOR" ]; then
+        print_danger "Could not generate a TOTP code (check the stored secret with: %s set-secret '%s' token_secret).\n" "${DISPLAY_NAME}" "${VPN_NAME}"
+        rc="$VPN_RC_CONFIG"
+      fi
+    else
+      # The reservation itself could not be made durable -- generating a
+      # code anyway would spend it with no exclusivity guarantee behind it,
+      # which is exactly the failure this design exists to prevent.
+      print_danger "Could not safely reserve a fresh TOTP step for '%s'; refusing to generate a code.\n" "${VPN_NAME}"
       rc="$VPN_RC_CONFIG"
     fi
+    unset seed
   fi
 
   if [ "$rc" = 0 ] && [ "${VPN_AUTH_MODE:-password}" != sso ] && [ "$VPN_TOKEN_MODE" != totp ] && [ "$VPN_DUO2FAMETHOD" = "passcode" ]; then
