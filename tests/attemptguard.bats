@@ -309,18 +309,18 @@ _sf() { attempt_state_file "$1"; }
   # freshly-opened forever instead of expiring within an hour.
   local f; f="$(_sf "Work VPN")"
   token="$(_state_lock "$f")"
-  _state_read "$f"
+  _state_read "$f" "Work VPN"
   ST_OPEN_UNTIL=99999999999
   _state_persist_current "$f" "Work VPN"
   _state_unlock "$f" "$token"
 
-  _state_read "$f"   # first read: applies and must persist the clamp
+  _state_read "$f" "Work VPN"   # first read: applies and must persist the clamp
   local raw; raw="$(_state_field open_until_epoch "$f")"
   [ "$raw" != 99999999999 ]   # the ON-DISK value itself was corrected
 
   local first="$raw"
   sleep 1.1
-  _state_read "$f"   # second read, over a second later
+  _state_read "$f" "Work VPN"   # second read, over a second later
   local second; second="$(_state_field open_until_epoch "$f")"
   [ "$first" = "$second" ]   # stable -- not "now + 3600" recomputed each time
 }
@@ -428,4 +428,106 @@ _sf() { attempt_state_file "$1"; }
   profile_vpn_running() { [ "$1" = "Work VPN" ]; }
   run admit_attempt "Work VPN" INTERACTIVE
   [ "$status" -eq 2 ]
+}
+
+# ------------------------------------------------- the real _state_persist
+
+@test "_state_persist fails atomically rather than installing a truncated file" {
+  # Regression test for the release blocker: the write block's own exit
+  # status used to be discarded, so a fault partway through the write (disk
+  # full, a file-size limit, ...) still let a truncated temp file get mv'd
+  # into place, reporting SUCCESS while silently dropping fields like
+  # attempt_owner_pid to their fail-open defaults on the next read.
+  local f="$DATA_DIR/state/blocker1.state"
+  _state_persist "$f" "Work VPN" "111 222" "0" "5" "0" "0" "0"
+  [ -e "$f" ]
+  local before; before="$(cat "$f")"
+
+  # A tiny file-size limit turns a large write into a genuine partial-write
+  # fault, in a real subshell -- not a stubbed function -- exercising the
+  # actual writer.
+  local long_attempts; long_attempts="$(seq 1 2000 | tr '\n' ' ')"
+  local status
+  if ( ulimit -f 1 2>/dev/null; _state_persist "$f" "Work VPN" "$long_attempts" "1234567890" "999" "4321" "1111111111" "1" ); then
+    status=0
+  else
+    status=$?
+  fi
+  [ "$status" -ne 0 ]
+
+  local after; after="$(cat "$f")"
+  [ "$after" = "$before" ]   # the previous, complete state survives a faulted write
+  [ ! -e "${f}.tmp."* ]     # no leaked temp file either
+}
+
+# ------------------------------------------- breaker expiry doesn't spin
+
+@test "a persistently-failing breaker-expiry persist still sleeps between retries" {
+  # Regression test: the expiry-clearing branch had no sleep on its failure
+  # path, so a permanently failing persist spun on lock/read/write as fast as
+  # the disk allowed instead of backing off like every other wait in this
+  # loop.
+  local f; f="$(_sf "Work VPN")"
+  token="$(_state_lock "$f")"
+  _state_read "$f" "Work VPN"
+  ST_ATTEMPTS="$(date +%s)"
+  ST_OPEN_UNTIL=$(( $(date +%s) - 1 ))   # already expired
+  _state_persist_current "$f" "Work VPN"
+  _state_unlock "$f" "$token"
+
+  # admit_attempt runs backgrounded in its OWN subshell, so shell-variable
+  # counters incremented there would never be visible to this process --
+  # file-based counters cross that boundary correctly. Comparing counts
+  # (rather than a call rate against a wall-clock budget) keeps this
+  # deterministic across machines: lock-acquisition overhead alone varies too
+  # much by filesystem/hardware for a fixed "N calls in M ms" threshold to
+  # reliably tell "sleeping" from "spinning" apart.
+  local persistfile="$BATS_TEST_TMPDIR/persist-calls" sleepfile="$BATS_TEST_TMPDIR/sleep-calls"
+  : > "$persistfile"; : > "$sleepfile"
+  _state_persist_current() { printf 'x' >> "$persistfile"; return 1; }
+  sleep() { printf 'x' >> "$sleepfile"; }   # no-op stub: just records the call
+  ( admit_attempt "Work VPN" SERVICE ) &
+  local bgpid=$!
+  command sleep 0.3   # the REAL sleep -- the stub above only applies inside the backgrounded subshell
+  kill "$bgpid" 2>/dev/null || true
+  wait "$bgpid" 2>/dev/null || true
+
+  local persists sleeps
+  persists="$(wc -c < "$persistfile")"
+  sleeps="$(wc -c < "$sleepfile")"
+  [ "$persists" -gt 0 ]                 # the failure path actually ran at least once
+  [ "$sleeps" -ge $((persists - 1)) ]   # every failed persist is followed by a sleep call
+}
+
+# ------------------------------------- clamp persists even with no profile=
+
+@test "the clamp is still persisted when the state file has no profile= field at all" {
+  # Regression test: _state_read used to gate the clamp write-back on
+  # ST_PROFILE (read from the same same-UID-writable file), so a missing or
+  # corrupt profile= field silently disabled the fix entirely -- the exact
+  # moving-horizon bug this test's sibling above already covers, reopened via
+  # a different missing field. The caller's own already-known profile name is
+  # what must be used instead.
+  local f; f="$(_sf "Work VPN")"
+  mkdir -p "$(dirname "$f")"
+  {
+    printf 'version=1\n'
+    printf 'attempts=\n'
+    printf 'open_until_epoch=99999999999\n'
+    printf 'last_totp_step=0\n'
+    printf 'attempt_owner_pid=0\n'
+    printf 'attempt_owner_epoch=0\n'
+    printf 'paused=0\n'
+  } > "$f"
+  chmod 600 "$f"
+
+  _state_read "$f" "Work VPN"
+  local raw; raw="$(_state_field open_until_epoch "$f")"
+  [ "$raw" != 99999999999 ]
+
+  local first="$raw"
+  sleep 1.1
+  _state_read "$f" "Work VPN"
+  local second; second="$(_state_field open_until_epoch "$f")"
+  [ "$first" = "$second" ]
 }

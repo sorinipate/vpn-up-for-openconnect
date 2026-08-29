@@ -1291,7 +1291,19 @@ a plausible thing for a future change to erode without noticing:
    gateway that disappears between them is treated as transient too: an
    unpinned profile only reports a genuine certificate failure if the
    gateway is confirmed still reachable at the moment trust validation
-   fails.
+   fails. Unpinned-profile trust validation also checks that the
+   certificate is valid for the configured host itself
+   (`-verify_hostname`/`-verify_ip`), not only that it chains to a trusted
+   CA — a certificate issued for a different hostname is exactly the kind
+   of locally-decidable rejection this invariant exists to catch before
+   admission, rather than leaving it for OpenConnect's own (real) hostname
+   check to discover after a credential has already been spent.
+   The password/TOTP-seed existence checks distinguish "genuinely not
+   stored" from "the secrets backend itself could not be read" (a vault
+   decrypt failure, a keyring not yet unlocked): only the former is
+   `VPN_RC_CONFIG`; the latter is `VPN_RC_SECRETS_UNAVAILABLE`, a transient
+   code that never terminally stops the service over what may be a
+   momentary backend problem.
 
 **The state file** (`${DATA_DIR}/state/<slug>.<sha256>.state`, per profile,
 mode `0600`) is a new input that gates whether an unattended attempt is

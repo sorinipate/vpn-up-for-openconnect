@@ -28,6 +28,8 @@ readonly VPN_RC_ATTEMPT_FAILED=20   # an attempt returned non-zero; cause unknow
 readonly VPN_RC_NO_NETWORK=21       # the network/reachability gate said no
 # shellcheck disable=SC2034  # consumed by core.sh (start())
 readonly VPN_RC_ALREADY_ACTIVE=22   # this profile is already running (transient)
+# shellcheck disable=SC2034  # consumed by core.sh (connection_preflight)
+readonly VPN_RC_SECRETS_UNAVAILABLE=23 # secrets backend errored, not "not stored" (transient)
 readonly VPN_RC_SUPERVISOR_RETRY=75 # "restart me" (EX_TEMPFAIL)
 
 # Maps an outcome code to the one instruction a service supervisor
@@ -214,8 +216,17 @@ _state_unlock() {
 # breaker look freshly-opened forever, silently turning "at most one hour"
 # into "indefinitely" -- confirmed by reproduction, not merely reasoned about.
 _state_read() {
-  local f="$1" v dirty=0
-  ST_PROFILE="$(_state_field profile "$f" 2>/dev/null)"
+  # $2 (expected_profile) is the caller's OWN already-known profile name --
+  # deliberately not read back from the file's own profile= field, which is
+  # same-UID-writable and not identity (see _state_persist and logging.sh's
+  # attempt_state_file: the FILENAME's digest is what actually prevents
+  # collision). Using the on-disk field to decide whether the clamp below may
+  # be persisted meant a missing/corrupt profile= field silently disabled the
+  # write-back entirely -- reproduced directly: two reads a second apart of a
+  # file with a poisoned open_until_epoch and no profile= field each computed
+  # a fresh `now + 3600`, i.e. the exact moving-horizon bug the persisted
+  # clamp exists to close, just reopened via a different missing field.
+  local f="$1" expected_profile="$2" v dirty=0
 
   ST_ATTEMPTS=""
   v="$(_state_field attempts "$f" 2>/dev/null)"
@@ -252,8 +263,8 @@ _state_read() {
   case "$v" in 1) v=1 ;; *) v=0 ;; esac
   ST_PAUSED="$v"
 
-  if [ "$dirty" = 1 ] && [ -n "$ST_PROFILE" ]; then
-    _state_persist_current "$f" "$ST_PROFILE" 2>/dev/null || true
+  if [ "$dirty" = 1 ] && [ -n "$expected_profile" ]; then
+    _state_persist_current "$f" "$expected_profile" 2>/dev/null || true
   fi
 }
 
@@ -270,21 +281,28 @@ _state_persist() {
   ( umask 077; mkdir -p "$dir" ) 2>/dev/null
   chmod 700 "$dir" 2>/dev/null || true
   local tmp="${f}.tmp.$$"
-  (
+  # The write itself must be checked, not just the final `mv`: a partial
+  # write (disk full mid-printf, the temp file's directory vanishing, ...)
+  # still leaves a file at $tmp for `mv` to happily rename into place, which
+  # would report success while installing a TRUNCATED state file -- silently
+  # dropping fields like attempt_owner_pid or last_totp_step to their
+  # fail-open defaults on the next read. Reproduced directly by faulting the
+  # write after a few fields: the old code returned 0 with a truncated file
+  # on disk. One checked printf, not several independently-unchecked ones.
+  if ! (
     umask 077
-    {
-      printf 'version=1\n'
-      printf 'profile=%s\n' "$profile"
-      printf 'attempts=%s\n' "$attempts"
-      printf 'open_until_epoch=%s\n' "$open_until"
-      printf 'last_totp_step=%s\n' "$totp_step"
-      printf 'attempt_owner_pid=%s\n' "$owner_pid"
-      printf 'attempt_owner_epoch=%s\n' "$owner_epoch"
-      printf 'paused=%s\n' "$paused"
-    } > "$tmp"
-  ) 2>/dev/null
+    printf 'version=1\nprofile=%s\nattempts=%s\nopen_until_epoch=%s\nlast_totp_step=%s\nattempt_owner_pid=%s\nattempt_owner_epoch=%s\npaused=%s\n' \
+      "$profile" "$attempts" "$open_until" "$totp_step" \
+      "$owner_pid" "$owner_epoch" "$paused" > "$tmp"
+  ) 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null
+    return 1
+  fi
   chmod 600 "$tmp" 2>/dev/null || true
-  mv -f "$tmp" "$f" 2>/dev/null
+  if ! mv -f "$tmp" "$f" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null
+    return 1
+  fi
 }
 
 # Persist using the currently-loaded ST_* variables -- the common case inside
@@ -327,7 +345,7 @@ admit_attempt() {
   local token now n delay max_attempt a persist_failures=0
   while :; do
     token="$(_state_lock "$f")"
-    _state_read "$f"
+    _state_read "$f" "$profile"
 
     # A tunnel already running for this profile is a stronger signal than
     # the owner marker and must be checked independently of it: the owner is
@@ -392,11 +410,20 @@ admit_attempt() {
         # last_totp_step, paused and any owner are untouched -- there is no
         # generic "clear state", only this named transition. If the write
         # itself fails, the stale open_until is simply seen again next
-        # iteration and retried -- no outcome is claimed either way here.
+        # iteration and retried -- no outcome is claimed either way here. But
+        # a persistently-failing write must still go through the same POLL
+        # sleep as every other wait in this loop: without one, a permanently
+        # failing persist spins on lock/read/write as fast as the disk lets
+        # it, burning CPU instead of backing off (reproduced directly: ~200
+        # cycles in 250ms with no sleep on this path).
         ST_ATTEMPTS=""
         ST_OPEN_UNTIL=0
-        _state_persist_current "$f" "$profile" || true
+        if _state_persist_current "$f" "$profile"; then
+          _state_unlock "$f" "$token"
+          continue
+        fi
         _state_unlock "$f" "$token"
+        sleep "$_ATTEMPT_POLL"
         continue
       fi
 
@@ -472,7 +499,7 @@ release_attempt_owner() {
   local profile="$1" f token
   f="$(attempt_state_file "$profile")" || return 0
   token="$(_state_lock "$f")"
-  _state_read "$f"
+  _state_read "$f" "$profile"
   if [ "$ST_OWNER_PID" = "$$" ]; then
     ST_OWNER_PID=0
     ST_OWNER_EPOCH=0
@@ -489,7 +516,7 @@ attempt_history_clear() {
   local profile="$1" f token
   f="$(attempt_state_file "$profile")" || return 0
   token="$(_state_lock "$f")"
-  _state_read "$f"
+  _state_read "$f" "$profile"
   ST_ATTEMPTS=""
   ST_OPEN_UNTIL=0
   _state_persist_current "$f" "$profile"
@@ -505,7 +532,7 @@ totp_step_reservation_clear() {
   local profile="$1" f token
   f="$(attempt_state_file "$profile")" || return 0
   token="$(_state_lock "$f")"
-  _state_read "$f"
+  _state_read "$f" "$profile"
   ST_TOTP_STEP=0
   _state_persist_current "$f" "$profile"
   _state_unlock "$f" "$token"
@@ -517,7 +544,7 @@ pause_set() {
   local profile="$1" f token
   f="$(attempt_state_file "$profile")" || return 0
   token="$(_state_lock "$f")"
-  _state_read "$f"
+  _state_read "$f" "$profile"
   ST_PAUSED=1
   _state_persist_current "$f" "$profile"
   _state_unlock "$f" "$token"
@@ -526,7 +553,7 @@ pause_clear() {
   local profile="$1" f token
   f="$(attempt_state_file "$profile")" || return 0
   token="$(_state_lock "$f")"
-  _state_read "$f"
+  _state_read "$f" "$profile"
   ST_PAUSED=0
   _state_persist_current "$f" "$profile"
   _state_unlock "$f" "$token"
@@ -552,7 +579,7 @@ totp_wait_for_fresh_step() {
   f="$(attempt_state_file "$profile")" || return 1
   while :; do
     token="$(_state_lock "$f")"
-    _state_read "$f"
+    _state_read "$f" "$profile"
     now="$(date +%s)"
     step=$(( now / TOTP_STEP_SECS ))
     # <=, not ==: if the clock has moved BACKWARDS far enough that step is

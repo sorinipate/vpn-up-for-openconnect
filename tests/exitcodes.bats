@@ -245,3 +245,40 @@ EOF
   run connection_preflight SERVICE
   [ "$status" -eq "$VPN_RC_CONFIG" ]
 }
+
+# A secrets-backend read failure (vault decrypt error, keychain/secret-tool
+# error, ...) must NOT be read the same way as "nothing is stored" --
+# collapsing both into CONFIG permanently stops a service over what may be a
+# transient backend problem (e.g. a keyring not yet unlocked at login-service
+# startup). secrets_get() itself already returns non-zero for this (see
+# encryption.sh's _vault_decrypt); the bug was `[ -z "$(secrets_get ...)" ]`
+# discarding that exit status entirely.
+
+@test "a secrets-backend error while checking the password is SECRETS_UNAVAILABLE, not CONFIG" {
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_PASSWD=""
+  secrets_get() { return 1; }   # backend error, not "not found"
+  run connection_preflight SERVICE
+  [ "$status" -eq "$VPN_RC_SECRETS_UNAVAILABLE" ]
+}
+
+@test "a secrets-backend error while checking the TOTP seed is SECRETS_UNAVAILABLE, not CONFIG" {
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_PASSWD="s3cret"
+  VPN_TOKEN_MODE=totp
+  require_oathtool() { return 0; }
+  secrets_get() { return 1; }
+  run connection_preflight SERVICE
+  [ "$status" -eq "$VPN_RC_SECRETS_UNAVAILABLE" ]
+}
+
+@test "a genuinely absent password is still CONFIG, not SECRETS_UNAVAILABLE" {
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_PASSWD=""
+  secrets_get() { echo ""; return 0; }   # read succeeded; the field is just empty
+  run connection_preflight SERVICE
+  [ "$status" -eq "$VPN_RC_CONFIG" ]
+}

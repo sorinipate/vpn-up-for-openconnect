@@ -229,6 +229,26 @@ write_connection_state() {
 # once, in preflight, rather than repeated.
 _VPN_CONNECT_MODE=""
 
+# secrets_get()'s own exit status distinguishes "this key is not stored"
+# from "the backend itself could not be read" (e.g. the openssl vault failed
+# to decrypt) -- but `[ -z "$(secrets_get ...)" ]` throws that away, since
+# command substitution only keeps the exit status of the FINAL command in an
+# `if`/`[` test, not of the substitution itself. Reproduced directly: a
+# faulted vault decrypt made secrets_get return non-zero, and the bare
+# `-z` test still read that as "no stored password", permanently stopping
+# the service (VPN_RC_CONFIG) for what was actually a transient backend
+# problem -- exactly the kind of condition invariant 8's terminal-failure
+# codes are not meant to cover. Returns: 0 = present, 1 = genuinely absent,
+# 2 = backend error (transient).
+_secret_check() {
+  local profile="$1" field="$2" val
+  if val="$(secrets_get "$profile" "$field")"; then
+    [ -n "$val" ] && return 0
+    return 1
+  fi
+  return 2
+}
+
 connection_preflight() {
   local mode="$1"   # SERVICE | INTERACTIVE
   _VPN_CONNECT_MODE=""
@@ -270,9 +290,17 @@ connection_preflight() {
   # whether a secret is present, never a one-time value, and never the
   # password itself into anything that gets submitted here.
   if [ "${VPN_AUTH_MODE:-password}" != sso ] && [ -z "${VPN_CLIENT_CERT:-}" ] \
-      && [ "$mode" = SERVICE ] && [ -z "$(secrets_get "${VPN_NAME}" password)" ] && [ -z "$VPN_PASSWD" ]; then
-    print_danger "No stored password for '%s' and service mode cannot prompt. Store it first: %s set-secret '%s' password\n" "${VPN_NAME}" "${DISPLAY_NAME}" "${VPN_NAME}"
-    return "$VPN_RC_CONFIG"
+      && [ "$mode" = SERVICE ] && [ -z "$VPN_PASSWD" ]; then
+    _secret_check "${VPN_NAME}" password
+    case $? in
+      0) : ;;
+      1)
+        print_danger "No stored password for '%s' and service mode cannot prompt. Store it first: %s set-secret '%s' password\n" "${VPN_NAME}" "${DISPLAY_NAME}" "${VPN_NAME}"
+        return "$VPN_RC_CONFIG" ;;
+      2)
+        print_danger "Could not read the secrets store to check for a stored password for '%s'; will retry.\n" "${VPN_NAME}"
+        return "$VPN_RC_SECRETS_UNAVAILABLE" ;;
+    esac
   fi
 
   # TOTP eligibility only — a stored seed exists, and oathtool is present.
@@ -281,9 +309,17 @@ connection_preflight() {
   # it's ever submitted (see totp_wait_for_fresh_step, outcome.sh).
   if [ "${VPN_AUTH_MODE:-password}" != sso ] && [ "$VPN_TOKEN_MODE" = totp ]; then
     require_oathtool || return "$VPN_RC_CONFIG"
-    if [ "$mode" = SERVICE ] && [ -z "$(secrets_get "${VPN_NAME}" token_secret)" ]; then
-      print_danger "No TOTP secret stored for '%s' and service mode cannot prompt. Store it first: %s set-secret '%s' token_secret\n" "${VPN_NAME}" "${DISPLAY_NAME}" "${VPN_NAME}"
-      return "$VPN_RC_CONFIG"
+    if [ "$mode" = SERVICE ]; then
+      _secret_check "${VPN_NAME}" token_secret
+      case $? in
+        0) : ;;
+        1)
+          print_danger "No TOTP secret stored for '%s' and service mode cannot prompt. Store it first: %s set-secret '%s' token_secret\n" "${VPN_NAME}" "${DISPLAY_NAME}" "${VPN_NAME}"
+          return "$VPN_RC_CONFIG" ;;
+        2)
+          print_danger "Could not read the secrets store to check for a stored TOTP secret for '%s'; will retry.\n" "${VPN_NAME}"
+          return "$VPN_RC_SECRETS_UNAVAILABLE" ;;
+      esac
     fi
   fi
 

@@ -82,3 +82,48 @@ XML
   run gateway_tls_reachable "127.0.0.1:1"
   [ "$status" -ne 0 ]
 }
+
+@test "fetch_server_pin fails cleanly if SPKI/DER extraction fails after a valid certificate" {
+  # Regression test: a valid certificate was obtained (the earlier fix's own
+  # check passes), but the pubkey->DER conversion stage itself then fails --
+  # the pre-fix pipeline would still feed that empty output into `dgst` and
+  # produce the same bogus SHA-256(empty) pin the cert-existence check was
+  # added to rule out, just one stage later.
+  source "$BATS_TEST_DIRNAME/../network.sh"
+  openssl() {
+    case "$1" in
+      s_client) printf -- '-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n' ;;
+      x509)
+        case "$*" in
+          *-pubkey*) printf -- '-----BEGIN PUBLIC KEY-----\nFAKE\n-----END PUBLIC KEY-----\n' ;;
+          *) return 0 ;;   # -noout validity check
+        esac ;;
+      pkey) return 1 ;;   # the extraction stage that fails
+      dgst) echo "SHOULD NOT BE REACHED" ;;
+    esac
+  }
+  run fetch_server_pin "gw.example.test:443"
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+  [[ "$output" != *"SHOULD NOT BE REACHED"* ]]
+  # no leaked temp file from the DER extraction stage
+  [ -z "$(ls "${TMPDIR:-/tmp}"/vpn-up-pin.* 2>/dev/null)" ]
+}
+
+@test "verify_gateway_cert asks openssl to verify the hostname for a DNS gateway" {
+  source "$BATS_TEST_DIRNAME/../network.sh"
+  local argsfile="$BATS_TEST_TMPDIR/openssl-args"
+  openssl() { printf '%s\n' "$*" >> "$argsfile"; return 0; }
+  verify_gateway_cert "vpn.example.com:443"
+  grep -q -- '-verify_hostname vpn.example.com' "$argsfile"
+  ! grep -q -- '-verify_ip' "$argsfile"
+}
+
+@test "verify_gateway_cert asks openssl to verify the IP for an IP-literal gateway" {
+  source "$BATS_TEST_DIRNAME/../network.sh"
+  local argsfile="$BATS_TEST_TMPDIR/openssl-args"
+  openssl() { printf '%s\n' "$*" >> "$argsfile"; return 0; }
+  verify_gateway_cert "203.0.113.5:443"
+  grep -q -- '-verify_ip 203.0.113.5' "$argsfile"
+  ! grep -q -- '-verify_hostname' "$argsfile"
+}

@@ -72,11 +72,25 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
     now fails preflight with `VPN_RC_CONFIG` instead of discovering the
     problem after an attempt has already been admitted — one more
     locally-decidable, non-authenticating prerequisite alongside the
-    existing certificate and TOTP-seed checks.
+    existing certificate and TOTP-seed checks. A secrets-backend read
+    failure (a vault decrypt error, a keyring not yet unlocked) while
+    checking for a stored password or TOTP seed is reported as a distinct,
+    transient `VPN_RC_SECRETS_UNAVAILABLE` rather than being read the same
+    way as "nothing is stored" — the latter would otherwise permanently
+    stop the service over what may resolve itself on the next attempt.
   - Certificate preflight distinguishes "could not reach the gateway to
     obtain a certificate at all" (transient, `VPN_RC_NO_NETWORK`) from "got
     one, and it failed trust or pin validation" (`VPN_RC_CONFIG`) — a
     gateway that is merely down no longer permanently stops the service.
+    For an unpinned profile, trust validation now also checks the
+    certificate is valid for the configured host itself, not only that it
+    chains to a trusted CA.
+  - The on-disk state write is now atomic against a partial write (a disk
+    full mid-write, a vanishing state directory, ...): the write is
+    verified before the file is put in place, so a fault can no longer
+    install a truncated state file while still reporting success — which
+    would otherwise have silently dropped fields like the attempt owner or
+    the TOTP step reservation to their fail-open defaults on the next read.
 
 ### Fixed
 
