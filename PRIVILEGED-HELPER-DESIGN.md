@@ -1322,20 +1322,63 @@ a plausible thing for a future change to erode without noticing:
    reliably exits 44 (`errSecItemNotFound`) specifically for "not stored",
    distinct from every other failure — confirmed directly. Secret Service's
    `secret-tool lookup` returns the same exit status (1) for "not found" and
-   for a backend/API error alike (verified against libsecret's own
-   published source, not a live Linux/D-Bus environment, which wasn't
-   available to test this against directly) — so that backend is instead
-   read via whether the Secret Service is reachable on the session bus at
-   all, never guessing "absent" when that health check itself can't run.
-   The same distinction carries through past preflight into the actual
-   credential fetch in `run_admitted_connection`, not only preflight's
-   existence check — admission may have waited, and the backend can fail
-   in the interim — without blocking a fallback that doesn't depend on the
-   secrets backend at all (a legacy plaintext `<password>` still on the
-   profile, or a client certificate): only when no such fallback exists
+   for a backend/API error alike — an earlier version of this check tried to
+   disambiguate by probing whether the Secret Service was merely reachable
+   on the session bus, reasoning that a reachable service's own failed
+   lookup must mean "not found"; a later review correctly identified that as
+   unsound, since a live, reachable service can still fail one specific
+   lookup for a reason that has nothing to do with absence (a locked
+   collection, a malformed request, any other D-Bus error), and reachability
+   proves none of that. The actual structural signal is on stderr, not the
+   exit code — verified directly against libsecret's own
+   `tool/secret-tool.c` (`secret_tool_action_lookup`): the `GError` branch
+   prints `"<prgname>: <message>"` to stderr before returning 1; the
+   `value == NULL` ("no matching secret") branch returns 1 with nothing
+   printed at all. Whether the one lookup already being made produced any
+   stderr output is exactly the distinction needed, with no second D-Bus
+   probe and no environment-specific heuristic.
+   **Each backend's check is now a single round-trip that both learns the
+   status AND returns the value on success**, not a check followed by a
+   separate fetch. An earlier shape called a check function to learn
+   present/absent/error, discarded whatever it read, and then called a
+   second, independent function to actually retrieve the value — which left
+   a real gap between the two calls where the backend could fail in
+   between (the check said present; the fetch moments later, or an
+   admission wait later, saw a transient error with no way to distinguish
+   that from "was never there"), and for the openssl vault backend the same
+   shape was worse than a race: it decrypted the vault twice, prompting for
+   the passphrase twice in an interactive session. Every call site (the
+   preflight existence checks, and the actual post-admission credential
+   fetch) now uses the value returned by the single check call; preflight
+   call sites explicitly discard that output (redirected, never captured)
+   since invariant 8 only permits confirming existence, never touching the
+   value itself before admission.
+   The same tri-state distinction carries through past preflight into the
+   actual credential fetch in `run_admitted_connection`, not only
+   preflight's existence check — admission may have waited, and the backend
+   can fail in the interim — without blocking a fallback that doesn't depend
+   on the secrets backend at all (a legacy plaintext `<password>` still on
+   the profile, or a client certificate): only when no such fallback exists
    does a backend error there matter, surfacing as
    `VPN_RC_SECRETS_UNAVAILABLE` rather than being folded into the terminal
-   "nothing stored" case beside it.
+   "nothing stored" case beside it. **A failed migration write must not
+   destroy the only surviving copy of the credential.** Migrating a legacy
+   plaintext `<password>` to the secrets backend used to scrub the plaintext
+   element unconditionally, without checking whether the write that was
+   supposed to replace it actually succeeded — a failed write (backend
+   unavailable, vault write-verify failure) then left nothing durable behind
+   at all, with only this run's in-memory copy surviving. The security
+   posture is not worsened by leaving the plaintext in place a while longer
+   on a failed migration (it was already plaintext); deleting the only copy
+   after failing to establish its replacement is the actual regression, so
+   the scrub now only runs once the write it depends on is confirmed to have
+   succeeded. Separately, `secrets_set_keychain` no longer pre-deletes the
+   existing Keychain item before writing the replacement: `security
+   add-generic-password -U` already means "update in place if the item
+   exists" (confirmed directly against `security add-generic-password -h`,
+   and against a disposable test keychain), so the pre-delete gained nothing
+   and meant a failed add left nothing behind where a valid item had stood a
+   moment earlier.
 
 **The state file** (`${DATA_DIR}/state/<slug>.<sha256>.state`, per profile,
 mode `0600`) is a new input that gates whether an unattended attempt is
@@ -1370,6 +1413,22 @@ auto-reclaimed — see the reclaim-safety argument above). On failure now, the
 just-created (and uncontested, since this process alone knows it exists yet)
 lock directory is removed and the acquisition retried from the top, rather
 than reporting a token that can never be honoured.
+
+**An uncreatable state directory is now diagnosable, without changing the
+lock's "never gives up" contract.** `_state_lock` needs its parent directory
+(`${DATA_DIR}/state/`) to exist before `mkdir` on the lock itself can ever
+succeed; an earlier version attempted that once, ignored the result, and let
+the loop fall through to ordinary lock-contention polling regardless of
+whether the directory was ever actually created. Reproduced directly (a
+plain file blocking the path, so it can never become a directory): the
+result was indistinguishable from another process legitimately holding the
+lock — both simply polled forever with no diagnostic. The directory creation
+is now retried every iteration (so a transient condition, like a momentarily
+read-only filesystem, can still self-heal without this function ever needing
+to give up), and once it has failed persistently enough to rule out an
+ordinary race, a single warning is emitted naming the path — the retry loop
+itself is unchanged: a service keeps polling exactly as it already tolerates
+for ordinary contention, and this function still never proceeds unlocked.
 
 **Exit-status semantics changed to carry this.** Under `VPN_UP_SERVICE`,
 `vpn-up`'s exit status is now a supervisor instruction, not a Unix

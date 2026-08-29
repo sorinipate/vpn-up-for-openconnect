@@ -164,17 +164,38 @@ migrate_or_fetch_password() {
   # preflight already refuses for a genuinely absent secret.
   local mode="$1"
   # prefer stored secret; migrate plaintext if found
+  #
+  # One fetch, not check-then-fetch: _secret_check's stdout IS the value on
+  # success, so a separate secrets_get() call here is not needed -- review
+  # round 5 (BLOCKER #2) found the previous two-call shape left a real gap
+  # where the backend could fail between the check and the fetch, and for
+  # the openssl vault backend it also meant decrypting (and prompting for the
+  # passphrase) twice.
   local s="" backend_err=0
-  _secret_check "${VPN_NAME}" password
+  s="$(_secret_check "${VPN_NAME}" password)"
   case $? in
-    0) s="$(secrets_get "${VPN_NAME}" "password")" ;;
-    2) backend_err=1 ;;
+    0) : ;;
+    2) backend_err=1; s="" ;;
   esac
   if [ -z "$s" ] && [ -n "$VPN_PASSWD" ]; then
+    # Only scrub the plaintext <password> element once the migrated copy is
+    # actually durable. secrets_set's result used to be ignored here: if the
+    # write failed (backend unavailable, vault write-verify failure, ...),
+    # scrub_profile_password ran anyway and deleted the only surviving copy
+    # of the credential, leaving this run's in-memory VPN_PASSWD as the sole
+    # remaining copy of a secret that had otherwise been fully migrated to
+    # nowhere (review round 5, finding #3). The security posture is not
+    # worsened by keeping the plaintext around a while longer on a failed
+    # migration -- it was already plaintext; deleting the only copy after
+    # failing to establish its replacement is the actual regression.
     print_warning "Migrating plaintext password for '%s' to secure storage...\n" "${VPN_NAME}"
-    secrets_set "${VPN_NAME}" "password" "${VPN_PASSWD}"
-    s="${VPN_PASSWD}"
-    scrub_profile_password "${VPN_NAME}"
+    if secrets_set "${VPN_NAME}" "password" "${VPN_PASSWD}"; then
+      s="${VPN_PASSWD}"
+      scrub_profile_password "${VPN_NAME}"
+    else
+      print_warning "Could not migrate the plaintext password for '%s' to secure storage; leaving it in place until migration can succeed.\n" "${VPN_NAME}"
+      s="${VPN_PASSWD}"
+    fi
   fi
   if [ -z "$s" ] && [ -n "${VPN_CLIENT_CERT:-}" ]; then
     # Cert-only auth: the client certificate stands in for the password. Don't

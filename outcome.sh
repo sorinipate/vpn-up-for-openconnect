@@ -133,15 +133,37 @@ _VU_LOCK_POLL="${VPN_UP_LOCK_POLL:-0.2}"
 # relocates the problem rather than closing it.
 _state_lock() {
   local f="$1" lockdir="${1}.lock" reclaimdir="${1}.lock.reclaiming"
-  local pid
-  # The parent directory (${DATA_DIR}/state/) must exist before `mkdir
-  # "$lockdir"` can ever succeed. vpn-up.command creates it at startup, but
-  # relying on that alone here would make lock acquisition silently depend on
-  # a step this function has no way to verify happened -- a missing parent
-  # must not be misread as "someone else holds the lock" and polled on
-  # forever, which is exactly what happened before this was added.
-  ( umask 077; mkdir -p "$(dirname "$f")" ) 2>/dev/null
+  local pid dir_warned=0 dir_fail_streak=0
   while :; do
+    # The parent directory (${DATA_DIR}/state/) must exist before `mkdir
+    # "$lockdir"` can ever succeed. vpn-up.command creates it at startup, but
+    # relying on that alone here would make lock acquisition silently depend
+    # on a step this function has no way to verify happened. Retried every
+    # iteration (not just once before the loop) so a transient condition --
+    # a momentarily read-only filesystem, a race with something else
+    # removing it -- can self-heal without ever needing this function to
+    # give up, which stays true to "never fails open": a service just keeps
+    # polling, same as ordinary lock contention.
+    #
+    # But an infrastructure failure here (permission denied, no space, the
+    # path is blocked by a plain file) is NOT the same condition as another
+    # process holding the lock, and reproduced directly: left unchecked, the
+    # two are indistinguishable from the outside -- both just poll silently
+    # forever, with nothing in the log or on an interactive terminal to tell
+    # an operator which one they're looking at. This does not change the
+    # retry contract (still never gives up, still never proceeds unlocked);
+    # it only makes the infrastructure case diagnosable once it's persisted
+    # long enough to rule out an ordinary race with directory creation.
+    if ! ( umask 077; mkdir -p "$(dirname "$f")" ) 2>/dev/null && [ ! -d "$(dirname "$f")" ]; then
+      dir_fail_streak=$((dir_fail_streak + 1))
+      if [ "$dir_warned" = 0 ] && [ "$dir_fail_streak" -ge 10 ]; then
+        print_danger "Could not create or write the VPN state directory (%s); authentication attempts cannot be tracked until this is fixed (check permissions/disk space). Still retrying.\n" "$(dirname "$f")"
+        dir_warned=1
+      fi
+      sleep "$_VU_LOCK_POLL" 2>/dev/null || sleep 1
+      continue
+    fi
+    dir_fail_streak=0
     if mkdir "$lockdir" 2>/dev/null; then
       local token; token="$$-${RANDOM}-$(date +%s%N 2>/dev/null || date +%s)"
       if {

@@ -35,9 +35,15 @@ secrets_key() {
 # The secret is passed via `security -i` (commands on stdin) rather than -w on
 # the command line, so it never appears in the process table.
 _security_quote() { local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; printf '"%s"' "$s"; }
+# `-U` already means "update in place if the item exists" (confirmed directly
+# against `security add-generic-password -h`: "-U  Update item if it already
+# exists"), so a pre-delete gains nothing and is actively dangerous: if the
+# subsequent add then fails for any reason, the item is gone with nothing
+# written in its place, destroying the only surviving copy of a credential
+# that was valid a moment earlier. Reproduced directly on a disposable test
+# keychain that `-U` alone updates an existing item without a prior delete.
 secrets_set_keychain() {
   local k="$1"; local v="$2"
-  security delete-generic-password -a "$k" -s "${SECRETS_NAMESPACE}" >/dev/null 2>&1 || true
   printf 'add-generic-password -a %s -s %s -w %s -U\n' \
     "$(_security_quote "$k")" "$(_security_quote "${SECRETS_NAMESPACE}")" "$(_security_quote "$v")" \
     | security -i >/dev/null
@@ -52,11 +58,20 @@ secrets_delete_keychain() { local k="$1"; security delete-generic-password -a "$
 # backend error -- a generic "any non-zero exit means the backend errored"
 # reading would make a password that was simply never stored retry forever
 # instead of ever reaching the terminal "store it first" message.
+#
+# On success, prints the fetched value to stdout -- this is a single backend
+# round-trip that both checks AND fetches, not merely a check. A previous
+# version discarded the value here and made callers call secrets_get_keychain
+# again afterward; that left a real gap between "confirmed present" and
+# "actually read" where the backend could fail in between (review round 5,
+# BLOCKER #2), and for the openssl vault backend the equivalent pattern is
+# worse than just a race -- it decrypts the vault twice, prompting for the
+# passphrase twice in an interactive session. One fetch, reused by the caller.
 _secret_check_keychain() {
-  local k="$1"
-  security find-generic-password -a "$k" -s "${SECRETS_NAMESPACE}" -w >/dev/null 2>&1
+  local k="$1" out
+  out="$(security find-generic-password -a "$k" -s "${SECRETS_NAMESPACE}" -w 2>/dev/null)"
   case $? in
-    0)  return 0 ;;
+    0)  printf '%s' "$out"; return 0 ;;
     44) return 1 ;;
     *)  return 2 ;;
   esac
@@ -67,31 +82,41 @@ secrets_set_secrettool() { local k="$1"; local v="$2"; secret-tool store --label
 secrets_get_secrettool() { local k="$1"; secret-tool lookup app "${SECRETS_NAMESPACE}" account "$k"; }
 secrets_delete_secrettool() { local k="$1"; secret-tool clear app "${SECRETS_NAMESPACE}" account "$k" 2>/dev/null || true; }
 
-# Unlike Keychain, secret-tool's own exit status does NOT distinguish "not
-# found" from a backend/D-Bus error -- both return 1 (libsecret's own
-# secret-tool.c maps a NULL value and an API error to the identical exit
-# code; this project has no Linux Secret Service environment to reproduce
-# that against live, so this is verified against libsecret's published
-# source rather than a live run -- recorded as such in
-# PRIVILEGED-HELPER-DESIGN.md rather than left unstated). What DOES
-# distinguish them structurally, without parsing any locale-dependent,
-# gettext-translated prose: whether the Secret Service is even registered on
-# the session bus at all. If it isn't, this lookup could never have proven
-# absence either way, so that's a backend error; if it is, this process's
-# own failed lookup really does mean "not found".
+# Unlike Keychain, secret-tool's own EXIT STATUS does not distinguish "not
+# found" from a backend/D-Bus error -- both return 1. An earlier version of
+# this function tried to disambiguate by probing whether the Secret Service
+# was reachable on the session bus (NameHasOwner), reasoning that a reachable
+# service's own failed lookup must mean "not found". Review round 5 (BLOCKER
+# #1) correctly identified that as unsound: a reachable, live Secret Service
+# can still fail a specific lookup for a reason that has nothing to do with
+# "not found" -- a locked collection, a malformed request, any other D-Bus
+# error -- and NameHasOwner proves none of that.
+#
+# The actual, structural signal is on STDERR, not the exit code -- verified
+# directly against libsecret's own tool/secret-tool.c
+# (secret_tool_action_lookup): the GError branch prints
+# "<prgname>: <error->message>\n" to stderr before returning 1; the
+# value==NULL ("no matching secret") branch returns 1 with nothing printed at
+# all. So whether this invocation produced ANY stderr output is exactly the
+# distinction needed, and it comes from the one lookup already being made --
+# no second probe, no D-Bus dependency, no environment-specific heuristic.
+# Captured through a scratch file (not a second invocation) so this stays a
+# single backend round-trip, matching _secret_check_keychain above; the value
+# itself is printed to stdout on success, for the same reason.
 _secret_check_secrettool() {
-  local k="$1"
-  if secret-tool lookup app "${SECRETS_NAMESPACE}" account "$k" >/dev/null 2>&1; then
+  local k="$1" out err rc errfile
+  ensure_secret_paths
+  errfile="${SECRETS_DIR}/.secrettool-err.$$"
+  out="$(secret-tool lookup app "${SECRETS_NAMESPACE}" account "$k" 2>"$errfile")"
+  rc=$?
+  err="$(cat "$errfile" 2>/dev/null)"
+  rm -f "$errfile" 2>/dev/null
+  if [ "$rc" -eq 0 ]; then
+    printf '%s' "$out"
     return 0
   fi
-  if command -v dbus-send >/dev/null 2>&1 \
-      && dbus-send --session --print-reply \
-           --dest=org.freedesktop.DBus /org/freedesktop/DBus \
-           org.freedesktop.DBus.NameHasOwner \
-           string:org.freedesktop.secrets 2>/dev/null | grep -q 'boolean true'; then
-    return 1
-  fi
-  return 2
+  [ -n "$err" ] && return 2
+  return 1
 }
 
 # ----- OpenSSL encrypted vault -----

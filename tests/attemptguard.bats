@@ -498,6 +498,38 @@ _sf() { attempt_state_file "$1"; }
   [ "$(cat "$callfile")" = "xx" ]
 }
 
+# --------------------------------- an uncreatable state dir is diagnosable ---
+#
+# Review round 5, finding #4: an infrastructure failure creating the parent
+# state directory (permission denied, no space, a plain file blocking the
+# path) was indistinguishable from ordinary lock contention -- both just
+# polled silently forever, with nothing to tell an operator which one they
+# were looking at. Reproduced directly (a plain file where a directory needs
+# to go, so mkdir -p can never succeed): _state_lock hung indefinitely with
+# no diagnostic. The fix does not change the "never gives up" contract --
+# only makes the condition diagnosable once it has persisted long enough to
+# rule out an ordinary transient race.
+
+@test "_state_lock warns once when the parent state directory can never be created, but keeps retrying forever" {
+  local blocker="$BATS_TEST_TMPDIR/blocker"
+  touch "$blocker"   # a plain file, so mkdir -p a subdirectory of it can never succeed
+  local f="$blocker/sub/profile.state"
+  local warnfile="$BATS_TEST_TMPDIR/warn-calls"
+  : > "$warnfile"
+  print_danger() { printf 'x' >> "$warnfile"; }
+
+  local tokenfile="$BATS_TEST_TMPDIR/token"
+  ( _state_lock "$f" > "$tokenfile" ) &
+  local bgpid=$!
+  command sleep 1   # real sleep: _VU_LOCK_POLL=0.02 (setup) means 10 failures land well inside this
+  kill -0 "$bgpid" 2>/dev/null   # still running -- never gave up, never proceeded unlocked
+  [ -s "$warnfile" ]             # the diagnostic fired at least once
+  [ ! -s "$tokenfile" ]          # and, critically, never returned a bogus "success"
+
+  kill -9 "$bgpid" 2>/dev/null
+  wait "$bgpid" 2>/dev/null || true
+}
+
 # ------------------------------------------- breaker expiry doesn't spin
 
 @test "a persistently-failing breaker-expiry persist still sleeps between retries" {

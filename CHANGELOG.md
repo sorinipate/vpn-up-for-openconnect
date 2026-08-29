@@ -83,13 +83,30 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
     exit code) is read as genuinely absent rather than as a backend error,
     and Linux Secret Service — whose `secret-tool` cannot tell "not found"
     from "backend error" apart by exit code alone — is read via whether the
-    Secret Service is even reachable on the session bus, never guessing
-    "absent" when that can't be confirmed. The same distinction now also
+    lookup itself printed an error message to stderr (verified directly
+    against libsecret's own source: only its error branch prints one; a
+    genuinely absent secret returns the same exit code silently), which
+    distinguishes the two without depending on whether the Secret Service is
+    merely *reachable* — a reachable service can still fail one specific
+    lookup for an unrelated reason. Each backend's check is now a single
+    round-trip that both learns the status and returns the value on
+    success, rather than a check followed by a separate fetch — the
+    previous two-call shape left a real gap where the backend could fail
+    between them, and for the openssl vault backend meant decrypting (and
+    prompting for the passphrase) twice. The same distinction now also
     carries through to the actual credential fetch after admission (not
     just preflight's existence check), since admission may have waited and
     the backend can fail in the interim — without blocking a fallback that
     doesn't need the backend at all (a legacy plaintext password already on
-    the profile, or a client certificate).
+    the profile, or a client certificate). A failed migration write no
+    longer scrubs the legacy plaintext password it was meant to replace —
+    only a confirmed-successful write does — so a backend hiccup during
+    migration can no longer delete the only surviving copy of the
+    credential. The Keychain backend no longer deletes an existing item
+    before writing its replacement (`security add-generic-password -U`
+    already updates in place); the pre-delete gained nothing and meant a
+    failed write left nothing behind where a valid item had stood a moment
+    earlier.
   - Certificate preflight distinguishes "could not reach the gateway to
     obtain a certificate at all" (transient, `VPN_RC_NO_NETWORK`) from "got
     one, and it failed trust or pin validation" (`VPN_RC_CONFIG`) — a
@@ -110,7 +127,13 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
     The lock that guards every state transaction has the same guarantee for
     its own ownership metadata: acquiring the lock can no longer be
     reported as successful without the owner file that later proves it —
-    otherwise unlockable, permanently wedging that profile's admission.
+    otherwise unlockable, permanently wedging that profile's admission. An
+    infrastructure failure creating the state directory itself (permission
+    denied, no space) used to be indistinguishable from ordinary lock
+    contention — both simply polled forever with no diagnostic; it now
+    retries every iteration (so a transient condition can still self-heal)
+    and warns once the condition has persisted long enough to rule out an
+    ordinary race, without changing the lock's "never gives up" guarantee.
 
 ### Fixed
 

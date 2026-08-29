@@ -335,3 +335,99 @@ EOF
   run run_admitted_connection "Work VPN" SERVICE
   [ "$status" -eq "$VPN_RC_SECRETS_UNAVAILABLE" ]
 }
+
+# --- single backend round-trip, not check-then-fetch (review round 5, BLOCKER #2) ---
+#
+# A separate existence check followed by a separate fetch left a real gap
+# where the backend could fail in between (the check said present; the fetch
+# moments later saw a transient error with no way to distinguish "was never
+# there" from "just broke"), and for the openssl vault backend the same
+# shape was worse than a race: it decrypted the vault twice, prompting for
+# the passphrase twice in an interactive session. secrets_get (the generic
+# fallback _secret_check dispatches to when no real backend is sourced, as in
+# these tests) must now be called exactly once per logical fetch.
+
+@test "migrate_or_fetch_password reads a stored password with exactly one backend call" {
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_PASSWD=""
+  local calls="$BATS_TEST_TMPDIR/secrets_get-calls"
+  : > "$calls"
+  secrets_get() { echo "call" >> "$calls"; echo "s3cret"; }
+  run migrate_or_fetch_password SERVICE
+  [ "$status" -eq 0 ]
+  [ "$(wc -l < "$calls")" -eq 1 ]
+}
+
+@test "the actual TOTP seed fetch reads the backend with a single call per field, not check-then-fetch" {
+  _write_profile; _common_fields
+  VPN_PASSWD=""
+  VPN_TOKEN_MODE=totp
+  export VPN_UP_NO_TOTP_WAIT=1
+  BACKGROUND=TRUE
+  local calls="$BATS_TEST_TMPDIR/secrets_get-calls"
+  : > "$calls"
+  secrets_get() {
+    echo "call:$2" >> "$calls"
+    case "$2" in
+      password) echo "s3cret" ;;
+      token_secret) echo "JBSWY3DPEHPK3PXP" ;;
+    esac
+  }
+  oathtool() { echo "000000"; }
+  sudo() { return 0; }
+  run run_admitted_connection "Work VPN" SERVICE
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^call:password$' "$calls")" -eq 1 ]
+  [ "$(grep -c '^call:token_secret$' "$calls")" -eq 1 ]
+}
+
+# --- connection_preflight must never leak the value it only checked for existence ---
+
+@test "connection_preflight's password existence check never prints the password" {
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_PASSWD=""
+  secrets_get() { echo "s3cret-should-not-leak"; }
+  run connection_preflight SERVICE
+  if grep -qF "s3cret-should-not-leak" <<<"$output"; then false; fi
+}
+
+@test "connection_preflight's TOTP-seed existence check never prints the seed" {
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_PASSWD="s3cret"
+  VPN_TOKEN_MODE=totp
+  require_oathtool() { return 0; }
+  secrets_get() { echo "JBSWY3DPEHPK3PXP-should-not-leak"; }
+  run connection_preflight SERVICE
+  if grep -qF "JBSWY3DPEHPK3PXP-should-not-leak" <<<"$output"; then false; fi
+}
+
+# --- a failed migration write must not destroy the only surviving copy (review round 5, finding #3) ---
+
+@test "a failed migration write does not scrub the legacy plaintext password" {
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_PASSWD="legacy-plaintext"
+  secrets_get() { return 1; }   # nothing stored yet -- migration will be attempted
+  secrets_set() { return 1; }  # the migration write itself fails
+  local scrubbed="$BATS_TEST_TMPDIR/scrub-called"
+  scrub_profile_password() { touch "$scrubbed"; }
+  run migrate_or_fetch_password SERVICE
+  [ "$status" -eq 0 ]                 # the in-memory legacy password still lets this run proceed
+  [ ! -e "$scrubbed" ]                # but the only durable copy must not be deleted
+}
+
+@test "a successful migration write does scrub the legacy plaintext password" {
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_PASSWD="legacy-plaintext"
+  secrets_get() { return 1; }
+  secrets_set() { return 0; }   # the migration write succeeds
+  local scrubbed="$BATS_TEST_TMPDIR/scrub-called"
+  scrub_profile_password() { touch "$scrubbed"; }
+  run migrate_or_fetch_password SERVICE
+  [ "$status" -eq 0 ]
+  [ -e "$scrubbed" ]
+}

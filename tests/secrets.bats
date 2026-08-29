@@ -111,37 +111,62 @@ setup() {
   [ "$rc" -eq 2 ]
 }
 
-@test "_secret_check_secrettool: a successful lookup is present" {
-  secret-tool() { return 0; }
-  if _secret_check_secrettool "k"; then rc=0; else rc=$?; fi
-  [ "$rc" -eq 0 ]
+@test "_secret_check_keychain: prints the fetched value on success, one round-trip" {
+  # Round 5 (BLOCKER #2): a separate check-then-fetch left a gap where the
+  # backend could fail between the two calls. This asserts security is
+  # invoked exactly once and the value is available from that single call.
+  local calls="$BATS_TEST_TMPDIR/security-calls"
+  : > "$calls"
+  security() { echo "call" >> "$calls"; echo "the-secret-value"; return 0; }
+  local out; out="$(_secret_check_keychain "k")"
+  [ "$out" = "the-secret-value" ]
+  [ "$(wc -l < "$calls")" -eq 1 ]
 }
 
-@test "_secret_check_secrettool: a failed lookup with the Secret Service reachable is absent" {
-  # secret-tool's own exit status can't distinguish "not found" from a
-  # backend error (both return 1) -- so a failed lookup is only read as
-  # ABSENT once the Secret Service is confirmed reachable on the session bus.
-  secret-tool() { return 1; }
-  command() { [ "$1" = -v ] && [ "$2" = dbus-send ] && return 0 || builtin command "$@"; }
-  dbus-send() { echo "boolean true"; return 0; }
+@test "_secret_check_secrettool: a successful lookup is present and prints the value" {
+  secret-tool() { echo "the-secret-value"; return 0; }
+  local out; out="$(_secret_check_secrettool "k")"
+  [ "$out" = "the-secret-value" ]
+}
+
+# --- tri-state via stderr, not D-Bus reachability (review round 5) ---
+#
+# An earlier version probed whether the Secret Service was reachable on the
+# session bus (NameHasOwner) and treated a failed lookup against a reachable
+# service as ABSENT. Round 5 (BLOCKER #1) correctly identified that as
+# unsound: a live, reachable Secret Service can still fail one specific
+# lookup for a reason that has nothing to do with "not found" (a locked
+# collection, a malformed request, any other D-Bus error), and reachability
+# proves none of that. The actual structural signal, verified directly
+# against libsecret's own tool/secret-tool.c (secret_tool_action_lookup): the
+# GError branch prints "<prgname>: <message>" to stderr before returning 1;
+# the value==NULL ("not found") branch returns 1 with nothing on stderr.
+
+@test "_secret_check_secrettool: a failed lookup with no stderr output is absent" {
+  secret-tool() { return 1; }   # value==NULL branch: silent, per libsecret source
   if _secret_check_secrettool "k"; then rc=0; else rc=$?; fi
   [ "$rc" -eq 1 ]
 }
 
-@test "_secret_check_secrettool: a failed lookup with the Secret Service NOT reachable is backend error" {
-  secret-tool() { return 1; }
-  command() { [ "$1" = -v ] && [ "$2" = dbus-send ] && return 0 || builtin command "$@"; }
-  dbus-send() { echo "boolean false"; return 0; }
+@test "_secret_check_secrettool: a failed lookup that prints an error message is a backend error" {
+  # The GError branch: secret-tool prints "<prgname>: <message>" to stderr.
+  # A live, reachable Secret Service can still produce this (a locked
+  # collection, a malformed request, ...) -- this is the exact case the
+  # withdrawn NameHasOwner probe got wrong by reading it as ABSENT.
+  secret-tool() { echo "secret-tool: Cannot autolaunch D-Bus without X11" >&2; return 1; }
   if _secret_check_secrettool "k"; then rc=0; else rc=$?; fi
   [ "$rc" -eq 2 ]
 }
 
-@test "_secret_check_secrettool: a failed lookup with no dbus-send available is backend error (safe default)" {
-  # Never guess ABSENT when the health probe itself can't run.
-  secret-tool() { return 1; }
-  command() { [ "$1" = -v ] && [ "$2" = dbus-send ] && return 1 || builtin command "$@"; }
-  if _secret_check_secrettool "k"; then rc=0; else rc=$?; fi
-  [ "$rc" -eq 2 ]
+@test "_secret_check_secrettool: the fetched value never leaks into the error-detection path" {
+  # A successful lookup's value must never be mistaken for stderr output
+  # (which would misclassify a present secret as a backend error), and vice
+  # versa -- the two streams are captured separately from one invocation.
+  secret-tool() { echo "the-secret-value"; return 0; }
+  local out; out="$(_secret_check_secrettool "k")"
+  [ "$out" = "the-secret-value" ]
+  if _secret_check_secrettool "k" >/dev/null; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 0 ]
 }
 
 @test "secrets_backend honors platform tools and ENCRYPTION_ENABLED" {

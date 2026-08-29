@@ -252,6 +252,21 @@ _VPN_CONNECT_MODE=""
 # sourced (secrets_backend undefined) -- true of several existing unit tests
 # that stub secrets_get() directly without a real backend behind it -- since
 # that fallback is the openssl/file-backend logic anyway.
+#
+# On success (0), prints the fetched value to stdout: this is a single
+# backend round-trip that both checks AND fetches, deliberately. Review
+# round 5 (BLOCKER #2) found that the previous two-call shape -- this
+# function to check, then a SEPARATE secrets_get() to actually read the value
+# -- left a real gap between them where the backend could fail in between
+# (preflight said present; the real fetch moments/an admission-wait later saw
+# a transient error and had no way to distinguish that from "was never
+# there"), and for the openssl vault backend the same shape was worse than a
+# race: it decrypted the vault twice, prompting for the passphrase twice in
+# an interactive session. Every call site now uses the value this prints
+# instead of calling secrets_get() again. Preflight call sites that only need
+# existence (invariant 8: never touch the value itself before admission)
+# MUST redirect this to /dev/null rather than leave it on stdout, or the
+# secret leaks onto the terminal/log the moment this function is called bare.
 _secret_check() {
   local profile="$1" field="$2" b="" k val
   command -v secrets_backend >/dev/null 2>&1 && b="$(secrets_backend)"
@@ -266,7 +281,7 @@ _secret_check() {
       ;;
     *)
       if val="$(secrets_get "$profile" "$field")"; then
-        [ -n "$val" ] && return 0
+        if [ -n "$val" ]; then printf '%s' "$val"; return 0; fi
         return 1
       fi
       return 2
@@ -316,7 +331,9 @@ connection_preflight() {
   # password itself into anything that gets submitted here.
   if [ "${VPN_AUTH_MODE:-password}" != sso ] && [ -z "${VPN_CLIENT_CERT:-}" ] \
       && [ "$mode" = SERVICE ] && [ -z "$VPN_PASSWD" ]; then
-    _secret_check "${VPN_NAME}" password
+    # >/dev/null: existence only, per invariant 8 -- _secret_check's value
+    # output must never reach here, only its status.
+    _secret_check "${VPN_NAME}" password >/dev/null
     case $? in
       0) : ;;
       1)
@@ -335,7 +352,8 @@ connection_preflight() {
   if [ "${VPN_AUTH_MODE:-password}" != sso ] && [ "$VPN_TOKEN_MODE" = totp ]; then
     require_oathtool || return "$VPN_RC_CONFIG"
     if [ "$mode" = SERVICE ]; then
-      _secret_check "${VPN_NAME}" token_secret
+      # >/dev/null: existence only, same as the password check above.
+      _secret_check "${VPN_NAME}" token_secret >/dev/null
       case $? in
         0) : ;;
         1)
@@ -516,9 +534,14 @@ run_admitted_connection() {
 
   if [ "$rc" = 0 ] && [ "${VPN_AUTH_MODE:-password}" != sso ] && [ "$VPN_TOKEN_MODE" = totp ]; then
     local seed=""
-    _secret_check "${VPN_NAME}" token_secret
+    # One fetch, not check-then-fetch: _secret_check's stdout IS the value on
+    # success, so this is the single backend round-trip that both learns the
+    # status and (if present) retrieves the seed -- see _secret_check's own
+    # comment (above, this file) for why the previous two-call shape was a
+    # real gap, not just a style preference.
+    seed="$(_secret_check "${VPN_NAME}" token_secret)"
     case $? in
-      0) seed="$(secrets_get "${VPN_NAME}" token_secret)" ;;
+      0) : ;;
       2)
         if [ "$mode" = SERVICE ]; then
           print_danger "Could not read the secrets store to fetch the TOTP secret for '%s'; will retry.\n" "${VPN_NAME}"
