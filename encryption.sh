@@ -107,6 +107,20 @@ _secret_check_secrettool() {
   local k="$1" out err rc errfile
   ensure_secret_paths
   errfile="${SECRETS_DIR}/.secrettool-err.$$"
+  # Prove the capture file is actually writable BEFORE trusting anything
+  # downstream of it. If SECRETS_DIR is missing/unwritable (or blocked by a
+  # plain file), the `2>"$errfile"` redirection below fails on its own,
+  # before secret-tool ever runs -- reproduced directly: the command
+  # substitution then captures nothing, $errfile is never created, and
+  # reading it back as empty looked identical to "no error message", which
+  # this function reads as ABSENT. That is exactly backwards: a local I/O
+  # failure is a backend/environment error, and must never be classified as
+  # "the secret does not exist" -- a genuinely unrelated, transient local
+  # condition would otherwise permanently stop a service the same way a
+  # truly missing secret does.
+  if ! : > "$errfile" 2>/dev/null; then
+    return 2
+  fi
   out="$(secret-tool lookup app "${SECRETS_NAMESPACE}" account "$k" 2>"$errfile")"
   rc=$?
   err="$(cat "$errfile" 2>/dev/null)"

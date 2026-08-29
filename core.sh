@@ -229,6 +229,13 @@ write_connection_state() {
 # once, in preflight, rather than repeated.
 _VPN_CONNECT_MODE=""
 
+# Set by _prepare_pkcs11_pin (below) to a transient PIN-source file's path,
+# shared by run_openconnect (prompt mode) and phase_one_authenticate
+# (twophase.sh, helper mode) so both dispatch paths use the one fetch
+# run_admitted_connection makes, rather than each fetching (or, previously,
+# one of them never fetching at all) independently.
+_VPN_PIN_FILE=""
+
 # Distinguishes "this key is not stored" from "the backend itself could not
 # be read" (e.g. the openssl vault failed to decrypt, or a Keychain/Secret
 # Service call errored) -- a bare `[ -z "$(secrets_get ...)" ]` throws that
@@ -542,15 +549,27 @@ run_admitted_connection() {
     seed="$(_secret_check "${VPN_NAME}" token_secret)"
     case $? in
       0) : ;;
+      1)
+        # Genuinely absent. Preflight is only a snapshot (invariant 8's own
+        # wording): admit_attempt may have waited an arbitrary amount of
+        # time, and the seed can be deleted (or the profile's token mode
+        # changed) in that window. Assuming "SERVICE already refused this in
+        # connection_preflight" and falling through to the interactive
+        # prompt below was wrong -- reproduced directly: a SERVICE-mode
+        # process with no tty actually invoked `read -r -s -p ...` here.
+        # INTERACTIVE has no preceding preflight refusal to rely on either
+        # way, so it still falls through to the prompt, unchanged.
+        if [ "$mode" = SERVICE ]; then
+          print_danger "No TOTP secret stored for '%s' and service mode cannot prompt. Store it first: %s set-secret '%s' token_secret\n" "${VPN_NAME}" "${DISPLAY_NAME}" "${VPN_NAME}"
+          rc="$VPN_RC_CONFIG"
+        fi
+        ;;
       2)
         if [ "$mode" = SERVICE ]; then
           print_danger "Could not read the secrets store to fetch the TOTP secret for '%s'; will retry.\n" "${VPN_NAME}"
           rc="$VPN_RC_SECRETS_UNAVAILABLE"
         fi
         ;;
-      *) : ;;  # genuinely absent -- mode=SERVICE already refused this in
-                # connection_preflight; an interactive caller falls through
-                # to the prompt below, same as before this change.
     esac
     if [ "$rc" = 0 ] && [ -z "$seed" ]; then
       # mode=SERVICE already refused this in connection_preflight.
@@ -584,6 +603,12 @@ run_admitted_connection() {
     fi
   fi
 
+  _VPN_PIN_FILE=""
+  if [ "$rc" = 0 ]; then
+    _prepare_pkcs11_pin "$mode"
+    rc=$?
+  fi
+
   if [ "$rc" = 0 ]; then
     if [ "$_VPN_CONNECT_MODE" = helper ]; then
       connect_via_helper
@@ -592,6 +617,15 @@ run_admitted_connection() {
     fi
     rc=$?
   fi
+
+  # Single cleanup point for both dispatch modes: openconnect (prompt mode,
+  # directly) or phase_one_authenticate (helper mode, unprivileged) has
+  # already read the PIN by the time either returns, regardless of outcome.
+  if [ -n "${_VPN_PIN_FILE:-}" ] && [ -e "$_VPN_PIN_FILE" ]; then
+    if command -v shred >/dev/null 2>&1; then shred -u "$_VPN_PIN_FILE" 2>/dev/null || rm -f "$_VPN_PIN_FILE"
+    else rm -f "$_VPN_PIN_FILE"; fi
+  fi
+  unset _VPN_PIN_FILE
 
   release_attempt_owner "$name"
   return "$rc"
@@ -756,6 +790,59 @@ _append_pkcs11_pin_source() {
   printf '%s%spin-source=file:%s' "$uri" "$sep" "$pinfile"
 }
 
+# Fetches a PKCS#11 PIN (the 'key_password' secret) for VPN_CLIENT_CERT when
+# it is a pkcs11: URI, and stages it in a transient 0600 file for
+# _append_pkcs11_pin_source above. Sets _VPN_PIN_FILE to that file's path
+# when a PIN was actually found; leaves it empty for a non-pkcs11
+# certificate, a pkcs11 certificate with no stored PIN, or a backend error
+# under INTERACTIVE mode -- all of which fall back to openconnect's own
+# interactive PIN prompt, exactly as before this function existed.
+#
+# Centralizes what used to be two independent, inconsistent things: a raw
+# secrets_get in run_openconnect (prompt mode) with no tri-state handling,
+# and NO equivalent at all in the helper path's phase_one_authenticate
+# (twophase.sh) -- a service using a PKCS#11 certificate through helper mode
+# (the preferred, documented path) could never actually supply a stored PIN
+# at all, contradicting the documented unattended-service PKCS#11 feature.
+# One phase-4 fetch, shared by both dispatch modes, fixes both gaps at once.
+_prepare_pkcs11_pin() {
+  local mode="$1"
+  _VPN_PIN_FILE=""
+  case "${VPN_CLIENT_CERT:-}" in
+    pkcs11:*) ;;
+    *) return 0 ;;
+  esac
+  local pin=""
+  pin="$(_secret_check "${VPN_NAME}" key_password)"
+  case $? in
+    0)
+      _VPN_PIN_FILE="${DATA_DIR}/pids/.${PROGRAM_NAME}.$(profile_slug "$VPN_NAME").pin"
+      ( umask 077; printf '%s' "$pin" > "$_VPN_PIN_FILE" )
+      chmod 600 "$_VPN_PIN_FILE" 2>/dev/null || true
+      ;;
+    1)
+      # No PIN stored. Fine for an interactive caller -- openconnect prompts
+      # on the TTY, same as always. A service has no TTY to answer that
+      # prompt, so this is a config problem, exactly like a missing password
+      # or TOTP seed.
+      if [ "$mode" = SERVICE ]; then
+        print_danger "Profile '%s' uses a PKCS#11 client certificate; a service can't enter the PIN. Store it first: %s set-secret '%s' key_password\n" "${VPN_NAME}" "${DISPLAY_NAME}" "${VPN_NAME}"
+        unset pin
+        return "$VPN_RC_CONFIG"
+      fi
+      ;;
+    2)
+      if [ "$mode" = SERVICE ]; then
+        print_danger "Could not read the secrets store to fetch the PKCS#11 PIN for '%s'; will retry.\n" "${VPN_NAME}"
+        unset pin
+        return "$VPN_RC_SECRETS_UNAVAILABLE"
+      fi
+      ;;
+  esac
+  unset pin
+  return 0
+}
+
 _openconnect_pid_for_pid_file() {
   local pidfile="$1"
   { ps axww -o pid= -o command= 2>/dev/null || ps -eo pid= -o args= 2>/dev/null; } \
@@ -857,23 +944,16 @@ run_openconnect() {
   # Client-certificate auth (X.509). The cert/key may be a file path or a PKCS#11
   # URI (smartcard / YubiKey PIV) — an identifier, not a secret, so it is safe on
   # argv. A key passphrase / PKCS#11 PIN is a secret and must NOT hit argv: for a
-  # pkcs11: URI with a stored 'key_password' we feed the PIN via a transient 0600
-  # file (pin-source); a file key's passphrase is prompted interactively.
-  local _pin_file="" _cc="${VPN_CLIENT_CERT:-}" _ck="${VPN_CLIENT_KEY:-}"
+  # pkcs11: URI with a stored 'key_password', run_admitted_connection has already
+  # fetched it (once, before dispatch, shared with the helper path -- see
+  # _prepare_pkcs11_pin) and staged it in _VPN_PIN_FILE; a file key's passphrase
+  # is prompted interactively, unchanged.
+  local _cc="${VPN_CLIENT_CERT:-}" _ck="${VPN_CLIENT_KEY:-}"
   if [ -n "$_cc" ]; then
-    case "$_cc" in
-      pkcs11:*)
-        local _pin; _pin="$(secrets_get "${VPN_NAME}" key_password 2>/dev/null)"
-        if [ -n "$_pin" ]; then
-          _pin_file="${DATA_DIR}/pids/.${PROGRAM_NAME}.$(profile_slug "$VPN_NAME").pin"
-          ( umask 077; printf '%s' "$_pin" > "$_pin_file" )
-          chmod 600 "$_pin_file" 2>/dev/null || true
-          _cc="$(_append_pkcs11_pin_source "$_cc" "$_pin_file")"
-          [ -n "$_ck" ] && _ck="$(_append_pkcs11_pin_source "$_ck" "$_pin_file")"
-          unset _pin
-        fi
-        ;;
-    esac
+    if [ -n "${_VPN_PIN_FILE:-}" ]; then
+      _cc="$(_append_pkcs11_pin_source "$_cc" "$_VPN_PIN_FILE")"
+      [ -n "$_ck" ] && _ck="$(_append_pkcs11_pin_source "$_ck" "$_VPN_PIN_FILE")"
+    fi
     args+=(--certificate="$_cc")
     [ -n "$_ck" ] && args+=(--sslkey="$_ck")
   fi
@@ -946,11 +1026,9 @@ run_openconnect() {
     run_hooks disconnected "${VPN_NAME:-}" "${VPN_HOST:-}"
   fi
 
-  # Shred the transient PKCS#11 PIN file (openconnect has read it during auth).
-  if [ -n "${_pin_file:-}" ] && [ -e "$_pin_file" ]; then
-    if command -v shred >/dev/null 2>&1; then shred -u "$_pin_file" 2>/dev/null || rm -f "$_pin_file"
-    else rm -f "$_pin_file"; fi
-  fi
+  # The transient PKCS#11 PIN file (if any) is shredded once, centrally, by
+  # run_admitted_connection's epilogue -- shared with the helper dispatch
+  # path, which reads the same file from phase_one_authenticate (twophase.sh).
 
   # Drop the password and any generated 2FA code from shell memory as soon as
   # they have been piped.

@@ -157,7 +157,18 @@ _state_lock() {
     if ! ( umask 077; mkdir -p "$(dirname "$f")" ) 2>/dev/null && [ ! -d "$(dirname "$f")" ]; then
       dir_fail_streak=$((dir_fail_streak + 1))
       if [ "$dir_warned" = 0 ] && [ "$dir_fail_streak" -ge 10 ]; then
-        print_danger "Could not create or write the VPN state directory (%s); authentication attempts cannot be tracked until this is fixed (check permissions/disk space). Still retrying.\n" "$(dirname "$f")"
+        # >&2 is not optional here: _state_lock's entire stdout IS its return
+        # value, read by every caller through command substitution
+        # (`token="$(_state_lock "$f")"`). print_danger's own _print_color
+        # writes to stdout (fd 1) like every other print_* helper in this
+        # codebase -- correct for them, since nothing else here treats a
+        # function's stdout as a value channel. Left unredirected, this line
+        # prepended its own text to the token itself: reproduced directly,
+        # the caller received "<warning>\n<real token>" as "the token",
+        # which _state_unlock could never match against the lock's actual
+        # metadata -- so the one call meant to make this condition
+        # diagnosable also silently wedged the lock it was warning about.
+        print_danger "Could not create or write the VPN state directory (%s); authentication attempts cannot be tracked until this is fixed (check permissions/disk space). Still retrying.\n" "$(dirname "$f")" >&2
         dir_warned=1
       fi
       sleep "$_VU_LOCK_POLL" 2>/dev/null || sleep 1

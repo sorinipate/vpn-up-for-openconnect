@@ -169,6 +169,22 @@ setup() {
   [ "$rc" -eq 0 ]
 }
 
+@test "_secret_check_secrettool: an uncreatable local error-capture path is a backend error, never absent" {
+  # Review round 6, MEDIUM finding: SECRETS_DIR blocked by a plain file (or
+  # otherwise unwritable) makes the `2>"$errfile"` redirection itself fail,
+  # before secret-tool ever runs -- reproduced directly. The previous version
+  # then read the empty, never-created errfile as "no error message" and
+  # classified the result as ABSENT (1), when the actual cause was a local
+  # I/O failure that has nothing to do with whether the secret exists.
+  secret-tool() { echo "should never run"; return 1; }
+  ensure_secret_paths() { :; }
+  local blocker="$BATS_TEST_TMPDIR/blocker"
+  touch "$blocker"
+  SECRETS_DIR="$blocker"   # a plain file where the errfile's directory must go
+  if _secret_check_secrettool "k"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 2 ]
+}
+
 @test "secrets_backend honors platform tools and ENCRYPTION_ENABLED" {
   # no keyring tools, encryption on -> openssl vault
   uname() { echo Linux; }

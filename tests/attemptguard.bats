@@ -530,6 +530,46 @@ _sf() { attempt_state_file "$1"; }
   wait "$bgpid" 2>/dev/null || true
 }
 
+@test "_state_lock's directory-failure warning never corrupts the returned token" {
+  # Regression test, review round 6: the sibling test above stubs
+  # print_danger as a plain counter, which never writes anything to stdout
+  # and so could never have caught this. The REAL print_danger (_print_color,
+  # logging.sh) writes to stdout like every print_* helper in this codebase
+  # -- correct for them, since nothing else treats a function's stdout as a
+  # return channel, but _state_lock's entire stdout IS its return value, read
+  # by every caller through command substitution
+  # (`token="$(_state_lock "$f")"`). An earlier version of the previous
+  # round's directory-failure warning called print_danger unredirected
+  # inside _state_lock: reproduced directly, the caller received
+  # "<warning text>\n<real token>" as "the token", which _state_unlock could
+  # never match against the lock's actual on-disk metadata -- the one fix
+  # meant to make this condition diagnosable also silently wedged the very
+  # lock it was warning about. This stub deliberately mimics the real
+  # _print_color's stdout behavior, not fd 2.
+  local blocker="$BATS_TEST_TMPDIR/blocker2"
+  touch "$blocker"
+  local f="$blocker/sub/profile.state"
+  local lockdir="${f}.lock"
+  print_danger() { printf -- "$1" "${@:2}"; }   # matches the real _print_color: stdout, unredirected
+
+  local tokenfile="$BATS_TEST_TMPDIR/token2"
+  ( _state_lock "$f" > "$tokenfile" ) &
+  local bgpid=$!
+  command sleep 1   # per-iteration subshell overhead makes this well past
+                     # the 10-failure warning threshold in practice (measured
+                     # directly: the warning fires around 0.5s here, not at
+                     # the naive 10 * _VU_LOCK_POLL=0.02s=0.2s estimate)
+  rm -f "$blocker"; mkdir -p "$blocker"   # let directory creation start succeeding
+  wait "$bgpid"
+
+  local token; token="$(cat "$tokenfile")"
+  # The returned token must be exactly what's on disk -- not a warning's
+  # text prepended to it -- or _state_unlock below can never match it.
+  [ "$token" = "$(_state_field token "${lockdir}/owner")" ]
+  _state_unlock "$f" "$token"
+  [ ! -d "$lockdir" ]   # unlock actually removed it, proving the match succeeded
+}
+
 # ------------------------------------------- breaker expiry doesn't spin
 
 @test "a persistently-failing breaker-expiry persist still sleeps between retries" {

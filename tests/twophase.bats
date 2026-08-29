@@ -130,6 +130,48 @@ CONNECT_URL='https://vpn.example.com'"
   [ "$status" -ne 0 ]
 }
 
+# --- phase one: PKCS#11 PIN, shared with the prompt-mode path (round 6) ----
+#
+# An earlier version of phase_one_authenticate built --certificate directly
+# from VPN_CLIENT_CERT with no PIN handling at all, unlike run_openconnect's
+# prompt-mode path (core.sh), which already fed a stored PKCS#11 PIN via a
+# pin-source file. A service using a PKCS#11 certificate through helper mode
+# -- the preferred, documented path -- could never supply a stored PIN, so
+# it would be left waiting on an interactive PIN prompt with no tty to answer
+# it, contradicting the documented unattended-service PKCS#11 feature. The
+# fetch itself now happens once in run_admitted_connection
+# (_prepare_pkcs11_pin, core.sh) and is shared via _VPN_PIN_FILE; these tests
+# cover phase_one_authenticate's own half of that contract, matching how
+# clientcert.bats covers run_openconnect's half.
+
+@test "phase_one_authenticate attaches a pre-fetched PKCS#11 PIN via pin-source" {
+  VPN_USER="alice"; PROTOCOL="anyconnect"; VPN_HOST="p.example.com"
+  VPN_PASSWD="s3cret"; VPN_CLIENT_CERT="pkcs11:manufacturer=piv_II;id=%01"
+  local pin="918273"
+  _VPN_PIN_FILE="$BATS_TEST_TMPDIR/staged.pin"
+  ( umask 077; printf '%s' "$pin" > "$_VPN_PIN_FILE" )
+  local argv="$BATS_TEST_TMPDIR/argv"
+  openconnect() { printf '%s\n' "$@" > "$argv"; cat >/dev/null; echo "$AUTH_GOOD"; return 0; }
+
+  run phase_one_authenticate
+  [ "$status" -eq 0 ]
+  grep -qF -- "--certificate=pkcs11:manufacturer=piv_II;id=%01?pin-source=file:${_VPN_PIN_FILE}" "$argv"
+  if grep -qF -- "$pin" "$argv"; then false; fi   # never on argv, only referenced by path
+}
+
+@test "phase_one_authenticate omits pin-source when _VPN_PIN_FILE is unset" {
+  VPN_USER="alice"; PROTOCOL="anyconnect"; VPN_HOST="p.example.com"
+  VPN_PASSWD="s3cret"; VPN_CLIENT_CERT="pkcs11:manufacturer=piv_II;id=%01"
+  _VPN_PIN_FILE=""
+  local argv="$BATS_TEST_TMPDIR/argv"
+  openconnect() { printf '%s\n' "$@" > "$argv"; cat >/dev/null; echo "$AUTH_GOOD"; return 0; }
+
+  run phase_one_authenticate
+  [ "$status" -eq 0 ]
+  grep -qF -- "--certificate=pkcs11:manufacturer=piv_II;id=%01" "$argv"
+  if grep -qF -- "pin-source=file:" "$argv"; then false; fi
+}
+
 # --- extraArgs translation -------------------------------------------------
 
 @test "benign extraArgs translate into tunables, both spellings" {

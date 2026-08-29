@@ -1379,6 +1379,50 @@ a plausible thing for a future change to erode without noticing:
    and against a disposable test keychain), so the pre-delete gained nothing
    and meant a failed add left nothing behind where a valid item had stood a
    moment earlier.
+   **A genuinely absent TOTP seed at the actual fetch (not just preflight)
+   must refuse a service, never prompt it.** Preflight is only a snapshot;
+   admission may then wait an arbitrary amount of time, and the seed can be
+   deleted (or the profile's token mode changed) in that window. An earlier
+   version's phase-4 fetch assumed a `SERVICE`-mode refusal for a genuinely
+   absent seed had already happened in preflight and had no fallback branch
+   of its own for that case — reproduced directly: a `SERVICE`-mode process
+   with no controlling tty actually invoked the interactive `read -r -s -p`
+   meant only for an attended caller. The fetch now handles all three
+   tri-state outcomes explicitly at the point of use, not just the
+   backend-error one, matching preflight's own terminal/transient split
+   (`VPN_RC_CONFIG` for `SERVICE`, unchanged prompt fallback for
+   `INTERACTIVE`).
+   **The stored PKCS#11 PIN (`key_password`) is now fetched once, centrally,
+   and shared by both dispatch modes.** It previously had no relationship to
+   the tri-state secret work above at all: `run_openconnect` (prompt mode)
+   made its own raw `secrets_get` call with no distinction between "no PIN
+   stored" and "backend error," while the preferred, documented helper path
+   (`phase_one_authenticate`, two-phase OpenConnect) had no PIN handling
+   whatsoever — a service using a PKCS#11 certificate through helper mode
+   could never supply a stored PIN at all, silently contradicting the
+   documented unattended-service PKCS#11 feature, since OpenConnect's own
+   PKCS#11 handling requests an interactive PIN form when none is supplied.
+   A new phase-4 step (`_prepare_pkcs11_pin`, run once by
+   `run_admitted_connection` before dispatch, alongside the password/TOTP
+   fetches) uses the same tri-state primitive: absent under `SERVICE` is
+   `VPN_RC_CONFIG`; a backend error under `SERVICE` is
+   `VPN_RC_SECRETS_UNAVAILABLE`; either one under `INTERACTIVE`, or a
+   non-PKCS#11 certificate, leaves no transient file staged and falls back to
+   OpenConnect's own interactive PIN prompt, unchanged. The transient
+   pin-source file itself is created once and shredded once, in
+   `run_admitted_connection`'s own epilogue — a single cleanup point shared
+   by whichever dispatch mode actually used it, replacing what used to be
+   `run_openconnect`'s own, prompt-mode-only cleanup.
+   **A local I/O failure while classifying a Secret Service lookup must never
+   read as "absent."** `_secret_check_secrettool`'s stderr-capture scratch
+   file depends on `SECRETS_DIR` being writable; if it is not (missing,
+   unwritable, blocked by a plain file), the redirection that is supposed to
+   capture secret-tool's stderr fails on its own, before secret-tool ever
+   runs — reproduced directly. The previous version then read the
+   never-created, empty capture file the same as "secret-tool printed no
+   error," concluding ABSENT. The capture path is now proven writable before
+   any of that reasoning is trusted; if it isn't, the result is
+   `BACKEND_ERROR`, not a genuine-looking "not stored."
 
 **The state file** (`${DATA_DIR}/state/<slug>.<sha256>.state`, per profile,
 mode `0600`) is a new input that gates whether an unattended attempt is
@@ -1429,6 +1473,20 @@ to give up), and once it has failed persistently enough to rule out an
 ordinary race, a single warning is emitted naming the path — the retry loop
 itself is unchanged: a service keeps polling exactly as it already tolerates
 for ordinary contention, and this function still never proceeds unlocked.
+**That warning must be written to stderr, never stdout, and an earlier
+version of it got this backwards.** `_state_lock`'s entire stdout stream IS
+its return value — every caller reads it through command substitution
+(`token="$(_state_lock "$f")"`) — while `print_danger` (like every other
+`print_*` helper in this codebase) writes to stdout, correctly for the
+callers that treat it as ordinary program output. Calling it unredirected
+from inside `_state_lock` broke that assumption for the one function whose
+stdout is not ordinary output at all: reproduced directly, the caller
+received `"<warning text>\n<real token>"` as "the token," which
+`_state_unlock` could never match against the lock's actual on-disk
+metadata — the fix meant to make this condition diagnosable instead silently
+wedged the very lock it was warning about, with the warning itself invisible
+(swallowed into the corrupted token rather than shown to anyone). The call is
+now explicitly redirected to stderr.
 
 **Exit-status semantics changed to carry this.** Under `VPN_UP_SERVICE`,
 `vpn-up`'s exit status is now a supervisor instruction, not a Unix

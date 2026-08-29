@@ -320,6 +320,53 @@ EOF
   [ "$status" -eq 0 ]
 }
 
+@test "a genuinely absent TOTP seed at the actual FETCH refuses in SERVICE mode, never prompts" {
+  # Review round 6, HIGH finding: preflight is only a snapshot (invariant 8's
+  # own wording) -- admit_attempt may then wait an arbitrary amount of time,
+  # and the seed can be deleted (or the profile's token mode changed) in that
+  # window. An earlier version's phase-4 TOTP fetch assumed "SERVICE already
+  # refused this in connection_preflight" for a genuinely-absent result and
+  # fell through to the interactive prompt below with no mode guard at all.
+  # Reproduced directly (background + bounded kill, since a real
+  # `read -r -s -p` under bats' own stdin genuinely blocks rather than
+  # hitting EOF): a SERVICE-mode process with no tty actually invoked `read`.
+  # This must never happen for SERVICE; only INTERACTIVE may fall through to
+  # the prompt.
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_TOKEN_MODE=totp
+  secrets_get() {
+    case "$2" in
+      password) echo "s3cret" ;;
+      token_secret) echo ""; return 0 ;;   # genuinely absent: read succeeded, field just empty
+    esac
+  }
+  local readcalled="$BATS_TEST_TMPDIR/read-called" outfile="$BATS_TEST_TMPDIR/out" statusfile="$BATS_TEST_TMPDIR/status"
+  (
+    read() { touch "$readcalled"; builtin read "$@" < /dev/null; }
+    # if/else, not a bare call -- bats runs test bodies (and everything a
+    # backgrounded subshell of one inherits) under `set -e`; a bare
+    # non-zero-returning call here would abort this subshell before the
+    # following line ever ran, silently losing the status this test exists
+    # to check (this exact idiom mismatch has bitten this test suite before).
+    if run_admitted_connection "Work VPN" SERVICE; then rc=0; else rc=$?; fi
+    echo "$rc" > "$statusfile"
+  ) > "$outfile" 2>&1 &
+  local bgpid=$!
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "$bgpid" 2>/dev/null || break
+    command sleep 0.5
+  done
+  if kill -0 "$bgpid" 2>/dev/null; then
+    kill -9 "$bgpid" 2>/dev/null   # never expected: proves this test's own guard failed, not the code under test
+  fi
+  wait "$bgpid" 2>/dev/null || true
+
+  [ ! -e "$readcalled" ]                       # the actual regression: SERVICE must never call read here
+  [ "$(cat "$statusfile" 2>/dev/null)" = "$VPN_RC_CONFIG" ]
+}
+
 @test "a secrets-backend error at the actual TOTP seed FETCH (post-admission) is SECRETS_UNAVAILABLE, not CONFIG" {
   _write_profile
   load_profile_fields "Work VPN"

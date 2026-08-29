@@ -134,6 +134,25 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
     retries every iteration (so a transient condition can still self-heal)
     and warns once the condition has persisted long enough to rule out an
     ordinary race, without changing the lock's "never gives up" guarantee.
+    That warning is now correctly written to stderr; writing it unredirected
+    corrupted the very token `_state_lock`'s caller reads back through
+    command substitution, silently wedging the lock the warning was meant to
+    explain.
+  - A genuinely absent TOTP seed at the actual fetch (not just preflight) now
+    refuses a service outright instead of falling through to an interactive
+    prompt with no controlling tty — preflight is only a snapshot, and the
+    seed can be deleted during an admission wait.
+  - A stored PKCS#11 PIN (`key_password`) is now fetched once, centrally, and
+    shared by both the prompt-mode and (previously unsupported) helper-mode
+    dispatch paths, using the same present/absent/backend-error distinction
+    as the password and TOTP seed. The preferred helper path had no PIN
+    handling at all before this, so a service using a PKCS#11 certificate
+    through helper mode could never actually supply a stored PIN, silently
+    contradicting the documented unattended-service PKCS#11 feature.
+  - A local I/O failure while classifying a Secret Service lookup (an
+    unwritable state/secrets directory) no longer reads as "secret not
+    stored" — it's reported as a backend error, like any other environment
+    problem that has nothing to do with whether the secret actually exists.
 
 ### Fixed
 

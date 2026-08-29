@@ -282,9 +282,21 @@ phase_one_authenticate() {
 
   # Client certificate / PKCS#11: used HERE, with the user's own access to the
   # token. Neither the path nor the PIN ever crosses the privilege boundary.
+  # A stored PKCS#11 PIN (key_password) was already fetched once by
+  # run_admitted_connection (core.sh, _prepare_pkcs11_pin) and staged in
+  # _VPN_PIN_FILE, shared with run_openconnect's prompt-mode path -- an
+  # earlier version of this function had no equivalent at all, so a service
+  # using a PKCS#11 certificate through helper mode (the preferred,
+  # documented path) could never supply a stored PIN and would be left
+  # waiting on a PIN prompt with no tty to answer it.
   if [ -n "${VPN_CLIENT_CERT:-}" ]; then
-    args+=("--certificate=${VPN_CLIENT_CERT}")
-    [ -n "${VPN_CLIENT_KEY:-}" ] && args+=("--sslkey=${VPN_CLIENT_KEY}")
+    local _cc="${VPN_CLIENT_CERT}" _ck="${VPN_CLIENT_KEY:-}"
+    if [ -n "${_VPN_PIN_FILE:-}" ]; then
+      _cc="$(_append_pkcs11_pin_source "$_cc" "$_VPN_PIN_FILE")"
+      [ -n "$_ck" ] && _ck="$(_append_pkcs11_pin_source "$_ck" "$_VPN_PIN_FILE")"
+    fi
+    args+=("--certificate=${_cc}")
+    [ -n "$_ck" ] && args+=("--sslkey=${_ck}")
   fi
 
   [ "${VPN_TOKEN_MODE:-}" = totp ] && args+=(--token-mode=totp)

@@ -80,11 +80,18 @@ XML
 
 # --- the security-critical path: PKCS#11 PIN via pin-source file, NEVER on argv ---
 
-@test "run_openconnect feeds a PKCS#11 PIN via a 0600 pin-source file and never on argv" {
+@test "run_openconnect feeds a pre-fetched PKCS#11 PIN via a 0600 pin-source file and never on argv" {
+  # run_openconnect no longer fetches key_password itself -- that fetch is
+  # now centralized in run_admitted_connection's _prepare_pkcs11_pin (review
+  # round 6, finding #3), shared with the helper dispatch path (see
+  # twophase.bats). This test covers run_openconnect's own half of the
+  # contract in isolation: given _VPN_PIN_FILE already staged, it must
+  # reference that file via pin-source and never put the PIN itself on argv.
   _write_profiles
   local argv="$BATS_TEST_TMPDIR/argv"
   local PIN="918273"
-  secrets_get() { [ "$2" = key_password ] && echo "$PIN"; }   # stored PKCS#11 PIN
+  _VPN_PIN_FILE="$BATS_TEST_TMPDIR/staged.pin"
+  ( umask 077; printf '%s' "$PIN" > "$_VPN_PIN_FILE" )
   sudo() {
     if [ "$1" = openconnect ]; then
       shift; printf '%s\n' "$@" > "$argv"
@@ -116,14 +123,12 @@ XML
   # the PIN actually lived in a 0600 file (read back inside the stub)
   [ "$(cat "$BATS_TEST_TMPDIR/pincontents")" = "$PIN" ]
   [[ "$(cat "$BATS_TEST_TMPDIR/pinperms")" == -rw------* ]]
-  # and the transient file is shredded after the session
-  [ ! -e "${DATA_DIR}/pids/.${PROGRAM_NAME}.$(profile_slug "PKCS VPN").pin" ]
 }
 
-@test "run_openconnect omits pin-source when no PKCS#11 PIN is stored (interactive prompt)" {
+@test "run_openconnect omits pin-source when _VPN_PIN_FILE is unset (interactive prompt)" {
   _write_profiles
   local argv="$BATS_TEST_TMPDIR/argv"
-  secrets_get() { echo ""; }            # no stored PIN
+  _VPN_PIN_FILE=""
   sudo() { if [ "$1" = openconnect ]; then shift; printf '%s\n' "$@" > "$argv"; cat >/dev/null; return 0; fi; return 0; }
   load_profile_fields "PKCS VPN"
   VPN_PASSWD=""
@@ -133,6 +138,45 @@ XML
   run_openconnect
   grep -qF -- "--certificate=pkcs11:manufacturer=piv_II;id=%01" "$argv"
   if grep -qF -- "pin-source=file:" "$argv"; then false; fi
+}
+
+# --- the full phase-4 lifecycle: fetch once, shred once, shared by both modes ---
+
+@test "run_admitted_connection fetches the PKCS#11 PIN once and shreds it once, in prompt mode" {
+  _write_profiles
+  local argv="$BATS_TEST_TMPDIR/argv" fetches="$BATS_TEST_TMPDIR/fetches"
+  : > "$fetches"
+  load_profile_fields "PKCS VPN"
+  VPN_PASSWD=""
+  SERVER_CERTIFICATE="pin-sha256:abc"
+  QUIET=FALSE; BACKGROUND=TRUE
+  secrets_get() {
+    case "$2" in
+      key_password) echo "call" >> "$fetches"; echo "918273"; return 0 ;;
+      password) echo "s3cret"; return 0 ;;
+      *) echo ""; return 0 ;;
+    esac
+  }
+  sudo() { if [ "$1" = openconnect ]; then shift; printf '%s\n' "$@" > "$argv"; cat >/dev/null; return 0; fi; return 0; }
+
+  run_admitted_connection "PKCS VPN" SERVICE
+  grep -qF -- "pin-source=file:" "$argv"
+  [ "$(wc -l < "$fetches")" -eq 1 ]                                             # fetched exactly once
+  [ ! -e "${DATA_DIR}/pids/.${PROGRAM_NAME}.$(profile_slug "PKCS VPN").pin" ]   # shredded after
+}
+
+@test "a service with a PKCS#11 certificate and no stored PIN is CONFIG, never prompts" {
+  _write_profiles
+  load_profile_fields "PKCS VPN"
+  VPN_PASSWD=""
+  SERVER_CERTIFICATE="pin-sha256:abc"
+  # password fetch must succeed cleanly so the PIN check is what's under test
+  secrets_get() {
+    [ "$2" = password ] && { echo "s3cret"; return 0; }
+    echo ""; return 0   # no stored PIN
+  }
+  run run_admitted_connection "PKCS VPN" SERVICE
+  [ "$status" -eq "$VPN_RC_CONFIG" ]
 }
 
 # --- collision warning includes the cert flags ---
