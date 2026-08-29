@@ -144,12 +144,22 @@ _service_preflight() {
   if [ "$_svc_ready" != 1 ]; then
     print_warning "No proven passwordless sudo. Service mode requires a sudoers rule for the privileged helper (preferred: %s install-helper --passwordless) or for openconnect (see README); the service will fail until one exists. NOTE: a raw-openconnect rule grants effective root to your account (see SECURITY.md).\n" "${DISPLAY_NAME}"
   fi
-  local clientcert
+  local clientcert clientkey
   clientcert="$(xmlstarlet sel -t -m "//VPN[name=$(xpath_literal "$profile")]" -v 'clientCertificate | clientcertificate' "$PROFILES_FILE" 2>/dev/null)"
+  clientkey="$(xmlstarlet sel -t -m "//VPN[name=$(xpath_literal "$profile")]" -v 'clientKey | clientkey' "$PROFILES_FILE" 2>/dev/null)"
   # A cert-only profile needs no stored password, so only warn about a missing
-  # password when there is no client certificate to authenticate with.
-  if [ -z "$clientcert" ] && [ -z "$(secrets_get "$profile" "password" 2>/dev/null)" ]; then
-    print_warning "No stored password for '%s'. Store one first: %s set-secret '%s' password\n" "$profile" "${DISPLAY_NAME}" "$profile"
+  # password when there is no client certificate to authenticate with. Routed
+  # through _secret_check (core.sh), not a raw secrets_get, so a temporary
+  # backend error is distinguished from "genuinely no password stored" --
+  # otherwise a transient Keychain/Secret Service/vault failure here reads as
+  # "no password" and produces a misleading warning during installation, the
+  # same tri-state distinction the runtime preflight already makes.
+  if [ -z "$clientcert" ]; then
+    _secret_check "$profile" password >/dev/null
+    case $? in
+      1) print_warning "No stored password for '%s'. Store one first: %s set-secret '%s' password\n" "$profile" "${DISPLAY_NAME}" "$profile" ;;
+      2) print_warning "Could not check the secrets store for a stored password for '%s' (temporary backend error); the service will re-check at runtime.\n" "$profile" ;;
+    esac
   fi
   local duo
   duo="$(xmlstarlet sel -t -m "//VPN[name=$(xpath_literal "$profile")]" -v 'duo2FAMethod | duoMethod' "$PROFILES_FILE" 2>/dev/null)"
@@ -162,26 +172,35 @@ _service_preflight() {
   local tokenmode
   tokenmode="$(xmlstarlet sel -t -m "//VPN[name=$(xpath_literal "$profile")]" -v 'tokenMode | tokenmode' "$PROFILES_FILE" 2>/dev/null)"
   if [ "$tokenmode" = totp ]; then
-    if [ -z "$(secrets_get "$profile" "token_secret" 2>/dev/null)" ]; then
-      print_danger "Profile '%s' uses TOTP but has no stored secret; a service can't prompt. Store it first: %s set-secret '%s' token_secret\n" "$profile" "${DISPLAY_NAME}" "$profile"
-      return 1
-    fi
+    _secret_check "$profile" token_secret >/dev/null
+    case $? in
+      1)
+        print_danger "Profile '%s' uses TOTP but has no stored secret; a service can't prompt. Store it first: %s set-secret '%s' token_secret\n" "$profile" "${DISPLAY_NAME}" "$profile"
+        return 1 ;;
+      2)
+        print_warning "Could not check the secrets store for a stored TOTP secret for '%s' (temporary backend error); the service will re-check at runtime.\n" "$profile" ;;
+    esac
     command -v oathtool >/dev/null 2>&1 || print_warning "'oathtool' not found; the TOTP service will fail until it's installed (brew install oath-toolkit | apt-get install oathtool).\n"
   fi
   # Client-certificate auth works as a service only when no interactive prompt is
-  # needed. A PKCS#11 token needs a stored PIN (key_password); a file-based key
-  # must be unencrypted (a passphrase prompt has no TTY under launchd/systemd).
+  # needed. A PKCS#11 certificate OR key needs a stored PIN (key_password) --
+  # checking only the certificate (an earlier version of this function) missed
+  # the equally valid case of a file-path certificate paired with a PKCS#11
+  # key; _pkcs11_pin_needed (core.sh) checks both, and is the same predicate
+  # the setup wizard and the runtime preflight/phase-4 fetch use, so there is
+  # one definition of "does this profile need a PKCS#11 PIN", not several. A
+  # file-based key must be unencrypted (a passphrase prompt has no TTY under
+  # launchd/systemd).
   if [ -n "$clientcert" ]; then
-    case "$clientcert" in
-      pkcs11:*)
-        if [ -z "$(secrets_get "$profile" "key_password" 2>/dev/null)" ]; then
-          print_warning "Profile '%s' uses a PKCS#11 client certificate; a service can't enter the PIN. Store it first: %s set-secret '%s' key_password\n" "$profile" "${DISPLAY_NAME}" "$profile"
-        fi
-        ;;
-      *)
-        print_warning "Profile '%s' uses a client-certificate file. If the private key is passphrase-protected it cannot run as a service (no TTY to prompt); use an unencrypted 0600 key.\n" "$profile"
-        ;;
-    esac
+    if _pkcs11_pin_needed "$clientcert" "$clientkey"; then
+      _secret_check "$profile" key_password >/dev/null
+      case $? in
+        1) print_warning "Profile '%s' uses a PKCS#11 client certificate; a service can't enter the PIN. Store it first: %s set-secret '%s' key_password\n" "$profile" "${DISPLAY_NAME}" "$profile" ;;
+        2) print_warning "Could not check the secrets store for a stored PKCS#11 PIN for '%s' (temporary backend error); the service will re-check at runtime.\n" "$profile" ;;
+      esac
+    else
+      print_warning "Profile '%s' uses a client-certificate file. If the private key is passphrase-protected it cannot run as a service (no TTY to prompt); use an unencrypted 0600 key.\n" "$profile"
+    fi
   fi
   return 0
 }

@@ -283,6 +283,63 @@ EOF
   [ "$status" -eq "$VPN_RC_CONFIG" ]
 }
 
+# --- PKCS#11 PIN existence, checked in preflight (review round 7, finding #2) ---
+#
+# A missing PKCS#11 PIN is just as locally decidable as a missing password or
+# TOTP seed. An earlier version of connection_preflight never checked
+# key_password at all: a SERVICE-mode PKCS#11 profile with no stored PIN sailed
+# through preflight with rc=0, so admit_attempt charged an unattended attempt
+# -- and possibly reserved/generated a TOTP step too -- for a connection that
+# was always going to refuse once run_admitted_connection's own
+# _prepare_pkcs11_pin got to it. These exercise preflight's existence check
+# only, before admit_attempt would ever run.
+
+@test "a SERVICE profile with a PKCS#11 client certificate and no stored PIN is CONFIG in preflight" {
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_PASSWD="s3cret"
+  VPN_CLIENT_CERT="pkcs11:manufacturer=piv_II;id=%01"
+  secrets_get() { echo ""; return 0; }   # no stored key_password
+  run connection_preflight SERVICE
+  [ "$status" -eq "$VPN_RC_CONFIG" ]
+  [[ "$output" == *"key_password"* ]]
+}
+
+@test "a SERVICE profile with a PKCS#11 client KEY (file certificate) and no stored PIN is CONFIG in preflight" {
+  # The certificate alone is not the whole predicate: a file-path certificate
+  # paired with a pkcs11: key needs a stored PIN too. Checking only
+  # VPN_CLIENT_CERT (an earlier version of _pkcs11_pin_needed) missed this.
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_PASSWD="s3cret"
+  VPN_CLIENT_CERT="/etc/vpn/me.pem"
+  VPN_CLIENT_KEY="pkcs11:manufacturer=piv_II;id=%01"
+  secrets_get() { echo ""; return 0; }
+  run connection_preflight SERVICE
+  [ "$status" -eq "$VPN_RC_CONFIG" ]
+  [[ "$output" == *"key_password"* ]]
+}
+
+@test "a secrets-backend error while checking the PKCS#11 PIN in preflight is SECRETS_UNAVAILABLE, not CONFIG" {
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_PASSWD="s3cret"
+  VPN_CLIENT_CERT="pkcs11:manufacturer=piv_II;id=%01"
+  secrets_get() { return 1; }   # backend error, not "not found"
+  run connection_preflight SERVICE
+  [ "$status" -eq "$VPN_RC_SECRETS_UNAVAILABLE" ]
+}
+
+@test "connection_preflight's PKCS#11 PIN existence check never prints the PIN" {
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_PASSWD="s3cret"
+  VPN_CLIENT_CERT="pkcs11:manufacturer=piv_II;id=%01"
+  secrets_get() { echo "1234-should-not-leak"; }
+  run connection_preflight SERVICE
+  if grep -qF "1234-should-not-leak" <<<"$output"; then false; fi
+}
+
 # Preflight is only a snapshot (invariant 8); admission may then wait, and the
 # backend can fail in between. These exercise the ACTUAL fetch in
 # run_admitted_connection, not just preflight's existence check.

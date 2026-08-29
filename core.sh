@@ -380,6 +380,28 @@ connection_preflight() {
     return "$VPN_RC_CONFIG"
   fi
 
+  # A PKCS#11 client certificate/key needs a stored PIN (key_password) for a
+  # service to authenticate without a TTY -- exactly as locally decidable as
+  # the missing-password and missing-TOTP-seed checks above, and it belongs
+  # here for the same reason: discovering it only in run_admitted_connection
+  # (phase 4) means admit_attempt has already charged the rate-limit budget
+  # for an attempt that was always going to refuse. Reproduced directly: a
+  # SERVICE-mode PKCS#11 profile with no stored key_password sailed through
+  # this function with rc=0 before this check existed.
+  if [ "$mode" = SERVICE ] && _pkcs11_pin_needed "${VPN_CLIENT_CERT:-}" "${VPN_CLIENT_KEY:-}"; then
+    # >/dev/null: existence only, per invariant 8 -- never the PIN itself.
+    _secret_check "${VPN_NAME}" key_password >/dev/null
+    case $? in
+      0) : ;;
+      1)
+        print_danger "Profile '%s' uses a PKCS#11 client certificate; a service can't enter the PIN. Store it first: %s set-secret '%s' key_password\n" "${VPN_NAME}" "${DISPLAY_NAME}" "${VPN_NAME}"
+        return "$VPN_RC_CONFIG" ;;
+      2)
+        print_danger "Could not read the secrets store to check for a stored PKCS#11 PIN for '%s'; will retry.\n" "${VPN_NAME}"
+        return "$VPN_RC_SECRETS_UNAVAILABLE" ;;
+    esac
+  fi
+
   set_protocol_description
   set_2fa_method_description
 
@@ -539,6 +561,22 @@ run_admitted_connection() {
     esac
   fi
 
+  # PKCS#11 PIN staging happens here, before any one-time value is touched --
+  # not after, as an earlier version of this code had it. _prepare_pkcs11_pin
+  # can call out to Keychain, Secret Service, or the encrypted vault and
+  # perform filesystem I/O, none of which is instant. Leaving it after TOTP
+  # generation or Duo-passcode entry meant a one-time value could be produced
+  # and then sit idle while this ran -- exactly the class of staleness
+  # totp_wait_for_fresh_step already exists to prevent, just reintroduced one
+  # step later. Restoring "nothing potentially slow remains between obtaining
+  # a one-time factor and submitting it" means this reusable-credential-like
+  # step must come before, not after, the one-time value.
+  _VPN_PIN_FILE=""
+  if [ "$rc" = 0 ]; then
+    _prepare_pkcs11_pin "$mode"
+    rc=$?
+  fi
+
   if [ "$rc" = 0 ] && [ "${VPN_AUTH_MODE:-password}" != sso ] && [ "$VPN_TOKEN_MODE" = totp ]; then
     local seed=""
     # One fetch, not check-then-fetch: _secret_check's stdout IS the value on
@@ -601,12 +639,6 @@ run_admitted_connection() {
       print_danger "No passcode entered; aborting.\n"
       rc="$VPN_RC_CONFIG"
     fi
-  fi
-
-  _VPN_PIN_FILE=""
-  if [ "$rc" = 0 ]; then
-    _prepare_pkcs11_pin "$mode"
-    rc=$?
   fi
 
   if [ "$rc" = 0 ]; then
@@ -790,13 +822,34 @@ _append_pkcs11_pin_source() {
   printf '%s%spin-source=file:%s' "$uri" "$sep" "$pinfile"
 }
 
-# Fetches a PKCS#11 PIN (the 'key_password' secret) for VPN_CLIENT_CERT when
-# it is a pkcs11: URI, and stages it in a transient 0600 file for
-# _append_pkcs11_pin_source above. Sets _VPN_PIN_FILE to that file's path
-# when a PIN was actually found; leaves it empty for a non-pkcs11
-# certificate, a pkcs11 certificate with no stored PIN, or a backend error
-# under INTERACTIVE mode -- all of which fall back to openconnect's own
-# interactive PIN prompt, exactly as before this function existed.
+# True when a stored PKCS#11 PIN (key_password) is relevant: either the
+# client CERTIFICATE or the client KEY is a pkcs11: URI. Checking only the
+# certificate (an earlier version of this code) missed the equally valid,
+# documented configuration of a file-path certificate paired with a PKCS#11
+# private key -- reproduced directly: clientCertificate=/tmp/cert.pem +
+# clientKey=pkcs11:... with a stored key_password never attached the PIN,
+# silently falling back to an interactive prompt a service has no TTY to
+# answer. This one predicate is shared by every place that needs to know
+# "does this profile need a PKCS#11 PIN" -- the setup wizard's PIN offer,
+# `service install`'s diagnostics, connection_preflight, and the phase-4
+# fetch below -- so there is exactly one definition of that question, not
+# four subtly different ones.
+_pkcs11_pin_needed() {
+  local cert="$1" key="$2"
+  case "$cert" in pkcs11:*) return 0 ;; esac
+  case "$key"  in pkcs11:*) return 0 ;; esac
+  return 1
+}
+
+# Fetches a PKCS#11 PIN (the 'key_password' secret) for a pkcs11: client
+# certificate or key (see _pkcs11_pin_needed above), and stages it in a
+# transient, uniquely-named 0600 file for _append_pkcs11_pin_source above.
+# Sets _VPN_PIN_FILE to that file's path only once the PIN has actually been
+# written to disk and secured -- never merely attempted -- and leaves it
+# empty for a profile that doesn't need one, one with no stored PIN, or (in
+# INTERACTIVE mode) a backend/local-I/O error, all of which fall back to
+# openconnect's own interactive PIN prompt, exactly as before this function
+# existed.
 #
 # Centralizes what used to be two independent, inconsistent things: a raw
 # secrets_get in run_openconnect (prompt mode) with no tri-state handling,
@@ -808,17 +861,47 @@ _append_pkcs11_pin_source() {
 _prepare_pkcs11_pin() {
   local mode="$1"
   _VPN_PIN_FILE=""
-  case "${VPN_CLIENT_CERT:-}" in
-    pkcs11:*) ;;
-    *) return 0 ;;
-  esac
+  _pkcs11_pin_needed "${VPN_CLIENT_CERT:-}" "${VPN_CLIENT_KEY:-}" || return 0
   local pin=""
   pin="$(_secret_check "${VPN_NAME}" key_password)"
   case $? in
     0)
-      _VPN_PIN_FILE="${DATA_DIR}/pids/.${PROGRAM_NAME}.$(profile_slug "$VPN_NAME").pin"
-      ( umask 077; printf '%s' "$pin" > "$_VPN_PIN_FILE" )
-      chmod 600 "$_VPN_PIN_FILE" 2>/dev/null || true
+      # The write is staged into a uniquely-named file (mktemp, not a
+      # deterministic profile_slug()-based name -- a secret-bearing file
+      # must not risk the same slug collision the state-file identity fix
+      # (logging.sh's _profile_state_key) exists to avoid) and _VPN_PIN_FILE
+      # is only ever set AFTER every step below has actually succeeded.
+      # Reproduced directly: with ${DATA_DIR}/pids replaced by a plain file,
+      # the previous code wrote nowhere, silently kept going, and reported
+      # success with _VPN_PIN_FILE pointing at a path that was never
+      # created -- openconnect would then have been launched with a
+      # pin-source pointing nowhere. Any failure below is reported the same
+      # way a stored-secret backend error already is: terminal for a
+      # service (nothing it can retry into existence on its own), a
+      # fallback to the interactive prompt for a human who is present.
+      local tmp="" fail=""
+      if ! ( umask 077; mkdir -p "${DATA_DIR}/pids" ) 2>/dev/null \
+          || ! chmod 700 "${DATA_DIR}/pids" 2>/dev/null; then
+        fail="create the VPN state directory"
+      elif ! tmp="$(mktemp "${DATA_DIR}/pids/.${PROGRAM_NAME}.pin.XXXXXX" 2>/dev/null)"; then
+        fail="create a PIN file"
+      elif ! ( umask 077; printf '%s' "$pin" > "$tmp" ); then
+        fail="write the PIN file"
+        rm -f "$tmp"
+      elif ! chmod 600 "$tmp" 2>/dev/null; then
+        fail="secure the PIN file"
+        rm -f "$tmp"
+      fi
+      unset pin
+      if [ -n "$fail" ]; then
+        if [ "$mode" = SERVICE ]; then
+          print_danger "Could not %s for the PKCS#11 PIN for '%s'; will retry.\n" "$fail" "${VPN_NAME}"
+          return "$VPN_RC_SECRETS_UNAVAILABLE"
+        fi
+        print_danger "Could not %s for the PKCS#11 PIN for '%s'; falling back to an interactive PIN prompt.\n" "$fail" "${VPN_NAME}"
+        return 0
+      fi
+      _VPN_PIN_FILE="$tmp"
       ;;
     1)
       # No PIN stored. Fine for an interactive caller -- openconnect prompts

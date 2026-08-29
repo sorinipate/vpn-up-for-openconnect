@@ -161,8 +161,13 @@ XML
 
   run_admitted_connection "PKCS VPN" SERVICE
   grep -qF -- "pin-source=file:" "$argv"
-  [ "$(wc -l < "$fetches")" -eq 1 ]                                             # fetched exactly once
-  [ ! -e "${DATA_DIR}/pids/.${PROGRAM_NAME}.$(profile_slug "PKCS VPN").pin" ]   # shredded after
+  [ "$(wc -l < "$fetches")" -eq 1 ]   # fetched exactly once
+  # The PIN file is now a uniquely-named mktemp path (review round 7, finding
+  # #1), not a deterministic profile_slug()-based name -- assert no PIN file
+  # of any name is left behind in pids/, rather than checking one specific
+  # (now-nonexistent-by-construction) path.
+  local leftover; leftover="$(find "${DATA_DIR}/pids" -maxdepth 1 -name ".${PROGRAM_NAME}.pin.*" 2>/dev/null)"
+  [ -z "$leftover" ]
 }
 
 @test "a service with a PKCS#11 certificate and no stored PIN is CONFIG, never prompts" {
@@ -177,6 +182,107 @@ XML
   }
   run run_admitted_connection "PKCS VPN" SERVICE
   [ "$status" -eq "$VPN_RC_CONFIG" ]
+}
+
+# --- a PIN-file write that fails must never be reported as success (review round 7, BLOCKER #1) ---
+#
+# An earlier version of _prepare_pkcs11_pin wrote the PIN to a fixed,
+# deterministic path and never checked whether the write (or the mkdir before
+# it) actually succeeded -- reproduced directly by replacing
+# ${DATA_DIR}/pids with a plain file, which made `printf ... > "$_VPN_PIN_FILE"`
+# fail silently while the function still returned 0 with _VPN_PIN_FILE set to
+# a path that was never created. Any failure here must be reported as
+# SECRETS_UNAVAILABLE (a service can retry) in SERVICE mode -- never rc=0 with
+# a dangling reference to a file that doesn't exist -- and dispatch must never
+# be reached.
+
+@test "a PIN-file write failure is SECRETS_UNAVAILABLE, not a false success, and dispatch never runs" {
+  _write_profiles
+  load_profile_fields "PKCS VPN"
+  VPN_PASSWD=""
+  SERVER_CERTIFICATE="pin-sha256:abc"
+  secrets_get() {
+    [ "$2" = password ] && { echo "s3cret"; return 0; }
+    echo "918273"; return 0   # PIN IS stored -- the write itself is what fails
+  }
+  rm -rf "${DATA_DIR}/pids"
+  : > "${DATA_DIR}/pids"   # a plain file where the pids DIRECTORY must be -- mkdir/mktemp inside it can't succeed
+  local dispatched="$BATS_TEST_TMPDIR/dispatched"
+  run_openconnect() { touch "$dispatched"; return 0; }
+  connect_via_helper() { touch "$dispatched"; return 0; }
+
+  run run_admitted_connection "PKCS VPN" SERVICE
+  [ "$status" -eq "$VPN_RC_SECRETS_UNAVAILABLE" ]
+  [ ! -e "$dispatched" ]
+  [ -z "${_VPN_PIN_FILE:-}" ]
+}
+
+@test "an INTERACTIVE PIN-file write failure falls back to the interactive prompt instead of refusing" {
+  # A human is present in INTERACTIVE mode, so a local filesystem hiccup
+  # staging the PIN should degrade to openconnect's own interactive PIN
+  # prompt (same as "no PIN stored") rather than block the whole connection --
+  # only a SERVICE, which has no TTY to fall back to, needs to refuse.
+  _write_profiles
+  load_profile_fields "PKCS VPN"
+  VPN_PASSWD="s3cret"
+  SERVER_CERTIFICATE="pin-sha256:abc"
+  secrets_get() {
+    [ "$2" = password ] && { echo "s3cret"; return 0; }
+    echo "918273"; return 0
+  }
+  rm -rf "${DATA_DIR}/pids"
+  : > "${DATA_DIR}/pids"
+  sudo() { if [ "$1" = openconnect ]; then shift; cat >/dev/null; return 0; fi; return 0; }
+
+  run run_admitted_connection "PKCS VPN" INTERACTIVE
+  [ "$status" -eq 0 ]
+  [ -z "${_VPN_PIN_FILE:-}" ]
+}
+
+# --- PKCS#11 PIN staging happens before the one-time value, not after (review round 7, HIGH #3) ---
+#
+# _prepare_pkcs11_pin can call out to Keychain/Secret Service/the vault and do
+# filesystem I/O -- none of it instant. An earlier version of
+# run_admitted_connection ran it AFTER TOTP generation, so a TOTP code could be
+# produced and then sit idle while PIN staging ran, exactly the kind of
+# staleness totp_wait_for_fresh_step exists to prevent. Recorded call order
+# must show the PIN staged before the TOTP code is generated.
+
+@test "PKCS#11 PIN staging happens before TOTP generation, not after" {
+  _write_profiles
+  # PKCS VPN has no tokenMode in its fixture XML; force it to totp for this
+  # ordering check without needing a second fixture profile.
+  cat > "$PROFILES_FILE" <<'XML'
+<VPNs>
+  <VPN><name>PKCS TOTP VPN</name><protocol>anyconnect</protocol><host>p.example.com</host><authGroup></authGroup><user>bob</user><password></password><duo2FAMethod></duo2FAMethod><serverCertificate></serverCertificate><authMode>password</authMode><tokenMode>totp</tokenMode><extraArgs></extraArgs><clientCertificate>pkcs11:manufacturer=piv_II;id=%01</clientCertificate></VPN>
+</VPNs>
+XML
+  load_profile_fields "PKCS TOTP VPN"
+  VPN_PASSWD=""
+  SERVER_CERTIFICATE="pin-sha256:abc"
+  local order="$BATS_TEST_TMPDIR/order"
+  secrets_get() {
+    case "$2" in
+      key_password) echo "918273"; return 0 ;;
+      password) echo "s3cret"; return 0 ;;
+      token_secret) echo "JBSWY3DPEHPK3PXP"; return 0 ;;
+      *) echo ""; return 0 ;;
+    esac
+  }
+  # totp_wait_for_fresh_step isn't stubbed for its own logic -- it's the probe
+  # point: at the moment TOTP reservation begins, has the PKCS#11 PIN already
+  # been staged to disk? If PIN staging still ran AFTER TOTP/Duo entry (the
+  # pre-fix order), no PIN file would exist yet when this runs.
+  totp_wait_for_fresh_step() {
+    local pinfile; pinfile="$(find "${DATA_DIR}/pids" -maxdepth 1 -name ".${PROGRAM_NAME}.pin.*" 2>/dev/null)"
+    if [ -n "$pinfile" ]; then echo "staged-before-totp" > "$order"; else echo "NOT-staged-before-totp" > "$order"; fi
+    return 0
+  }
+  generate_totp() { echo "123456"; }
+  run_openconnect() { return 0; }
+
+  run_admitted_connection "PKCS TOTP VPN" SERVICE
+  [ "$(cat "$order")" = "staged-before-totp" ]
 }
 
 # --- collision warning includes the cert flags ---

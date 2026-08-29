@@ -156,26 +156,29 @@ add_profile_wizard() {
   read -r -p "Client certificate (file path or pkcs11: URI, optional): " clientcert
   if [ -n "$clientcert" ]; then
     read -r -p "Client key (file path or pkcs11: URI; empty if in the cert): " clientkey
-    case "$clientcert" in
-      pkcs11:*)
-        local _in_pin=""
-        read -r -p "Store the PKCS#11 PIN now (needed for a login service)? [y/N]: " _in_pin
-        if [ "$(_bool_default "${_in_pin}" "FALSE")" = TRUE ]; then
-          local _pin
-          read -r -s -p "Enter the PKCS#11 PIN: " _pin; echo
-          if [ -n "$_pin" ]; then
-            if secrets_set "$name" "key_password" "$_pin"; then
-              print_success "PKCS#11 PIN stored securely.\n"
-            else
-              print_danger "Could not store the PKCS#11 PIN; add it later with: %s set-secret '%s' key_password\n" "${DISPLAY_NAME}" "$name"
-            fi
+    # Checking only the certificate here (an earlier version of this wizard)
+    # missed the equally valid case of a file-path certificate paired with a
+    # PKCS#11 private key: it would print the "passphrase-protected" warning
+    # below for a profile that actually needs a stored PIN, and never offer
+    # to store one. _pkcs11_pin_needed (core.sh) checks both.
+    if _pkcs11_pin_needed "$clientcert" "$clientkey"; then
+      local _in_pin=""
+      read -r -p "Store the PKCS#11 PIN now (needed for a login service)? [y/N]: " _in_pin
+      if [ "$(_bool_default "${_in_pin}" "FALSE")" = TRUE ]; then
+        local _pin
+        read -r -s -p "Enter the PKCS#11 PIN: " _pin; echo
+        if [ -n "$_pin" ]; then
+          if secrets_set "$name" "key_password" "$_pin"; then
+            print_success "PKCS#11 PIN stored securely.\n"
+          else
+            print_danger "Could not store the PKCS#11 PIN; add it later with: %s set-secret '%s' key_password\n" "${DISPLAY_NAME}" "$name"
           fi
-          unset _pin
         fi
-        ;;
-      *)
-        print_warning "If the key is passphrase-protected, openconnect will prompt for it at connect time (foreground only).\n" ;;
-    esac
+        unset _pin
+      fi
+    else
+      print_warning "If the key is passphrase-protected, openconnect will prompt for it at connect time (foreground only).\n"
+    fi
   fi
 
   # Optional HTTP/SOCKS proxy. A URL, not a secret — avoid embedding credentials

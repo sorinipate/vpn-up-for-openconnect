@@ -153,6 +153,43 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
     unwritable state/secrets directory) no longer reads as "secret not
     stored" — it's reported as a backend error, like any other environment
     problem that has nothing to do with whether the secret actually exists.
+  - **Staging a PKCS#11 PIN into its transient pin-source file is now checked
+    at every step, and only reported successful once the file actually exists
+    on disk.** A missing `${DATA_DIR}/pids` directory, a failed `mkdir`, or a
+    failed write used to be silently ignored — the function still returned
+    success with a path that pointed at a file that was never created,
+    which would have handed OpenConnect a `pin-source` for a nonexistent
+    file. A service now retries (`VPN_RC_SECRETS_UNAVAILABLE`) rather than
+    dispatching with a phantom PIN file; an interactive caller falls back to
+    OpenConnect's own PIN prompt, same as when no PIN is stored at all. The
+    file is also now staged with `mktemp` under a random name rather than a
+    deterministic, profile-name-derived one — a secret-bearing file
+    shouldn't risk the same name collision the state-file identity fix
+    exists to avoid for two different profiles.
+  - **A service using a PKCS#11 client certificate with no stored PIN was
+    only discovered after admission had already charged an unattended
+    attempt** (and, for a profile also using TOTP, after a step had already
+    been reserved). Preflight now checks for a stored PIN up front, exactly
+    like the existing password and TOTP-seed checks, so a misconfigured
+    unattended PKCS#11 profile spends neither.
+  - **The PKCS#11 PIN is now fetched and staged before a TOTP code is
+    generated or a Duo passcode is entered, not after.** Fetching the PIN can
+    call out to Keychain, Secret Service, or the encrypted vault and do
+    filesystem I/O — none of it instant — so doing it after a one-time value
+    had already been produced left that value sitting idle, exactly the kind
+    of staleness the TOTP step-reservation wait already exists to prevent.
+  - **A stored PKCS#11 PIN was only ever attached when the client
+    *certificate* itself was a `pkcs11:` URI**, missing the equally valid,
+    documented configuration of a file-path certificate paired with a
+    PKCS#11 private key. One predicate (`_pkcs11_pin_needed`) now checks
+    both the certificate and the key, and is shared by the setup wizard's
+    PIN offer, `service install`'s preflight diagnostics, the runtime
+    preflight check above, and the phase-4 fetch — previously each of the
+    first two had its own, narrower, cert-only check.
+  - `service install`'s preflight diagnostics for a stored password, TOTP
+    secret, or PKCS#11 PIN now use the same backend-aware present/absent/
+    error distinction as the runtime preflight, instead of a raw lookup that
+    read a transient backend error the same way as "nothing stored."
 
 ### Fixed
 

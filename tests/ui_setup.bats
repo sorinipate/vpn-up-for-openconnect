@@ -69,3 +69,70 @@ EOF
   # no template placeholders left behind
   if grep -q '__' "$CONFIGURATION_FILE"; then false; fi
 }
+
+# --- add_profile_wizard: PKCS#11 PIN offer (review round 7, finding #4) ---
+#
+# Checking only the certificate for a pkcs11: URI (an earlier version of this
+# wizard) missed the equally valid, documented case of a file-path
+# certificate paired with a PKCS#11 private key: it printed the
+# "passphrase-protected" warning for a profile that actually needed a stored
+# PIN, and never offered to store one. _pkcs11_pin_needed (core.sh) checks
+# both the certificate and the key.
+
+_wizard_stubs() {
+  source "$BATS_TEST_DIRNAME/../core.sh"
+  export PROFILES_FILE="$BATS_TEST_TMPDIR/profiles.xml"
+  profiles_xml_ok() { return 0; }
+  profile_exists() { return 1; }
+  append_profile() { return 0; }
+  pin_save() { return 0; }
+  SECRETS_SET_CALLS="$BATS_TEST_TMPDIR/secrets_set-calls"; : > "$SECRETS_SET_CALLS"
+  secrets_set() { printf '%s\n' "$2" >> "$SECRETS_SET_CALLS"; return 0; }
+  WARNINGS="$BATS_TEST_TMPDIR/warnings"; : > "$WARNINGS"
+  print_warning() { printf -- "$1" "${@:2}" >> "$WARNINGS"; }
+  print_danger() { :; }; print_success() { :; }
+}
+
+@test "add_profile_wizard offers and stores a PKCS#11 PIN for a file certificate paired with a pkcs11: key" {
+  _wizard_stubs
+  add_profile_wizard <<'EOF'
+FileKeyPKCS11
+anyconnect
+h.example.com
+
+user
+n
+n
+/tmp/cert.pem
+pkcs11:id=%02
+y
+1234
+
+
+n
+n
+EOF
+  grep -qF "key_password" "$SECRETS_SET_CALLS"
+  if grep -qF "passphrase-protected" "$WARNINGS"; then false; fi
+}
+
+@test "add_profile_wizard does not offer a PKCS#11 PIN for a plain file certificate and key" {
+  _wizard_stubs
+  add_profile_wizard <<'EOF'
+FileKeyOnly
+anyconnect
+h.example.com
+
+user
+n
+n
+/tmp/cert.pem
+/tmp/cert.key
+
+
+n
+n
+EOF
+  if grep -qF "key_password" "$SECRETS_SET_CALLS"; then false; fi
+  grep -qF "passphrase-protected" "$WARNINGS"
+}

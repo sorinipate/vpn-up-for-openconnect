@@ -1423,6 +1423,61 @@ a plausible thing for a future change to erode without noticing:
    error," concluding ABSENT. The capture path is now proven writable before
    any of that reasoning is trusted; if it isn't, the result is
    `BACKEND_ERROR`, not a genuine-looking "not stored."
+   **`_prepare_pkcs11_pin` reported success without checking that the PIN
+   file it staged actually got written.** Neither the `mkdir` of the pids
+   directory nor the write itself was checked — reproduced directly by
+   replacing `${DATA_DIR}/pids` with a plain file: the function still
+   returned 0 with `_VPN_PIN_FILE` pointing at a path that was never created,
+   which would have handed OpenConnect a `pin-source=file:` argument
+   referencing nothing. Every step (directory creation, file creation, the
+   write itself, `chmod 600`) is now checked in sequence, and
+   `_VPN_PIN_FILE` is assigned only after all of them succeed; a failure
+   under `SERVICE` is `VPN_RC_SECRETS_UNAVAILABLE` (retryable — nothing
+   about a local I/O fault is permanent), and under `INTERACTIVE` falls back
+   to OpenConnect's own interactive PIN prompt, the same as "no PIN stored."
+   The file is now staged with `mktemp` rather than a deterministic
+   `profile_slug()`-derived name — a secret-bearing file must not risk the
+   same collision the state-file identity fix (§3.1) exists to avoid between
+   two differently-named profiles.
+   **A missing PKCS#11 PIN was discovered only after admission, not in
+   preflight, undoing part of invariant 8.** `connection_preflight` checked
+   password and TOTP-seed existence but not `key_password`, so a SERVICE-mode
+   PKCS#11 profile with no stored PIN sailed through preflight, had an
+   attempt admitted (and, for a profile also using TOTP, a step reserved),
+   and only then discovered the missing PIN in `run_admitted_connection`.
+   Preflight now checks `key_password` existence too, using the same
+   present/absent/backend-error primitive as the other two checks, before
+   `admit_attempt` is ever called.
+   **PKCS#11 PIN staging ran after TOTP generation and Duo-passcode entry,
+   not before.** `_prepare_pkcs11_pin` can call out to Keychain, Secret
+   Service, or the encrypted vault and perform filesystem I/O — none of it
+   instant — so running it after a one-time value had already been produced
+   left that value sitting idle for an unbounded amount of time, exactly the
+   staleness `totp_wait_for_fresh_step` exists to prevent, just reintroduced
+   one step later. Phase 4's order is now: password fetch, PKCS#11 PIN
+   staging, then the TOTP code or Duo passcode, immediately followed by
+   dispatch — restoring "nothing potentially slow remains between obtaining
+   a one-time factor and submitting it."
+   **The PKCS#11 predicate checked only the client certificate, missing the
+   valid, documented case of a file-path certificate paired with a PKCS#11
+   private key.** `clientCertificate=/path/to/cert.pem` with
+   `clientKey=pkcs11:...` needs a stored PIN exactly as much as a PKCS#11
+   certificate does, but every place that asked "does this profile need a
+   PKCS#11 PIN" checked only `VPN_CLIENT_CERT`/`clientCertificate` — the
+   phase-4 fetch, the new preflight check above, the setup wizard's PIN
+   offer, and `service install`'s diagnostics each had their own, narrower
+   version of the same question. One predicate, `_pkcs11_pin_needed(cert,
+   key)`, now checks both fields and is the single definition all four call
+   sites share.
+   **`service install`'s preflight diagnostics still used a raw
+   `secrets_get` for the password, TOTP-seed, and PKCS#11-PIN checks**,
+   losing the present/absent/backend-error distinction the runtime preflight
+   already makes — a transient backend error at install time reported as
+   "not stored" rather than as a retryable condition. This is a diagnostics
+   gap, not a safety one (the runtime preflight above re-checks all three
+   unconditionally before every unattended attempt), but now that
+   `_secret_check` exists there is no reason to keep a second, weaker
+   version of the same check beside it, so `service install` uses it too.
 
 **The state file** (`${DATA_DIR}/state/<slug>.<sha256>.state`, per profile,
 mode `0600`) is a new input that gates whether an unattended attempt is

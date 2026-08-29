@@ -11,6 +11,11 @@ setup() {
   export PROFILES_FILE="$DATA_DIR/profiles.xml"
   print_warning() { :; }; print_danger() { :; }; print_success() { :; }; print_primary() { :; }
   source "$BATS_TEST_DIRNAME/../logging.sh"
+  # core.sh, for _secret_check/_pkcs11_pin_needed: _service_preflight now
+  # routes secret existence checks through these (review round 7, finding
+  # #5) instead of a raw secrets_get, the same tri-state check the runtime
+  # preflight already uses.
+  source "$BATS_TEST_DIRNAME/../core.sh"
   source "$BATS_TEST_DIRNAME/../service.sh"
 }
 
