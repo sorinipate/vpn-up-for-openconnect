@@ -429,6 +429,18 @@ EOF
 @test "connection_preflight does not bypass the TOTP-seed check on an empty Keychain value" {
   source "$BATS_TEST_DIRNAME/../encryption.sh"
   secrets_backend() { echo keychain; }
+  # require_oathtool is a real dependency check (dependencies.sh) that runs
+  # BEFORE the token_secret existence check this test targets -- on any
+  # machine without oathtool installed (every CI runner here: neither the
+  # apt nor the brew install step in ci.yml installs it), it fails FIRST
+  # with an unrelated "needs oathtool" message, and this test's own
+  # assertion on that message then fails for a reason that has nothing to
+  # do with the actual check under test. Reproduced directly: this test
+  # passed locally (oathtool happened to be installed) but failed in CI on
+  # both runners, silently, since round 8 -- caught only by checking CI
+  # status before merging, not by any local run. Stubbed here so this test
+  # is isolated to the one thing it's actually meant to verify.
+  require_oathtool() { return 0; }
   _write_profile
   load_profile_fields "Work VPN"
   VPN_PASSWD="s3cret"
