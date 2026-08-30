@@ -5,7 +5,7 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ---
 
-## [Unreleased]
+## [v3.12.0] — 2026-08-30
 ### Added
 
 - **`vpn-up install-helper` / `uninstall-helper` — helper mode is now
