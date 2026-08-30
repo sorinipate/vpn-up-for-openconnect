@@ -64,6 +64,34 @@ XML
 
 # --- argv: cert/key flags present; path is fine on argv ---
 
+# --- an embedded PIN in the PKCS#11 URI must never reach argv (review round 9, BLOCKER #1) ---
+#
+# Reproduced directly against this codebase before this fix: a profile with
+# clientCertificate="pkcs11:id=%01?pin-value=918273" reached run_openconnect's
+# argv verbatim -- the literal test PIN below, "918273", is exactly the value
+# used in that reproduction. connection_preflight now refuses this profile
+# before admission, so dispatch (and so run_openconnect/sudo) is never
+# reached at all; this asserts that end to end, not just the return code.
+@test "a cert URI embedding pin-value never reaches dispatch, and the PIN never reaches argv" {
+  load_profile_fields "Cert VPN"   # any profile shape; fields overwritten below
+  VPN_NAME="Leaky VPN"
+  VPN_CLIENT_CERT="pkcs11:id=%01?pin-value=918273"
+  VPN_CLIENT_KEY=""
+  VPN_PASSWD="s3cret"
+  VPN_HOST="p.example.com"; PROTOCOL="anyconnect"
+  local argv="$BATS_TEST_TMPDIR/argv"
+  sudo() { if [ "$1" = openconnect ]; then shift; printf '%s\n' "$@" > "$argv"; cat >/dev/null; return 0; fi; return 0; }
+
+  run connection_preflight SERVICE
+  [ "$status" -eq "$VPN_RC_CONFIG" ]
+  [ ! -e "$argv" ]   # dispatch was never reached at all
+
+  # Belt and suspenders: even if something upstream of connection_preflight
+  # were ever bypassed, the underlying primitive this whole fix relies on --
+  # "does this URI embed a PIN" -- must actually detect the literal value.
+  _pkcs11_uri_embeds_pin "$VPN_CLIENT_CERT"
+}
+
 @test "run_openconnect passes --certificate/--sslkey for a file-based client cert" {
   _write_profiles
   local argv="$BATS_TEST_TMPDIR/argv"
@@ -231,6 +259,137 @@ XML
   local pinfile; pinfile="$(cat "$pinfile_seen" 2>/dev/null)"
   [ -n "$pinfile" ]     # sanity: the PIN really was staged before the signal
   [ ! -e "$pinfile" ]
+}
+
+# --- two narrower signal windows the test above did not cover (review round 9, BLOCKER #2) ---
+#
+# The test above signals from INSIDE dispatch, well after _prepare_pkcs11_pin
+# has already returned with the trap installed -- so it never exercised
+# either boundary the reviewer actually reproduced against:
+#
+#   A. between the PIN being WRITTEN and _prepare_pkcs11_pin returning to its
+#      caller, where an earlier version installed the trap only AFTER this
+#      function returned;
+#   B. between the epilogue's shred call and its `trap - TERM INT`, where an
+#      earlier version tore the trap down BEFORE shredding, not after.
+
+@test "a TERM during PIN staging itself (window A) still removes the file" {
+  _write_profiles
+  load_profile_fields "PKCS VPN"
+  VPN_PASSWD=""
+  SERVER_CERTIFICATE="pin-sha256:abc"
+  secrets_get() {
+    case "$2" in
+      key_password) echo "918273"; return 0 ;;
+      password) echo "s3cret"; return 0 ;;
+      *) echo ""; return 0 ;;
+    esac
+  }
+  run_openconnect() { return 0; }   # never reached if staging is interrupted
+  local signalled="$BATS_TEST_TMPDIR/chmod-signalled"
+  chmod() {
+    # Fire exactly once, on the PIN file's own `chmod 600` -- not the
+    # earlier `chmod 700` on the pids directory -- reproducing "TERM
+    # injected during the chmod 600, after the PIN had been written but
+    # before _prepare_pkcs11_pin() returned" precisely as found.
+    if [ "$1" = 600 ] && [ ! -e "$signalled" ]; then
+      : > "$signalled"
+      kill -TERM "$BASHPID"
+    fi
+    command chmod "$@"
+  }
+
+  ( run_admitted_connection "PKCS VPN" SERVICE ) &
+  local bgpid=$!
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "$bgpid" 2>/dev/null || break
+    command sleep 0.3
+  done
+  if kill -0 "$bgpid" 2>/dev/null; then
+    kill -9 "$bgpid" 2>/dev/null   # never expected: proves this test's own guard failed, not the code under test
+  fi
+  wait "$bgpid" 2>/dev/null || true
+
+  [ -e "$signalled" ]   # sanity: the injection point was actually reached
+  local leftover; leftover="$(find "${DATA_DIR}/pids" -maxdepth 1 -name ".${PROGRAM_NAME}.pin.*" 2>/dev/null)"
+  [ -z "$leftover" ]
+}
+
+@test "a TERM at the moment of cleanup itself (window B) still removes the file" {
+  _write_profiles
+  load_profile_fields "PKCS VPN"
+  VPN_PASSWD=""
+  SERVER_CERTIFICATE="pin-sha256:abc"
+  secrets_get() {
+    case "$2" in
+      key_password) echo "918273"; return 0 ;;
+      password) echo "s3cret"; return 0 ;;
+      *) echo ""; return 0 ;;
+    esac
+  }
+  run_openconnect() { return 0; }   # ordinary return -> reaches the epilogue normally
+  local signalled="$BATS_TEST_TMPDIR/shred-signalled"
+  # _shred_pin_file calls the `shred` binary when available; stubbing it lets
+  # this fire the signal from exactly the point real deletion happens,
+  # reproducing "TERM injected immediately before _shred_pin_file()" -- the
+  # trap handler's own call back into _shred_pin_file re-enters this same
+  # stub, so it only self-signals ONCE (guarded by $signalled) and performs
+  # the real deletion on every call, including the re-entrant one.
+  shred() {
+    if [ ! -e "$signalled" ]; then
+      : > "$signalled"
+      kill -TERM "$BASHPID"
+    fi
+    command shred "$@"
+  }
+
+  ( run_admitted_connection "PKCS VPN" SERVICE ) &
+  local bgpid=$!
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "$bgpid" 2>/dev/null || break
+    command sleep 0.3
+  done
+  if kill -0 "$bgpid" 2>/dev/null; then
+    kill -9 "$bgpid" 2>/dev/null   # never expected: proves this test's own guard failed, not the code under test
+  fi
+  wait "$bgpid" 2>/dev/null || true
+
+  [ -e "$signalled" ]   # sanity: the injection point was actually reached
+  local leftover; leftover="$(find "${DATA_DIR}/pids" -maxdepth 1 -name ".${PROGRAM_NAME}.pin.*" 2>/dev/null)"
+  [ -z "$leftover" ]
+}
+
+@test "the staged PIN filename embeds \$BASHPID, not \$\$ (review round 9, MEDIUM #3)" {
+  # doctor_pin_files reads the pid embedded in a PIN file's own name to
+  # decide liveness (§3.5's kill-0-not-age pattern). $$ inside a subshell
+  # still names the ORIGINATING process, not the subshell actually doing the
+  # staging -- the same mismatch already fixed for the TERM/INT trap's own
+  # re-raise (core.sh uses $BASHPID there specifically because of this). If
+  # staging used $$ instead, a subshell that died while the parent lived on
+  # would embed the parent's (still-alive) pid, and doctor would read a
+  # genuinely orphaned file as still owned.
+  _write_profiles
+  load_profile_fields "PKCS VPN"
+  secrets_get() { [ "$2" = key_password ] && { echo "918273"; return 0; }; echo ""; return 0; }
+
+  local outfile="$BATS_TEST_TMPDIR/pinfile-path"
+  (
+    _prepare_pkcs11_pin SERVICE
+    printf '%s\n%s\n' "$_VPN_PIN_FILE" "$BASHPID" > "$outfile"
+  )
+  local pinfile subshell_pid
+  pinfile="$(sed -n 1p "$outfile")"
+  subshell_pid="$(sed -n 2p "$outfile")"
+
+  [ -n "$pinfile" ]
+  [ -n "$subshell_pid" ]
+  [ "$subshell_pid" != "$$" ]   # sanity: the subshell really did get its own pid
+  [[ "$pinfile" == *".pin.${subshell_pid}."* ]]
+  [[ "$pinfile" != *".pin.$$."* ]]
+
+  rm -f "$pinfile" 2>/dev/null
 }
 
 @test "a service with a PKCS#11 certificate and no stored PIN is CONFIG, never prompts" {

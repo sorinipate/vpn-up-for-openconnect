@@ -229,6 +229,42 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
     breaker even after the PIN was fixed. `key_password` now clears history
     the same way `password` does (no TOTP-step reset is needed for a PIN
     change).
+  - **A PKCS#11 URI could embed its own PIN directly (RFC 7512's `pin-value`
+    or `pin-source` query attributes), completely bypassing the managed
+    `key_password`/`_prepare_pkcs11_pin` path.** Reproduced directly:
+    `clientCertificate="pkcs11:id=%01?pin-value=918273"` reached
+    `run_openconnect`'s argv verbatim — the PIN ended up in `profiles.xml`
+    *and* on OpenConnect's own process arguments, in the clear, and (per
+    GnuTLS's own PKCS#11 code, which checks `pin-value` before `pin-source`)
+    would silently have overridden a correctly-managed stored PIN rather
+    than merely coexisting with it. `connection_preflight` now refuses any
+    profile whose certificate or key URI embeds either attribute, in both
+    `SERVICE` and `INTERACTIVE` modes — unlike a merely-missing PIN, this is
+    an active misconfiguration that leaks a credential in *either* mode, not
+    only when unattended. The setup wizard refuses it too, so a profile can
+    never be created this way in the first place.
+  - **The TERM/INT cleanup added for an abandoned PKCS#11 PIN file (above)
+    had two of its own signal-timing windows.** *Window A*: the trap was
+    installed only after `_prepare_pkcs11_pin` returned, so a signal landing
+    anywhere during the PIN's own staging (write, `chmod`) — reproduced
+    directly by injecting `TERM` during that `chmod 600` — still left the
+    plaintext file behind. *Window B*: the epilogue tore the trap down
+    *before* shredding the file, so a signal landing in between — reproduced
+    directly the same way — hit the default (untrapped) disposition with the
+    file still on disk. Fixed by installing the trap the moment the file is
+    created (before any write, while it's still empty) and by shredding
+    before removing the trap, not after, in the epilogue.
+  - **The staged PIN file's embedded owning-process pid used `$$`, which
+    `doctor_pin_files`' liveness check reads as the owner — but `$$` names
+    the *originating* shell even from inside a subshell**, unlike
+    `$BASHPID`, which the TERM/INT trap itself already (correctly) uses to
+    re-raise against itself. Fixed to use `$BASHPID` too, captured into a
+    plain variable before the `mktemp` call: writing `$BASHPID` directly
+    inside that command substitution turned out to re-introduce the exact
+    same class of bug one level deeper, since `$(...)` forks its own
+    subshell for the whole substitution — reproduced directly, an inline
+    `$BASHPID` there embedded a *third*, already-dead pid distinct from
+    both `$$` and the calling function's own `$BASHPID`.
 
 ### Fixed
 

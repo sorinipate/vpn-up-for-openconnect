@@ -90,7 +90,9 @@ _wizard_stubs() {
   secrets_set() { printf '%s\n' "$2" >> "$SECRETS_SET_CALLS"; return 0; }
   WARNINGS="$BATS_TEST_TMPDIR/warnings"; : > "$WARNINGS"
   print_warning() { printf -- "$1" "${@:2}" >> "$WARNINGS"; }
-  print_danger() { :; }; print_success() { :; }
+  DANGERS="$BATS_TEST_TMPDIR/dangers"; : > "$DANGERS"
+  print_danger() { printf -- "$1" "${@:2}" >> "$DANGERS"; }
+  print_success() { :; }
 }
 
 @test "add_profile_wizard offers and stores a PKCS#11 PIN for a file certificate paired with a pkcs11: key" {
@@ -114,6 +116,38 @@ n
 EOF
   grep -qF "key_password" "$SECRETS_SET_CALLS"
   if grep -qF "passphrase-protected" "$WARNINGS"; then false; fi
+}
+
+@test "add_profile_wizard refuses a client certificate URI that embeds a PIN directly" {
+  # Reproduced directly against this codebase before this fix: a profile
+  # created with clientCertificate="pkcs11:id=%01?pin-value=918273" stored
+  # the PIN in the clear in profiles.xml (review round 9, BLOCKER #1). The
+  # wizard must refuse this rather than silently accepting it, so a profile
+  # can never be CREATED this way in the first place -- clearing both cert
+  # and key fields, same as if neither had been entered.
+  _wizard_stubs
+  APPENDED_CERT="$BATS_TEST_TMPDIR/appended-cert"; : > "$APPENDED_CERT"
+  APPENDED_KEY="$BATS_TEST_TMPDIR/appended-key"; : > "$APPENDED_KEY"
+  append_profile() { printf '%s' "${10}" > "$APPENDED_CERT"; printf '%s' "${11}" > "$APPENDED_KEY"; return 0; }
+  add_profile_wizard <<'EOF'
+LeakyPin
+anyconnect
+h.example.com
+
+user
+n
+n
+pkcs11:id=%01?pin-value=918273
+
+
+
+n
+n
+EOF
+  [[ "$(cat "$DANGERS")" == *"pin-value"* || "$(cat "$DANGERS")" == *"PIN"* ]]
+  [ -z "$(cat "$APPENDED_CERT")" ]
+  [ -z "$(cat "$APPENDED_KEY")" ]
+  if grep -qF "918273" "$APPENDED_CERT" "$APPENDED_KEY" "$SECRETS_SET_CALLS"; then false; fi
 }
 
 @test "add_profile_wizard does not offer a PKCS#11 PIN for a plain file certificate and key" {

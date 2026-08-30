@@ -309,6 +309,21 @@ connection_preflight() {
     return "$VPN_RC_CONFIG"
   fi
 
+  # A pkcs11: URI that embeds its own PIN (RFC 7512 pin-value/pin-source)
+  # bypasses the managed key_password/_prepare_pkcs11_pin path entirely --
+  # the PIN would sit in profiles.xml and on OpenConnect's argv in the
+  # clear (review round 9, BLOCKER #1; see _pkcs11_uri_embeds_pin above).
+  # Checked unconditionally, not just under SERVICE: unlike the
+  # existence-only checks below (a human can supply a MISSING value
+  # interactively), this profile is actively misconfigured, and an
+  # INTERACTIVE run would put the embedded PIN on argv exactly the same
+  # way. A syntax check on a locally-held string, so it costs nothing and
+  # is not gated by mode.
+  if _pkcs11_uri_embeds_pin "${VPN_CLIENT_CERT:-}" || _pkcs11_uri_embeds_pin "${VPN_CLIENT_KEY:-}"; then
+    print_danger "Profile '%s' embeds a PIN directly in its PKCS#11 URI (pin-value/pin-source). Remove it from the URI and store the PIN instead: %s set-secret '%s' key_password\n" "${VPN_NAME}" "${DISPLAY_NAME}" "${VPN_NAME}"
+    return "$VPN_RC_CONFIG"
+  fi
+
   # Each profile gets its own PID/state/log files
   set_profile_paths "${VPN_NAME}"
   print_warning "Process ID (PID) stored in %s ...\n" "${PID_FILE_PATH}"
@@ -577,32 +592,25 @@ run_admitted_connection() {
     rc=$?
   fi
 
-  # A staged PIN file is a plaintext credential that, left alone, only gets
-  # cleaned up at this function's own end (below) -- reached only when
-  # dispatch RETURNS. Review round 8 (HIGH #2) reproduced directly: sending
-  # TERM to the owning shell while dispatch was blocked left the file behind
-  # indefinitely, since nothing ran the cleanup below. This does not need
-  # _state_lock (only release_attempt_owner does; see the design doc for why
-  # a locked signal handler was rejected there) so it is safe to run
-  # unlocked from a trap. Verified empirically against real bash behaviour:
-  # a trap set on a signal bash is already blocked delivering to a foreground
-  # child does not run until that child itself has exited -- so this fires
-  # promptly only once the tunnel process (openconnect/sudo, in the dispatch
-  # below) has also been signalled, which is how both systemd's control-group
-  # kill and launchd's process-group signal terminate a supervised job in
-  # practice. A signal delivered to this shell alone, with the tunnel child
-  # left untouched, is NOT covered here; doctor_pin_files (dependencies.sh)
-  # is the diagnostic backstop for that case and for an unhandled SIGKILL.
-  if [ -n "$_VPN_PIN_FILE" ]; then
-    # $BASHPID, not $$: $$ names the ORIGINATING shell even from inside a
-    # subshell, while $BASHPID is always this actual running instance's own
-    # pid -- the correct target for "re-raise this signal against myself."
-    # In vpn-up.command's normal, un-subshelled invocation the two are
-    # identical, so this changes nothing there; it only matters when this
-    # code runs inside a subshell (as a test harness legitimately might).
-    trap '_shred_pin_file "$_VPN_PIN_FILE"; trap - TERM INT; kill -TERM "$BASHPID"' TERM
-    trap '_shred_pin_file "$_VPN_PIN_FILE"; trap - TERM INT; kill -INT  "$BASHPID"' INT
-  fi
+  # A staged PIN file is a plaintext credential that needs a live cleanup
+  # path for as long as it exists. _prepare_pkcs11_pin (above) already
+  # installed an unlocked TERM/INT trap the moment it created the file --
+  # before the PIN was even written, closing the window an earlier version
+  # left between staging and returning to this point (review round 9,
+  # BLOCKER #2) -- so there is nothing further to install here; the trap
+  # simply stays live through TOTP/Duo-passcode entry and dispatch below,
+  # until this function's own epilogue tears it down after shredding the
+  # file. This does not need _state_lock (only release_attempt_owner does;
+  # see the design doc for why a locked signal handler was rejected there).
+  # Verified empirically against real bash behaviour: a trap set on a
+  # signal bash is already blocked delivering to a foreground child does not
+  # run until that child itself has exited -- so this fires promptly only
+  # once the tunnel process (openconnect/sudo, in the dispatch below) has
+  # also been signalled, which is how both systemd's control-group kill and
+  # launchd's process-group signal terminate a supervised job in practice. A
+  # signal delivered to this shell alone, with the tunnel child left
+  # untouched, is NOT covered here; doctor_pin_files (dependencies.sh) is
+  # the diagnostic backstop for that case and for an unhandled SIGKILL.
 
   if [ "$rc" = 0 ] && [ "${VPN_AUTH_MODE:-password}" != sso ] && [ "$VPN_TOKEN_MODE" = totp ]; then
     local seed=""
@@ -682,8 +690,18 @@ run_admitted_connection() {
   # already read the PIN by the time either returns, regardless of outcome.
   # (Helper mode may already have removed it earlier still -- see
   # connect_via_helper, twophase.sh -- in which case this is a harmless no-op.)
-  trap - TERM INT
+  #
+  # Shred BEFORE tearing down the trap, not after (review round 9, BLOCKER
+  # #2) -- reproduced directly by injecting TERM between an earlier
+  # version's `trap - TERM INT` and its shred call: the trap was already
+  # gone, so that TERM fell through to the default disposition and killed
+  # the process with the PIN file still on disk, unshredded. With the trap
+  # still live during the shred, the same signal instead re-enters
+  # _shred_pin_file (idempotent -- a second attempt on an already-gone file
+  # is a harmless no-op) before terminating, so no ordering of the signal
+  # against this cleanup can skip it.
   _shred_pin_file "${_VPN_PIN_FILE:-}"
+  trap - TERM INT
   unset _VPN_PIN_FILE
 
   release_attempt_owner "$name"
@@ -894,6 +912,45 @@ _pkcs11_pin_needed() {
   return 1
 }
 
+# True when a pkcs11: URI's own query component embeds a PIN directly, via
+# RFC 7512's 'pin-value' (the literal PIN, in the clear) or 'pin-source'
+# (a path VPN Up does not control) query attribute.
+#
+# This is not a hypothetical: reproduced directly against this codebase --
+# a profile with clientCertificate="pkcs11:id=%01?pin-value=918273" reached
+# run_openconnect's argv verbatim (review round 9, BLOCKER #1), so the PIN
+# ends up in profiles.xml, in OpenConnect's own process arguments, and
+# visible to anything that can inspect the process table -- exactly the
+# argv exposure the managed key_password/_prepare_pkcs11_pin path exists to
+# avoid. RFC 7512 itself warns pin-value has security consequences and says
+# a URI carrying both attributes should be refused; GnuTLS's own PKCS#11
+# code checks pin-value BEFORE pin-source, so an embedded pin-value would
+# also silently override VPN Up's own managed PIN (the one this project
+# fetches from key_password and appends as pin-source) rather than merely
+# coexisting with it.
+#
+# Query attributes are the substring after the URI's first '?', separated by
+# '&'; each is checked by its OWN attribute name (the part before its '=')
+# rather than by a blunt substring match, so a value that merely happens to
+# contain the text "pin-value=" elsewhere could not produce a false
+# rejection.
+_pkcs11_uri_embeds_pin() {
+  local uri="$1" query attr
+  case "$uri" in
+    pkcs11:*\?*) query="${uri#*\?}" ;;
+    *) return 1 ;;
+  esac
+  local IFS='&'
+  local -a attrs
+  read -r -a attrs <<<"$query"
+  for attr in "${attrs[@]}"; do
+    case "${attr%%=*}" in
+      pin-value|pin-source) return 0 ;;
+    esac
+  done
+  return 1
+}
+
 # Shared by run_admitted_connection's normal cleanup and its TERM/INT trap
 # below -- one definition of "how a staged PIN file is destroyed", so the two
 # call sites can't drift apart on shred-vs-rm fallback behaviour.
@@ -932,35 +989,69 @@ _prepare_pkcs11_pin() {
       # The write is staged into a uniquely-named file (mktemp, not a
       # deterministic profile_slug()-based name -- a secret-bearing file
       # must not risk the same slug collision the state-file identity fix
-      # (logging.sh's _profile_state_key) exists to avoid) and _VPN_PIN_FILE
-      # is only ever set AFTER every step below has actually succeeded.
-      # Reproduced directly: with ${DATA_DIR}/pids replaced by a plain file,
-      # the previous code wrote nowhere, silently kept going, and reported
-      # success with _VPN_PIN_FILE pointing at a path that was never
-      # created -- openconnect would then have been launched with a
-      # pin-source pointing nowhere. Any failure below is reported the same
-      # way a stored-secret backend error already is: terminal for a
-      # service (nothing it can retry into existence on its own), a
-      # fallback to the interactive prompt for a human who is present.
+      # (logging.sh's _profile_state_key) exists to avoid). Any failure
+      # below is reported the same way a stored-secret backend error
+      # already is: terminal for a service (nothing it can retry into
+      # existence on its own), a fallback to the interactive prompt for a
+      # human who is present.
       local tmp="" fail=""
+      # Captured into a plain variable, NOT interpolated directly into the
+      # mktemp command substitution below: $(...) forks its own subshell to
+      # run the ENTIRE contained command, including argument expansion, so a
+      # bare ${BASHPID} written inline there is evaluated inside THAT
+      # transient, already-exiting-by-the-time-mktemp-returns subshell, not
+      # the real long-lived process staging the PIN -- reproduced directly
+      # while testing this exact line: "$(mktemp ".../pin.${BASHPID}.XXXXXX")"
+      # embedded a pid distinct from BOTH $$ and the calling function's own
+      # $BASHPID, and one that was already dead the instant mktemp returned.
+      # Assigning to a plain variable FIRST freezes the value at the correct
+      # scope (variables, unlike $BASHPID itself, are inherited by value into
+      # a later subshell fork, not re-evaluated inside it).
+      local mypid="$BASHPID"
       if ! ( umask 077; mkdir -p "${DATA_DIR}/pids" ) 2>/dev/null \
           || ! chmod 700 "${DATA_DIR}/pids" 2>/dev/null; then
         fail="create the VPN state directory"
-      # $$ is embedded ahead of mktemp's own random suffix so a leftover file
-      # from an abnormal termination (review round 8, HIGH #2) can still be
-      # matched to its owning process by `vpn-up doctor` (doctor_pin_files,
-      # dependencies.sh) via a liveness check -- the same kill-0-not-age
-      # pattern already used for attempt ownership (§3.5) -- rather than by
-      # guessing from age alone, which would either flag a still-connected
-      # multi-hour session or silently ignore a genuinely orphaned file.
-      elif ! tmp="$(mktemp "${DATA_DIR}/pids/.${PROGRAM_NAME}.pin.$$.XXXXXX" 2>/dev/null)"; then
+      # $mypid ($BASHPID), not $$, is embedded ahead of mktemp's own random
+      # suffix so a leftover file from an abnormal termination (review round
+      # 8, HIGH #2) can still be matched to its owning process by `vpn-up
+      # doctor` (doctor_pin_files, dependencies.sh) via a liveness check --
+      # the same kill-0-not-age pattern already used for attempt ownership
+      # (§3.5) -- rather than by guessing from age alone, which would either
+      # flag a still-connected multi-hour session or silently ignore a
+      # genuinely orphaned file. $$ names the ORIGINATING shell even from
+      # inside a subshell, while $BASHPID is always the actual running
+      # instance's own pid (review round 9, MEDIUM #3) -- using $$ here left
+      # a mismatch against the TERM/INT trap below, which already (and
+      # correctly) uses $BASHPID to re-raise against itself: staging inside a
+      # subshell would have embedded the wrong pid, so doctor_pin_files could
+      # read a genuinely dead owner as still alive via the parent's pid. In
+      # vpn-up.command's normal, un-subshelled invocation $$, $BASHPID and
+      # $mypid are all the same value, so this changes nothing there.
+      elif ! tmp="$(mktemp "${DATA_DIR}/pids/.${PROGRAM_NAME}.pin.${mypid}.XXXXXX" 2>/dev/null)"; then
         fail="create a PIN file"
-      elif ! ( umask 077; printf '%s' "$pin" > "$tmp" ); then
-        fail="write the PIN file"
-        rm -f "$tmp"
-      elif ! chmod 600 "$tmp" 2>/dev/null; then
-        fail="secure the PIN file"
-        rm -f "$tmp"
+      else
+        # Published as the cleanup target, and the TERM/INT trap installed,
+        # the moment the file exists at all -- still empty here, before the
+        # PIN is ever written to it. An earlier version did both only in
+        # run_admitted_connection, AFTER this whole function had already
+        # returned: reproduced directly by injecting TERM immediately after
+        # the write below but before that later trap-install ran (review
+        # round 9, BLOCKER #2) -- the plaintext PIN was left on disk with
+        # nothing watching it. Moving both here closes that window: the
+        # file is never unwatched between the instant it can hold a secret
+        # and the instant this function returns.
+        _VPN_PIN_FILE="$tmp"
+        trap '_shred_pin_file "$_VPN_PIN_FILE"; trap - TERM INT; kill -TERM "$BASHPID"' TERM
+        trap '_shred_pin_file "$_VPN_PIN_FILE"; trap - TERM INT; kill -INT  "$BASHPID"' INT
+        if ! ( umask 077; printf '%s' "$pin" > "$tmp" ); then
+          fail="write the PIN file"
+        elif ! chmod 600 "$tmp" 2>/dev/null; then
+          fail="secure the PIN file"
+        fi
+        if [ -n "$fail" ]; then
+          _shred_pin_file "$tmp"
+          _VPN_PIN_FILE=""
+        fi
       fi
       unset pin
       if [ -n "$fail" ]; then
@@ -971,7 +1062,6 @@ _prepare_pkcs11_pin() {
         print_danger "Could not %s for the PKCS#11 PIN for '%s'; falling back to an interactive PIN prompt.\n" "$fail" "${VPN_NAME}"
         return 0
       fi
-      _VPN_PIN_FILE="$tmp"
       ;;
     1)
       # No PIN stored. Fine for an interactive caller -- openconnect prompts

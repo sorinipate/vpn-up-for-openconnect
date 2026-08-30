@@ -320,6 +320,82 @@ EOF
   [[ "$output" == *"key_password"* ]]
 }
 
+# --- an embedded PIN in the PKCS#11 URI itself must be refused (review round 9, BLOCKER #1) ---
+#
+# RFC 7512 defines 'pin-value' (the literal PIN, in the clear) and
+# 'pin-source' (a path VPN Up does not control) as query attributes a
+# pkcs11: URI can carry directly. Reproduced directly against this codebase:
+# clientCertificate="pkcs11:id=%01?pin-value=918273" reached run_openconnect's
+# argv verbatim, bypassing the managed key_password/_prepare_pkcs11_pin path
+# entirely -- the PIN ends up in profiles.xml AND on OpenConnect's own argv,
+# in the clear. Checked unconditionally (not gated on SERVICE): unlike a
+# merely-missing PIN, this profile is actively misconfigured, and an
+# INTERACTIVE run would leak the embedded PIN onto argv exactly the same way.
+
+@test "a cert URI containing pin-value is CONFIG before admission, in both modes" {
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_PASSWD="s3cret"
+  VPN_CLIENT_CERT="pkcs11:id=%01?pin-value=918273"
+  run connection_preflight SERVICE
+  [ "$status" -eq "$VPN_RC_CONFIG" ]
+  [[ "$output" == *"pin-value"* || "$output" == *"PIN"* ]]
+  run connection_preflight INTERACTIVE
+  [ "$status" -eq "$VPN_RC_CONFIG" ]
+}
+
+@test "a key URI containing pin-value is CONFIG before admission" {
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_PASSWD="s3cret"
+  VPN_CLIENT_CERT="/etc/vpn/me.pem"
+  VPN_CLIENT_KEY="pkcs11:id=%01?pin-value=918273"
+  run connection_preflight SERVICE
+  [ "$status" -eq "$VPN_RC_CONFIG" ]
+}
+
+@test "a cert URI containing pin-source is CONFIG before admission" {
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_PASSWD="s3cret"
+  VPN_CLIENT_CERT="pkcs11:id=%01?pin-source=file:/tmp/attacker-controlled"
+  run connection_preflight SERVICE
+  [ "$status" -eq "$VPN_RC_CONFIG" ]
+}
+
+@test "a key URI containing pin-source is CONFIG before admission" {
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_PASSWD="s3cret"
+  VPN_CLIENT_CERT="/etc/vpn/me.pem"
+  VPN_CLIENT_KEY="pkcs11:id=%01?pin-source=file:/tmp/attacker-controlled"
+  run connection_preflight SERVICE
+  [ "$status" -eq "$VPN_RC_CONFIG" ]
+}
+
+@test "a plain pkcs11 URI with no pin-value/pin-source is not rejected by the new check" {
+  # The check must not false-positive on the ordinary, documented form.
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_PASSWD="s3cret"
+  VPN_CLIENT_CERT="pkcs11:manufacturer=piv_II;id=%01"
+  secrets_get() { [ "$2" = key_password ] && { echo "1234"; return 0; }; echo "s3cret"; return 0; }
+  run connection_preflight SERVICE
+  [ "$status" -ne "$VPN_RC_CONFIG" ]
+}
+
+@test "a query value that merely CONTAINS the text pin-value= is not a false match" {
+  # _pkcs11_uri_embeds_pin checks each attribute's OWN name (before its '='),
+  # not a blunt substring search across the whole query string.
+  _write_profile
+  load_profile_fields "Work VPN"
+  VPN_PASSWD="s3cret"
+  VPN_CLIENT_CERT="pkcs11:id=%01?object=note-says-pin-value%3D123"
+  secrets_get() { [ "$2" = key_password ] && { echo "1234"; return 0; }; echo "s3cret"; return 0; }
+  run connection_preflight SERVICE
+  [ "$status" -ne "$VPN_RC_CONFIG" ]
+}
+
 @test "a secrets-backend error while checking the PKCS#11 PIN in preflight is SECRETS_UNAVAILABLE, not CONFIG" {
   _write_profile
   load_profile_fields "Work VPN"

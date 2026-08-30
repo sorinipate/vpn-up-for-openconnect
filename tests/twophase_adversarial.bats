@@ -370,10 +370,24 @@ STUB
 # the lock checks above, doctor never removes anything itself.
 
 @test "doctor_pin_files reports a PIN file whose owning pid is dead" {
-  local f="$DATA_DIR/pids/.${PROGRAM_NAME}.pin.99999.abc123"
+  # A guaranteed-dead pid, not a hardcoded 99999: fork a real process,
+  # capture its pid, and wait for it -- by the time `wait` returns it is
+  # provably gone, with no assumption about what else might be running on
+  # this test runner. (review round 9, LOW #4: a bare `! kill -0 99999`
+  # here was itself the bare-negation form this suite has already
+  # established is unsafe under bats' `set -e` test bodies -- if the
+  # assertion ever failed, that non-zero status would abort the test
+  # silently instead of reporting the failure.)
+  local deadpid
+  ( exit 0 ) &
+  deadpid=$!
+  wait "$deadpid" 2>/dev/null
+  if kill -0 "$deadpid" 2>/dev/null; then
+    false   # the fixture itself is broken, not the code under test
+  fi
+
+  local f="$DATA_DIR/pids/.${PROGRAM_NAME}.pin.${deadpid}.abc123"
   printf '1234' > "$f"
-  # pid 99999 is not expected to exist on any test runner.
-  ! kill -0 99999 2>/dev/null
 
   run doctor_pin_files
   [ "$status" -eq 0 ]

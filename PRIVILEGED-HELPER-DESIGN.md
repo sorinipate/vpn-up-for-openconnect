@@ -1585,6 +1585,87 @@ a plausible thing for a future change to erode without noticing:
     needed, since a PIN correction has nothing to do with which TOTP step
     was already reserved.
 
+   **A pkcs11: URI can embed its own PIN directly, via RFC 7512's
+    `pin-value` (the literal PIN, in the clear) or `pin-source` (a path this
+    project does not control) query attributes — completely bypassing the
+    managed `key_password`/`_prepare_pkcs11_pin` path this whole PKCS#11
+    branch exists to provide.** Reproduced directly against this codebase:
+    `clientCertificate="pkcs11:id=%01?pin-value=918273"` reached
+    `run_openconnect`'s argv verbatim. That is not merely a config-hygiene
+    problem — it puts the PIN in `profiles.xml` *and* on OpenConnect's own
+    process arguments, visible to anything that can inspect the process
+    table, exactly the argv exposure `_prepare_pkcs11_pin`'s transient
+    `pin-source` file exists to avoid. It is worse than simply coexisting
+    with the managed path, too: GnuTLS's own PKCS#11 code checks `pin-value`
+    before `pin-source`, so an embedded `pin-value` would silently *win*
+    over a correctly stored `key_password` VPN Up itself appends as
+    `pin-source` — an operator who believes they've moved to managed PIN
+    storage would still be using the leaked one. `_pkcs11_uri_embeds_pin`
+    (core.sh) checks each query attribute by its own name (the text before
+    its `=`, not a blunt substring search across the whole query string) and
+    `connection_preflight` refuses the profile if either the certificate or
+    the key URI carries either attribute — deliberately **unconditional on
+    mode**, unlike the neighbouring existence-only checks: a merely-missing
+    PIN is fine for an attended human to supply interactively, but an
+    embedded PIN is an active misconfiguration that leaks onto argv in
+    `INTERACTIVE` mode exactly the same way it would under `SERVICE`. The
+    setup wizard (`setup.sh`) refuses it too, so a profile can never be
+    *created* this way in the first place, rather than only being caught the
+    first time someone tries to connect with it.
+   **The TERM/INT cleanup for an abandoned PKCS#11 PIN file (the previous
+    finding, above) had two of its own signal-timing windows, both
+    reproduced directly against this codebase, not merely theorized.**
+    *Window A*: the trap was installed by `run_admitted_connection` only
+    *after* `_prepare_pkcs11_pin` had already returned — meaning the file's
+    entire staging sequence (write, `chmod 600`) ran with no cleanup path at
+    all. Reproduced by injecting `TERM` during that `chmod 600`, after the
+    PIN had already been written to disk: the process exited leaving the
+    plaintext file behind, since the trap that would have caught it did not
+    exist yet at that point in the call sequence. *Window B*: the epilogue's
+    order was `trap - TERM INT` followed by `_shred_pin_file`, so a signal
+    landing in the gap between those two statements found no trap installed
+    at all — reproduced by injecting `TERM` at exactly that point, with the
+    same result. Both are fixed by changing *when* protection exists, not by
+    adding a new mechanism: `_prepare_pkcs11_pin` now sets `_VPN_PIN_FILE`
+    and installs the TERM/INT trap the moment `mktemp` succeeds — while the
+    file is still empty, before the PIN is ever written to it — so there is
+    no point after the file can hold a secret where nothing is watching it;
+    and the epilogue now shreds *before* tearing the trap down, relying on
+    `_shred_pin_file` already being idempotent (a signal landing mid-shred
+    just re-enters it, which is a harmless no-op on an already-gone file,
+    before re-raising) so no ordering of the signal against this cleanup can
+    skip it.
+   **The staged PIN file's embedded owning-process pid used `$$`, which
+    `doctor_pin_files`' liveness check (previous finding) reads as the
+    owner to test — but `$$` names the *originating* shell even from inside
+    a subshell, unlike `$BASHPID`, which the TERM/INT trap's own re-raise
+    already (correctly) uses for exactly this reason.** Using `$$` for
+    staging while the trap used `$BASHPID` for re-raising was an
+    inconsistency with a real, if narrow, consequence: if PIN staging ever
+    happened inside a subshell that could die independently of its parent,
+    the embedded pid would name the (still-alive) parent, and
+    `doctor_pin_files` would read a genuinely orphaned file as still owned
+    and silently skip it. This does not affect `vpn-up.command`'s normal,
+    un-subshelled invocation, where `$$` and `$BASHPID` are the same value
+    — worth stating precisely rather than overselling: this is a
+    consistency and defense-in-depth fix, not a fix for an observed
+    production false-negative. Fixing it surfaced a second, deeper version
+    of the identical class of bug: an initial attempt wrote `$BASHPID`
+    *directly inside* the `mktemp` command substitution
+    (`mktemp ".../pin.${BASHPID}.XXXXXX"`), which is wrong for a subtler
+    reason — `$(...)` forks its own subshell to evaluate the *entire*
+    contained command, including argument expansion, so a bare `${BASHPID}`
+    written inline there is evaluated inside that transient subshell, not
+    the real, long-lived process doing the staging. Reproduced directly:
+    that inline form embedded a *third* pid, distinct from both `$$` and
+    the calling function's own `$BASHPID`, and one already dead by the
+    instant `mktemp` returned — silently defeating the very liveness check
+    this fix exists to make correct. The actual fix captures `$BASHPID`
+    into a plain local variable *before* the command substitution:
+    variables, unlike `$BASHPID` itself, are inherited by value into a
+    later subshell fork rather than re-evaluated inside it, so the frozen
+    value survives the fork intact.
+
 **The state file** (`${DATA_DIR}/state/<slug>.<sha256>.state`, per profile,
 mode `0600`) is a new input that gates whether an unattended attempt is
 admitted — worth recording explicitly as a security invariant rather than
