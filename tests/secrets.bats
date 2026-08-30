@@ -10,6 +10,7 @@ setup() {
   mkdir -p "$DATA_DIR"
   print_danger() { printf -- "$1" "${@:2}" >&2; }
   export -f print_danger
+  source "$BATS_TEST_DIRNAME/../outcome.sh"
   source "$BATS_TEST_DIRNAME/../encryption.sh"
   export _VAULT_PASSPHRASE="test-pass-123"
 }
@@ -82,6 +83,131 @@ setup() {
   [ "$(_security_quote 'plain')" = '"plain"' ]
   [ "$(_security_quote 'a"b')" = '"a\"b"' ]
   [ "$(_security_quote 'a\b')" = '"a\\b"' ]
+}
+
+# --- tri-state existence checks (review round 4) ---
+#
+# A generic "secrets_get's own exit status means present/absent/error" read
+# is correct for the openssl/file backends, but Keychain and Secret Service
+# each fold "absent" and "backend error" into overlapping exit statuses of
+# their own -- these test each backend's OWN probe against exit codes/output
+# verified against real behavior (Keychain: reproduced directly on this
+# machine -- `security find-generic-password` against a nonexistent
+# account/service reliably exits 44; Secret Service: no live D-Bus/secret-tool
+# environment is available here, so this is verified against libsecret's
+# published secret-tool.c source instead -- see PRIVILEGED-HELPER-DESIGN.md).
+
+@test "_secret_check_keychain: found is present, errSecItemNotFound (44) is absent, anything else is backend error" {
+  security() { echo "the-secret-value"; return 0; }   # a real found lookup always has a value on stdout
+  if _secret_check_keychain "k"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 0 ]
+
+  security() { return 44; }
+  if _secret_check_keychain "k"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 1 ]
+
+  security() { return 51; }   # e.g. a locked/unavailable keychain
+  if _secret_check_keychain "k"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 2 ]
+}
+
+@test "_secret_check_keychain: prints the fetched value on success, one round-trip" {
+  # Round 5 (BLOCKER #2): a separate check-then-fetch left a gap where the
+  # backend could fail between the two calls. This asserts security is
+  # invoked exactly once and the value is available from that single call.
+  local calls="$BATS_TEST_TMPDIR/security-calls"
+  : > "$calls"
+  security() { echo "call" >> "$calls"; echo "the-secret-value"; return 0; }
+  local out; out="$(_secret_check_keychain "k")"
+  [ "$out" = "the-secret-value" ]
+  [ "$(wc -l < "$calls")" -eq 1 ]
+}
+
+@test "_secret_check_secrettool: a successful lookup is present and prints the value" {
+  secret-tool() { echo "the-secret-value"; return 0; }
+  local out; out="$(_secret_check_secrettool "k")"
+  [ "$out" = "the-secret-value" ]
+}
+
+# --- empty stored value is ABSENT, not PRESENT (review round 8, BLOCKER #1) ---
+#
+# Reproduced directly against a real Keychain on this machine:
+# `security add-generic-password -w ""` succeeds, and the later `-w` lookup
+# returns rc=0 with empty output -- a bare rc==0 check (the previous code)
+# reads that as PRESENT, while the openssl/file backend's own check
+# (core.sh's _secret_check, generic branch: `[ -n "$val" ]`) already treated
+# the identical case as ABSENT. That divergence let an empty stored
+# password/token_secret/key_password sail past connection_preflight's
+# existence checks on Keychain/Secret Service specifically, reaching a phase-4
+# path with an unusable empty credential -- for TOTP, reaching the
+# interactive `read` in run_admitted_connection with no tty to answer it.
+
+@test "_secret_check_keychain: an empty stored value is absent, not present" {
+  security() { printf ''; return 0; }   # rc=0, empty output -- exactly what a real empty Keychain entry returns
+  if _secret_check_keychain "k"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 1 ]
+}
+
+@test "_secret_check_secrettool: an empty stored value is absent, not present" {
+  secret-tool() { printf ''; return 0; }
+  if _secret_check_secrettool "k"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 1 ]
+}
+
+# --- tri-state via stderr, not D-Bus reachability (review round 5) ---
+#
+# An earlier version probed whether the Secret Service was reachable on the
+# session bus (NameHasOwner) and treated a failed lookup against a reachable
+# service as ABSENT. Round 5 (BLOCKER #1) correctly identified that as
+# unsound: a live, reachable Secret Service can still fail one specific
+# lookup for a reason that has nothing to do with "not found" (a locked
+# collection, a malformed request, any other D-Bus error), and reachability
+# proves none of that. The actual structural signal, verified directly
+# against libsecret's own tool/secret-tool.c (secret_tool_action_lookup): the
+# GError branch prints "<prgname>: <message>" to stderr before returning 1;
+# the value==NULL ("not found") branch returns 1 with nothing on stderr.
+
+@test "_secret_check_secrettool: a failed lookup with no stderr output is absent" {
+  secret-tool() { return 1; }   # value==NULL branch: silent, per libsecret source
+  if _secret_check_secrettool "k"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 1 ]
+}
+
+@test "_secret_check_secrettool: a failed lookup that prints an error message is a backend error" {
+  # The GError branch: secret-tool prints "<prgname>: <message>" to stderr.
+  # A live, reachable Secret Service can still produce this (a locked
+  # collection, a malformed request, ...) -- this is the exact case the
+  # withdrawn NameHasOwner probe got wrong by reading it as ABSENT.
+  secret-tool() { echo "secret-tool: Cannot autolaunch D-Bus without X11" >&2; return 1; }
+  if _secret_check_secrettool "k"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 2 ]
+}
+
+@test "_secret_check_secrettool: the fetched value never leaks into the error-detection path" {
+  # A successful lookup's value must never be mistaken for stderr output
+  # (which would misclassify a present secret as a backend error), and vice
+  # versa -- the two streams are captured separately from one invocation.
+  secret-tool() { echo "the-secret-value"; return 0; }
+  local out; out="$(_secret_check_secrettool "k")"
+  [ "$out" = "the-secret-value" ]
+  if _secret_check_secrettool "k" >/dev/null; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 0 ]
+}
+
+@test "_secret_check_secrettool: an uncreatable local error-capture path is a backend error, never absent" {
+  # Review round 6, MEDIUM finding: SECRETS_DIR blocked by a plain file (or
+  # otherwise unwritable) makes the `2>"$errfile"` redirection itself fail,
+  # before secret-tool ever runs -- reproduced directly. The previous version
+  # then read the empty, never-created errfile as "no error message" and
+  # classified the result as ABSENT (1), when the actual cause was a local
+  # I/O failure that has nothing to do with whether the secret exists.
+  secret-tool() { echo "should never run"; return 1; }
+  ensure_secret_paths() { :; }
+  local blocker="$BATS_TEST_TMPDIR/blocker"
+  touch "$blocker"
+  SECRETS_DIR="$blocker"   # a plain file where the errfile's directory must go
+  if _secret_check_secrettool "k"; then rc=0; else rc=$?; fi
+  [ "$rc" -eq 2 ]
 }
 
 @test "secrets_backend honors platform tools and ENCRYPTION_ENABLED" {
@@ -289,4 +415,50 @@ _seed_vault() {   # one good entry, so there is something to lose
   [ "$status" -ne 0 ]
   [ "$(cat "$SECRETS_PLAIN")" = "$_before" ]
   [ "$(secrets_get_file "$(secrets_key 'Work VPN' password)")" = "original-pw" ]
+}
+
+# --- secrets_set's attempt-history side effect (review round 8, MEDIUM #4) ---
+#
+# key_password was missing from secrets_set's field switch entirely: a
+# service repeatedly refused for a wrong stored PKCS#11 PIN would build up
+# attempt history and possibly open the one-hour breaker (outcome.sh) exactly
+# as a wrong password does, but correcting the PIN via `set-secret ...
+# key_password` left that history untouched -- the service would stay asleep
+# for the rest of an already-open breaker even though the credential
+# responsible for the attempts had just been fixed.
+
+@test "secrets_set clears attempt history on key_password, same as password" {
+  _use_file_backend
+  source "$BATS_TEST_DIRNAME/../logging.sh"
+
+  local f; f="$(attempt_state_file "Work VPN")"
+  local token; token="$(_state_lock "$f")"
+  _state_read "$f"
+  ST_ATTEMPTS="1 2 3"
+  _state_persist_current "$f" "Work VPN"
+  _state_unlock "$f" "$token"
+
+  secrets_set "Work VPN" key_password "1234"
+
+  _state_read "$f"
+  [ -z "$ST_ATTEMPTS" ]
+}
+
+@test "secrets_set on key_password does not touch the TOTP step reservation" {
+  # Unlike token_secret, a corrected PIN has nothing to do with which TOTP
+  # step was already reserved -- only the attempt history should clear.
+  _use_file_backend
+  source "$BATS_TEST_DIRNAME/../logging.sh"
+
+  local f; f="$(attempt_state_file "Work VPN")"
+  local token; token="$(_state_lock "$f")"
+  _state_read "$f"
+  ST_TOTP_STEP=42
+  _state_persist_current "$f" "Work VPN"
+  _state_unlock "$f" "$token"
+
+  secrets_set "Work VPN" key_password "1234"
+
+  _state_read "$f"
+  [ "$ST_TOTP_STEP" -eq 42 ]
 }

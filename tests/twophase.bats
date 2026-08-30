@@ -14,6 +14,7 @@ setup() {
   print_primary() { printf -- "$1" "${@:2}"; }
   notify() { :; }
   source "$BATS_TEST_DIRNAME/../logging.sh"
+  source "$BATS_TEST_DIRNAME/../outcome.sh"
   source "$BATS_TEST_DIRNAME/../profiles.sh"
   source "$BATS_TEST_DIRNAME/../core.sh"
   source "$BATS_TEST_DIRNAME/../twophase.sh"
@@ -129,6 +130,48 @@ CONNECT_URL='https://vpn.example.com'"
   [ "$status" -ne 0 ]
 }
 
+# --- phase one: PKCS#11 PIN, shared with the prompt-mode path (round 6) ----
+#
+# An earlier version of phase_one_authenticate built --certificate directly
+# from VPN_CLIENT_CERT with no PIN handling at all, unlike run_openconnect's
+# prompt-mode path (core.sh), which already fed a stored PKCS#11 PIN via a
+# pin-source file. A service using a PKCS#11 certificate through helper mode
+# -- the preferred, documented path -- could never supply a stored PIN, so
+# it would be left waiting on an interactive PIN prompt with no tty to answer
+# it, contradicting the documented unattended-service PKCS#11 feature. The
+# fetch itself now happens once in run_admitted_connection
+# (_prepare_pkcs11_pin, core.sh) and is shared via _VPN_PIN_FILE; these tests
+# cover phase_one_authenticate's own half of that contract, matching how
+# clientcert.bats covers run_openconnect's half.
+
+@test "phase_one_authenticate attaches a pre-fetched PKCS#11 PIN via pin-source" {
+  VPN_USER="alice"; PROTOCOL="anyconnect"; VPN_HOST="p.example.com"
+  VPN_PASSWD="s3cret"; VPN_CLIENT_CERT="pkcs11:manufacturer=piv_II;id=%01"
+  local pin="918273"
+  _VPN_PIN_FILE="$BATS_TEST_TMPDIR/staged.pin"
+  ( umask 077; printf '%s' "$pin" > "$_VPN_PIN_FILE" )
+  local argv="$BATS_TEST_TMPDIR/argv"
+  openconnect() { printf '%s\n' "$@" > "$argv"; cat >/dev/null; echo "$AUTH_GOOD"; return 0; }
+
+  run phase_one_authenticate
+  [ "$status" -eq 0 ]
+  grep -qF -- "--certificate=pkcs11:manufacturer=piv_II;id=%01?pin-source=file:${_VPN_PIN_FILE}" "$argv"
+  if grep -qF -- "$pin" "$argv"; then false; fi   # never on argv, only referenced by path
+}
+
+@test "phase_one_authenticate omits pin-source when _VPN_PIN_FILE is unset" {
+  VPN_USER="alice"; PROTOCOL="anyconnect"; VPN_HOST="p.example.com"
+  VPN_PASSWD="s3cret"; VPN_CLIENT_CERT="pkcs11:manufacturer=piv_II;id=%01"
+  _VPN_PIN_FILE=""
+  local argv="$BATS_TEST_TMPDIR/argv"
+  openconnect() { printf '%s\n' "$@" > "$argv"; cat >/dev/null; echo "$AUTH_GOOD"; return 0; }
+
+  run phase_one_authenticate
+  [ "$status" -eq 0 ]
+  grep -qF -- "--certificate=pkcs11:manufacturer=piv_II;id=%01" "$argv"
+  if grep -qF -- "pin-source=file:" "$argv"; then false; fi
+}
+
 # --- extraArgs translation -------------------------------------------------
 
 @test "benign extraArgs translate into tunables, both spellings" {
@@ -230,7 +273,7 @@ XML
   # The cookie arrives on stdin...
   grep -qx "SUPERSECRETCOOKIE" "$STDIN"
   # ...and appears nowhere in the process table.
-  ! grep -q "SUPERSECRETCOOKIE" "$ARGV"
+  if grep -q "SUPERSECRETCOOKIE" "$ARGV"; then false; fi
 
   grep -qx -- "connect" "$ARGV"
   grep -qx -- "--profile-id" "$ARGV"
@@ -259,9 +302,9 @@ XML
   run run_openconnect_helper
   # A caller-supplied fingerprint is exactly what Model B refuses to trust, so
   # it must not be on the command line at all.
-  ! grep -q -- "--servercert" "$ARGV"
-  ! grep -q -- "--fingerprint" "$ARGV"
-  ! grep -q -- "469bb424" "$ARGV"
+  if grep -q -- "--servercert" "$ARGV"; then false; fi
+  if grep -q -- "--fingerprint" "$ARGV"; then false; fi
+  if grep -q -- "469bb424" "$ARGV"; then false; fi
 }
 
 @test "phase two forwards an approved proxy and the translated tunables" {
@@ -348,10 +391,34 @@ _helper_argv_setup() {
   # -n here means "fail instead of prompting", which is exactly wrong on a
   # machine whose passwordless rule was never installed - and the failure lands
   # AFTER phase one has spent the user's password and second factor.
-  ! grep -qx -- "-n" "$ARGV"
+  if grep -qx -- "-n" "$ARGV"; then false; fi
   grep -qx -- "$BATS_TEST_TMPDIR/bin/vpn-up-helper" "$ARGV"
   # The first word must be the helper: no flag may precede it.
   [ "$(head -n 1 "$ARGV")" = "$BATS_TEST_TMPDIR/bin/vpn-up-helper" ]
+}
+
+@test "connect_via_helper removes a staged PKCS#11 PIN file as soon as the cookie is obtained" {
+  # Once phase_one_authenticate returns, run_openconnect_helper hands the
+  # cookie to the privileged helper and never touches the certificate/key/PIN
+  # again -- so a staged PIN file (core.sh, _prepare_pkcs11_pin) has finished
+  # its job right here, rather than needing to survive for the whole,
+  # possibly hours-long tunnel session the way it does in prompt mode (review
+  # round 8, HIGH #2). This asserts the file is gone by the time
+  # run_openconnect_helper -- the only thing left to run -- is even reached.
+  _helper_argv_setup
+  _VPN_PIN_FILE="$BATS_TEST_TMPDIR/pinfile"
+  printf '1234' > "$_VPN_PIN_FILE"
+  phase_one_authenticate() { return 0; }
+  local seen="$BATS_TEST_TMPDIR/seen-at-dispatch"
+  run_openconnect_helper() {
+    if [ -e "$_VPN_PIN_FILE" ]; then echo "still-present" > "$seen"; else echo "gone" > "$seen"; fi
+    return 0
+  }
+
+  connect_via_helper
+  [ "$(cat "$seen")" = "gone" ]
+  [ -z "$_VPN_PIN_FILE" ]
+  [ ! -e "$BATS_TEST_TMPDIR/pinfile" ]
 }
 
 @test "stop asks sudo interactively too" {
@@ -363,7 +430,7 @@ _helper_argv_setup() {
 
   run stop_via_helper
   [ "$status" -eq 0 ]
-  ! grep -qx -- "-n" "$ARGV"
+  if grep -qx -- "-n" "$ARGV"; then false; fi
   [ "$(head -n 1 "$ARGV")" = "$BATS_TEST_TMPDIR/bin/vpn-up-helper" ]
   grep -qx -- "stop" "$ARGV"
 }
@@ -387,15 +454,20 @@ _helper_argv_setup() {
 
 @test "sudo is authorized before phase one, not after it" {
   # Ordering is the whole point: a Duo push cannot be recalled, so discovering
-  # that sudo will not authorize the helper must happen first.
+  # that sudo will not authorize the helper must happen first. This is now
+  # run_admitted_connection's responsibility (core.sh), not
+  # connect_via_helper's -- the interactive sudo -v call moved out to phase 4
+  # per the design's privilege-split correction (see CHANGELOG).
   _helper_argv_setup
   ORDER="$BATS_TEST_TMPDIR/order"
   : > "$ORDER"
+  _VPN_CONNECT_MODE="helper"
   helper_mode_available() { return 1; }             # interactive tier
   sudo() { echo "sudo $1" >> "$ORDER"; return 0; }
+  migrate_or_fetch_password() { return 0; }
   phase_one_authenticate() { echo "phase-one" >> "$ORDER"; return 1; }
 
-  run connect_via_helper
+  run run_admitted_connection "Helper VPN" INTERACTIVE
   [ "$status" -ne 0 ]
   [ "$(head -n 1 "$ORDER")" = "sudo -v" ]
   grep -qx -- "phase-one" "$ORDER"
@@ -403,12 +475,14 @@ _helper_argv_setup() {
 
 @test "a refused sudo aborts before phase one spends a second factor" {
   _helper_argv_setup
+  _VPN_CONNECT_MODE="helper"
   helper_mode_available() { return 1; }
   sudo() { return 1; }                              # user cancelled or failed
+  migrate_or_fetch_password() { return 0; }
   RAN="$BATS_TEST_TMPDIR/ran"
   phase_one_authenticate() { : > "$RAN"; return 0; }
 
-  run connect_via_helper
+  run run_admitted_connection "Helper VPN" INTERACTIVE
   [ "$status" -ne 0 ]
   [ ! -e "$RAN" ]
 }

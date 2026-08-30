@@ -13,6 +13,7 @@ setup() {
   print_primary() { printf -- "$1" "${@:2}"; }
   notify() { :; }
   source "$BATS_TEST_DIRNAME/../logging.sh"
+  source "$BATS_TEST_DIRNAME/../outcome.sh"
   source "$BATS_TEST_DIRNAME/../dependencies.sh"
   source "$BATS_TEST_DIRNAME/../profiles.sh"
   source "$BATS_TEST_DIRNAME/../core.sh"
@@ -70,7 +71,7 @@ _capture_argv() {
   load_profile_fields "Extra VPN"
   _capture_argv
   # no empty line in the captured argv
-  ! grep -qx -- "" "$ARGV_FILE"
+  if grep -qx -- "" "$ARGV_FILE"; then false; fi
   grep -qx -- "x.example.com" "$ARGV_FILE"
 }
 

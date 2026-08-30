@@ -2,8 +2,16 @@
 # macOS: launchd user agent (~/Library/LaunchAgents)
 # Linux: systemd user unit (~/.config/systemd/user)
 #
-# Service mode runs openconnect in the FOREGROUND under the service manager;
-# KeepAlive/Restart relaunches it if the tunnel drops. Requirements:
+# Service mode runs openconnect in the FOREGROUND under the service manager.
+# `vpn-up start` returns an outcome code (outcome.sh), and the top-level
+# dispatch (vpn-up.command) maps it through service_exit_code() before
+# exiting: exit 0 tells the supervisor to STOP (a permanent condition —
+# missing dependency, bad config, sudo/helper policy refusal), any other exit
+# tells it to RESTART (everything self-healing, including a dropped tunnel).
+# The in-process rate limiter (outcome.sh: admit_attempt) is what actually
+# throttles unattended re-authentication — KeepAlive/Restart's own timers are
+# just the respawn floor for the cheap, no-budget cases (network down,
+# already running), not the retry policy. Requirements:
 #   - a passwordless sudoers rule for openconnect (see README; it grants
 #     effective root to the invoking user — see SECURITY.md "Known limitations")
 #   - the profile's password stored in the secrets backend
@@ -59,7 +67,10 @@ write_launch_agent_plist() {
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
-  <true/>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
   <key>ThrottleInterval</key>
   <integer>30</integer>
   <key>StandardOutPath</key>
@@ -81,13 +92,22 @@ write_systemd_unit() {
 Description=VPN Up for OpenConnect (${profile})
 After=network-online.target
 Wants=network-online.target
+# Defence in depth only: the in-process rate limiter (outcome.sh) owns normal
+# retry policy and keeps the process alive for the whole delay, so ordinary
+# operation can never approach this. It only fires if a bug crashes vpn-up
+# before it reaches the gate -- headroom set above VPN_RC_NO_NETWORK's own
+# 30s restart cadence (10 starts in 300s would trip a StartLimitBurst=10).
+StartLimitIntervalSec=300
+StartLimitBurst=20
 
 [Service]
 Type=simple
 ExecStart=${bash_bin} ${PROGRAM_PATH}/${PROGRAM_NAME} start "${profile}"
 Environment=VPN_UP_SERVICE=1
 Environment=PATH=${oc_dir}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
-Restart=always
+# on-failure, not always: exit 0 (service_exit_code(), outcome.sh) means a
+# permanent condition -- STOP, don't restart. Every other exit restarts.
+Restart=on-failure
 RestartSec=30
 
 [Install]
@@ -109,15 +129,37 @@ _service_preflight() {
     print_danger "Profile '%s' uses SSO (interactive browser); it cannot run as a login service.\n" "$profile"
     return 1
   fi
-  if ! sudo -n -v 2>/dev/null; then
-    print_warning "No passwordless sudo detected. Service mode requires a sudoers rule for openconnect (see README); the service will fail until it exists. NOTE: that rule grants effective root to your account (see SECURITY.md).\n"
+  # Cache-independent, and routed through the right probe for whichever path
+  # applies: `sudo -n -v` here would read a possibly-warm credential cache
+  # (this project's own past bug, fixed everywhere else) rather than policy,
+  # and would prove nothing about a specific command being NOPASSWD anyway.
+  command -v vu_legacy_grant_state >/dev/null 2>&1 || . "${PROGRAM_PATH}/helperinstall.sh"
+  local _svc_ready=0
+  if helper_mode_available; then
+    _svc_ready=1
+  elif vu_tools_resolve >/dev/null 2>&1; then
+    local _oc; _oc="$(command -v openconnect 2>/dev/null)"
+    [ -n "$_oc" ] && [ "$(vu_legacy_grant_state "$_oc")" = yes ] && _svc_ready=1
   fi
-  local clientcert
+  if [ "$_svc_ready" != 1 ]; then
+    print_warning "No proven passwordless sudo. Service mode requires a sudoers rule for the privileged helper (preferred: %s install-helper --passwordless) or for openconnect (see README); the service will fail until one exists. NOTE: a raw-openconnect rule grants effective root to your account (see SECURITY.md).\n" "${DISPLAY_NAME}"
+  fi
+  local clientcert clientkey
   clientcert="$(xmlstarlet sel -t -m "//VPN[name=$(xpath_literal "$profile")]" -v 'clientCertificate | clientcertificate' "$PROFILES_FILE" 2>/dev/null)"
+  clientkey="$(xmlstarlet sel -t -m "//VPN[name=$(xpath_literal "$profile")]" -v 'clientKey | clientkey' "$PROFILES_FILE" 2>/dev/null)"
   # A cert-only profile needs no stored password, so only warn about a missing
-  # password when there is no client certificate to authenticate with.
-  if [ -z "$clientcert" ] && [ -z "$(secrets_get "$profile" "password" 2>/dev/null)" ]; then
-    print_warning "No stored password for '%s'. Store one first: %s set-secret '%s' password\n" "$profile" "${DISPLAY_NAME}" "$profile"
+  # password when there is no client certificate to authenticate with. Routed
+  # through _secret_check (core.sh), not a raw secrets_get, so a temporary
+  # backend error is distinguished from "genuinely no password stored" --
+  # otherwise a transient Keychain/Secret Service/vault failure here reads as
+  # "no password" and produces a misleading warning during installation, the
+  # same tri-state distinction the runtime preflight already makes.
+  if [ -z "$clientcert" ]; then
+    _secret_check "$profile" password >/dev/null
+    case $? in
+      1) print_warning "No stored password for '%s'. Store one first: %s set-secret '%s' password\n" "$profile" "${DISPLAY_NAME}" "$profile" ;;
+      2) print_warning "Could not check the secrets store for a stored password for '%s' (temporary backend error); the service will re-check at runtime.\n" "$profile" ;;
+    esac
   fi
   local duo
   duo="$(xmlstarlet sel -t -m "//VPN[name=$(xpath_literal "$profile")]" -v 'duo2FAMethod | duoMethod' "$PROFILES_FILE" 2>/dev/null)"
@@ -130,26 +172,35 @@ _service_preflight() {
   local tokenmode
   tokenmode="$(xmlstarlet sel -t -m "//VPN[name=$(xpath_literal "$profile")]" -v 'tokenMode | tokenmode' "$PROFILES_FILE" 2>/dev/null)"
   if [ "$tokenmode" = totp ]; then
-    if [ -z "$(secrets_get "$profile" "token_secret" 2>/dev/null)" ]; then
-      print_danger "Profile '%s' uses TOTP but has no stored secret; a service can't prompt. Store it first: %s set-secret '%s' token_secret\n" "$profile" "${DISPLAY_NAME}" "$profile"
-      return 1
-    fi
+    _secret_check "$profile" token_secret >/dev/null
+    case $? in
+      1)
+        print_danger "Profile '%s' uses TOTP but has no stored secret; a service can't prompt. Store it first: %s set-secret '%s' token_secret\n" "$profile" "${DISPLAY_NAME}" "$profile"
+        return 1 ;;
+      2)
+        print_warning "Could not check the secrets store for a stored TOTP secret for '%s' (temporary backend error); the service will re-check at runtime.\n" "$profile" ;;
+    esac
     command -v oathtool >/dev/null 2>&1 || print_warning "'oathtool' not found; the TOTP service will fail until it's installed (brew install oath-toolkit | apt-get install oathtool).\n"
   fi
   # Client-certificate auth works as a service only when no interactive prompt is
-  # needed. A PKCS#11 token needs a stored PIN (key_password); a file-based key
-  # must be unencrypted (a passphrase prompt has no TTY under launchd/systemd).
+  # needed. A PKCS#11 certificate OR key needs a stored PIN (key_password) --
+  # checking only the certificate (an earlier version of this function) missed
+  # the equally valid case of a file-path certificate paired with a PKCS#11
+  # key; _pkcs11_pin_needed (core.sh) checks both, and is the same predicate
+  # the setup wizard and the runtime preflight/phase-4 fetch use, so there is
+  # one definition of "does this profile need a PKCS#11 PIN", not several. A
+  # file-based key must be unencrypted (a passphrase prompt has no TTY under
+  # launchd/systemd).
   if [ -n "$clientcert" ]; then
-    case "$clientcert" in
-      pkcs11:*)
-        if [ -z "$(secrets_get "$profile" "key_password" 2>/dev/null)" ]; then
-          print_warning "Profile '%s' uses a PKCS#11 client certificate; a service can't enter the PIN. Store it first: %s set-secret '%s' key_password\n" "$profile" "${DISPLAY_NAME}" "$profile"
-        fi
-        ;;
-      *)
-        print_warning "Profile '%s' uses a client-certificate file. If the private key is passphrase-protected it cannot run as a service (no TTY to prompt); use an unencrypted 0600 key.\n" "$profile"
-        ;;
-    esac
+    if _pkcs11_pin_needed "$clientcert" "$clientkey"; then
+      _secret_check "$profile" key_password >/dev/null
+      case $? in
+        1) print_warning "Profile '%s' uses a PKCS#11 client certificate; a service can't enter the PIN. Store it first: %s set-secret '%s' key_password\n" "$profile" "${DISPLAY_NAME}" "$profile" ;;
+        2) print_warning "Could not check the secrets store for a stored PKCS#11 PIN for '%s' (temporary backend error); the service will re-check at runtime.\n" "$profile" ;;
+      esac
+    else
+      print_warning "Profile '%s' uses a client-certificate file. If the private key is passphrase-protected it cannot run as a service (no TTY to prompt); use an unencrypted 0600 key.\n" "$profile"
+    fi
   fi
   return 0
 }

@@ -1224,16 +1224,548 @@ the cache-independent `sudo -k -n` probe — already said the policy is
 passwordless.
 
 Each restart re-runs phase one, so it needs the stored password or TOTP seed —
-already the case today, and already unprivileged. (Duo `push` profiles issue a
-new push per reconnect. That is today's behaviour too, not a regression, but it
-is worth documenting for flapping links, along with a backoff so a failing
-gateway is not re-authenticated in a tight loop.)
+already the case today, and already unprivileged. Duo `push` profiles issue a
+new push per reconnect, which is what makes §15.1's rate limiter necessary
+rather than cosmetic: without it, a rejected or ignored push costs nothing to
+repeat every 30 s, forever.
 
 `service install` preflight gains: helper installed; helper rule present;
 `sudo -k -n` works against the helper; the closure checks pass; the profile is
 expressible in the closed schema (no `extraArgs`, no `--route`); and an approval
 record exists for it. Failing any of those is a clear error at install time
 rather than a silent failure at login.
+
+### 15.1 The unattended authentication attempt rate limiter
+
+`§17.4`'s open question — is any protocol's cookie single-use in a way that
+makes a fast restart loop fail confusingly, and what should the backoff be —
+is answered here, alongside the runtime bug it surfaced: `KeepAlive`/
+`Restart=always` relaunch `vpn-up start <profile>` on any exit, including a
+clean one, with no bound on how often that re-authenticates. A rejected or
+ignored Duo push cost nothing to repeat every 30 s.
+
+**The central design decision:** the limiter gates *admission* of an
+unattended attempt. It never classifies what OpenConnect returned, never
+waits for it, and OpenConnect's eventual exit status never changes how much
+rate-limit budget was spent — verified directly against OpenConnect 9.21,
+which returns the identical `rc=1` for a DNS failure, a TLS failure, and a
+rejected credential, so no taxonomy exists to classify against in the first
+place. Budget is charged the instant VPN Up decides to attempt an unattended
+authentication, before any credential or one-time value is touched — a Duo
+push is what the limiter protects against, and a Duo push is spent at that
+moment regardless of what happens afterward.
+
+**The eight rate-limiter security invariants**, each independently
+regression-tested (`tests/attemptguard.bats`, `tests/totpstep.bats`) and each
+a plausible thing for a future change to erode without noticing:
+
+1. OpenConnect's outcome never changes admission history.
+2. An unattended attempt is charged the moment it is admitted, before
+   authentication begins — not on OpenConnect's outcome.
+3. Only one process per profile may hold attempt ownership at a time.
+4. No one-time factor (TOTP) is generated before exclusive ownership and the
+   TOTP step reservation are both held.
+5. Any wait invalidates every decision made before it; the next action
+   begins with a fresh locked read, never a resumed one.
+6. This state is never consumed by `vpn-up-helper` or `vpn-up-admin` as
+   authorization input.
+7. A live attempt owner is never reclaimed merely because the connection has
+   run for a long time — only a demonstrably dead owner is stale.
+8. A service attempt is admitted only after every locally decidable,
+   non-authenticating prerequisite has already succeeded (a bad certificate,
+   an unsupported SSO/service or Duo-passcode/service combination, a missing
+   dependency, a missing stored password, a missing TOTP seed, unready
+   sudo/helper privilege policy) — those are configuration or policy
+   failures, not attempts, and consume no budget. This is a snapshot
+   guarantee: it holds at the moment preflight is evaluated, not
+   continuously through however long admission might then have to wait. A
+   stale rejection surfacing after admission is charged as an ordinary
+   attempt outcome, not un-charged — re-checking and un-charging would
+   resurrect invariant 1's problem one step later.
+   Certificate preflight itself makes one further distinction: failing to
+   obtain a certificate from the gateway at all (unreachable, timed out) is
+   transient and reported as `VPN_RC_NO_NETWORK`, never charged as a
+   configuration failure — only a certificate that *was* obtained and then
+   fails trust-store or pin validation is `VPN_RC_CONFIG`. Because
+   reachability and trust are checked as two separate TLS transactions, a
+   gateway that disappears between them is treated as transient too: an
+   unpinned profile only reports a genuine certificate failure if the
+   gateway is confirmed still reachable at the moment trust validation
+   fails. Unpinned-profile trust validation also checks that the
+   certificate is valid for the configured host itself
+   (`-verify_hostname`/`-verify_ip`), not only that it chains to a trusted
+   CA — a certificate issued for a different hostname is exactly the kind
+   of locally-decidable rejection this invariant exists to catch before
+   admission, rather than leaving it for OpenConnect's own (real) hostname
+   check to discover after a credential has already been spent. Those two
+   flags are capability-detected, not assumed: they were added in OpenSSL
+   1.1.0, and this project's own documented macOS install
+   (`brew install bash openconnect xmlstarlet`) gets neither Homebrew
+   OpenSSL nor a GnuTLS-linked OpenConnect, leaving macOS's own
+   `/usr/bin/openssl` — LibreSSL, which rejects both flags outright — as
+   what `openssl` on PATH actually resolves to. On Darwin without them, the
+   platform's own certificate evaluator (`security verify-cert <url>`,
+   confirmed directly to check both trust and hostname against Apple's
+   trust store) is used instead of silently downgrading to chain-only
+   trust; elsewhere, chain-only trust (this check's pre-existing behaviour)
+   is the final fallback, a real and documented gap rather than a silent one.
+   The password/TOTP-seed existence checks distinguish "genuinely not
+   stored" from "the secrets backend itself could not be read" (a vault
+   decrypt failure, a keyring not yet unlocked): only the former is
+   `VPN_RC_CONFIG`; the latter is `VPN_RC_SECRETS_UNAVAILABLE`, a transient
+   code that never terminally stops the service over what may be a
+   momentary backend problem. This distinction is backend-specific, not a
+   single generic exit-status read: the openssl/file backends' own exit
+   status already carries it correctly, but Keychain and Linux Secret
+   Service each fold "absent" and "backend error" into overlapping exit
+   statuses of their own. Keychain's `security find-generic-password`
+   reliably exits 44 (`errSecItemNotFound`) specifically for "not stored",
+   distinct from every other failure — confirmed directly. Secret Service's
+   `secret-tool lookup` returns the same exit status (1) for "not found" and
+   for a backend/API error alike — an earlier version of this check tried to
+   disambiguate by probing whether the Secret Service was merely reachable
+   on the session bus, reasoning that a reachable service's own failed
+   lookup must mean "not found"; a later review correctly identified that as
+   unsound, since a live, reachable service can still fail one specific
+   lookup for a reason that has nothing to do with absence (a locked
+   collection, a malformed request, any other D-Bus error), and reachability
+   proves none of that. The actual structural signal is on stderr, not the
+   exit code — verified directly against libsecret's own
+   `tool/secret-tool.c` (`secret_tool_action_lookup`): the `GError` branch
+   prints `"<prgname>: <message>"` to stderr before returning 1; the
+   `value == NULL` ("no matching secret") branch returns 1 with nothing
+   printed at all. Whether the one lookup already being made produced any
+   stderr output is exactly the distinction needed, with no second D-Bus
+   probe and no environment-specific heuristic.
+   **Each backend's check is now a single round-trip that both learns the
+   status AND returns the value on success**, not a check followed by a
+   separate fetch. An earlier shape called a check function to learn
+   present/absent/error, discarded whatever it read, and then called a
+   second, independent function to actually retrieve the value — which left
+   a real gap between the two calls where the backend could fail in
+   between (the check said present; the fetch moments later, or an
+   admission wait later, saw a transient error with no way to distinguish
+   that from "was never there"), and for the openssl vault backend the same
+   shape was worse than a race: it decrypted the vault twice, prompting for
+   the passphrase twice in an interactive session. Every call site (the
+   preflight existence checks, and the actual post-admission credential
+   fetch) now uses the value returned by the single check call; preflight
+   call sites explicitly discard that output (redirected, never captured)
+   since invariant 8 only permits confirming existence, never touching the
+   value itself before admission.
+   The same tri-state distinction carries through past preflight into the
+   actual credential fetch in `run_admitted_connection`, not only
+   preflight's existence check — admission may have waited, and the backend
+   can fail in the interim — without blocking a fallback that doesn't depend
+   on the secrets backend at all (a legacy plaintext `<password>` still on
+   the profile, or a client certificate): only when no such fallback exists
+   does a backend error there matter, surfacing as
+   `VPN_RC_SECRETS_UNAVAILABLE` rather than being folded into the terminal
+   "nothing stored" case beside it. **A failed migration write must not
+   destroy the only surviving copy of the credential.** Migrating a legacy
+   plaintext `<password>` to the secrets backend used to scrub the plaintext
+   element unconditionally, without checking whether the write that was
+   supposed to replace it actually succeeded — a failed write (backend
+   unavailable, vault write-verify failure) then left nothing durable behind
+   at all, with only this run's in-memory copy surviving. The security
+   posture is not worsened by leaving the plaintext in place a while longer
+   on a failed migration (it was already plaintext); deleting the only copy
+   after failing to establish its replacement is the actual regression, so
+   the scrub now only runs once the write it depends on is confirmed to have
+   succeeded. Separately, `secrets_set_keychain` no longer pre-deletes the
+   existing Keychain item before writing the replacement: `security
+   add-generic-password -U` already means "update in place if the item
+   exists" (confirmed directly against `security add-generic-password -h`,
+   and against a disposable test keychain), so the pre-delete gained nothing
+   and meant a failed add left nothing behind where a valid item had stood a
+   moment earlier.
+   **A genuinely absent TOTP seed at the actual fetch (not just preflight)
+   must refuse a service, never prompt it.** Preflight is only a snapshot;
+   admission may then wait an arbitrary amount of time, and the seed can be
+   deleted (or the profile's token mode changed) in that window. An earlier
+   version's phase-4 fetch assumed a `SERVICE`-mode refusal for a genuinely
+   absent seed had already happened in preflight and had no fallback branch
+   of its own for that case — reproduced directly: a `SERVICE`-mode process
+   with no controlling tty actually invoked the interactive `read -r -s -p`
+   meant only for an attended caller. The fetch now handles all three
+   tri-state outcomes explicitly at the point of use, not just the
+   backend-error one, matching preflight's own terminal/transient split
+   (`VPN_RC_CONFIG` for `SERVICE`, unchanged prompt fallback for
+   `INTERACTIVE`).
+   **The stored PKCS#11 PIN (`key_password`) is now fetched once, centrally,
+   and shared by both dispatch modes.** It previously had no relationship to
+   the tri-state secret work above at all: `run_openconnect` (prompt mode)
+   made its own raw `secrets_get` call with no distinction between "no PIN
+   stored" and "backend error," while the preferred, documented helper path
+   (`phase_one_authenticate`, two-phase OpenConnect) had no PIN handling
+   whatsoever — a service using a PKCS#11 certificate through helper mode
+   could never supply a stored PIN at all, silently contradicting the
+   documented unattended-service PKCS#11 feature, since OpenConnect's own
+   PKCS#11 handling requests an interactive PIN form when none is supplied.
+   A new phase-4 step (`_prepare_pkcs11_pin`, run once by
+   `run_admitted_connection` before dispatch, alongside the password/TOTP
+   fetches) uses the same tri-state primitive: absent under `SERVICE` is
+   `VPN_RC_CONFIG`; a backend error under `SERVICE` is
+   `VPN_RC_SECRETS_UNAVAILABLE`; either one under `INTERACTIVE`, or a
+   non-PKCS#11 certificate, leaves no transient file staged and falls back to
+   OpenConnect's own interactive PIN prompt, unchanged. The transient
+   pin-source file itself is created once and shredded once, in
+   `run_admitted_connection`'s own epilogue — a single cleanup point shared
+   by whichever dispatch mode actually used it, replacing what used to be
+   `run_openconnect`'s own, prompt-mode-only cleanup.
+   **A local I/O failure while classifying a Secret Service lookup must never
+   read as "absent."** `_secret_check_secrettool`'s stderr-capture scratch
+   file depends on `SECRETS_DIR` being writable; if it is not (missing,
+   unwritable, blocked by a plain file), the redirection that is supposed to
+   capture secret-tool's stderr fails on its own, before secret-tool ever
+   runs — reproduced directly. The previous version then read the
+   never-created, empty capture file the same as "secret-tool printed no
+   error," concluding ABSENT. The capture path is now proven writable before
+   any of that reasoning is trusted; if it isn't, the result is
+   `BACKEND_ERROR`, not a genuine-looking "not stored."
+   **`_prepare_pkcs11_pin` reported success without checking that the PIN
+   file it staged actually got written.** Neither the `mkdir` of the pids
+   directory nor the write itself was checked — reproduced directly by
+   replacing `${DATA_DIR}/pids` with a plain file: the function still
+   returned 0 with `_VPN_PIN_FILE` pointing at a path that was never created,
+   which would have handed OpenConnect a `pin-source=file:` argument
+   referencing nothing. Every step (directory creation, file creation, the
+   write itself, `chmod 600`) is now checked in sequence, and
+   `_VPN_PIN_FILE` is assigned only after all of them succeed; a failure
+   under `SERVICE` is `VPN_RC_SECRETS_UNAVAILABLE` (retryable — nothing
+   about a local I/O fault is permanent), and under `INTERACTIVE` falls back
+   to OpenConnect's own interactive PIN prompt, the same as "no PIN stored."
+   The file is now staged with `mktemp` rather than a deterministic
+   `profile_slug()`-derived name — a secret-bearing file must not risk the
+   same collision the state-file identity fix (§3.1) exists to avoid between
+   two differently-named profiles.
+   **A missing PKCS#11 PIN was discovered only after admission, not in
+   preflight, undoing part of invariant 8.** `connection_preflight` checked
+   password and TOTP-seed existence but not `key_password`, so a SERVICE-mode
+   PKCS#11 profile with no stored PIN sailed through preflight, had an
+   attempt admitted (and, for a profile also using TOTP, a step reserved),
+   and only then discovered the missing PIN in `run_admitted_connection`.
+   Preflight now checks `key_password` existence too, using the same
+   present/absent/backend-error primitive as the other two checks, before
+   `admit_attempt` is ever called.
+   **PKCS#11 PIN staging ran after TOTP generation and Duo-passcode entry,
+   not before.** `_prepare_pkcs11_pin` can call out to Keychain, Secret
+   Service, or the encrypted vault and perform filesystem I/O — none of it
+   instant — so running it after a one-time value had already been produced
+   left that value sitting idle for an unbounded amount of time, exactly the
+   staleness `totp_wait_for_fresh_step` exists to prevent, just reintroduced
+   one step later. Phase 4's order is now: password fetch, PKCS#11 PIN
+   staging, then the TOTP code or Duo passcode, immediately followed by
+   dispatch — restoring "nothing potentially slow remains between obtaining
+   a one-time factor and submitting it."
+   **The PKCS#11 predicate checked only the client certificate, missing the
+   valid, documented case of a file-path certificate paired with a PKCS#11
+   private key.** `clientCertificate=/path/to/cert.pem` with
+   `clientKey=pkcs11:...` needs a stored PIN exactly as much as a PKCS#11
+   certificate does, but every place that asked "does this profile need a
+   PKCS#11 PIN" checked only `VPN_CLIENT_CERT`/`clientCertificate` — the
+   phase-4 fetch, the new preflight check above, the setup wizard's PIN
+   offer, and `service install`'s diagnostics each had their own, narrower
+   version of the same question. One predicate, `_pkcs11_pin_needed(cert,
+   key)`, now checks both fields and is the single definition all four call
+   sites share.
+   **`service install`'s preflight diagnostics still used a raw
+   `secrets_get` for the password, TOTP-seed, and PKCS#11-PIN checks**,
+   losing the present/absent/backend-error distinction the runtime preflight
+   already makes — a transient backend error at install time reported as
+   "not stored" rather than as a retryable condition. This is a diagnostics
+   gap, not a safety one (the runtime preflight above re-checks all three
+   unconditionally before every unattended attempt), but now that
+   `_secret_check` exists there is no reason to keep a second, weaker
+   version of the same check beside it, so `service install` uses it too.
+
+   **The unified tri-state secret check was not actually unified: an empty
+    stored value read as PRESENT on Keychain and Secret Service, but as
+    ABSENT on the OpenSSL/file backend.** `_secret_check`'s generic
+    (openssl/file) branch already required `[ -n "$val" ]` before reporting
+    PRESENT, but `_secret_check_keychain` and `_secret_check_secrettool`
+    both reported PRESENT on any successful lookup, empty value included —
+    reproduced directly against a real Keychain: `security
+    add-generic-password -a k -s ns -w ""` succeeds, and the later `-w`
+    lookup returns rc=0 with nothing on stdout. Every field this check
+    gates — password, TOTP seed, PKCS#11 PIN — is exactly as unusable
+    empty as it is absent, so this let an accidentally-empty stored secret
+    on either native backend sail past `connection_preflight`'s existence
+    check: reproduced directly for the TOTP case, where preflight's
+    `token_secret` check continued past the missing-seed branch and
+    `run_admitted_connection` reached its interactive `read -r -s -p` with
+    no tty to answer it under `SERVICE` — precisely the bypass invariant
+    8's existence checks exist to prevent, just reached through a different
+    door than round 7's PKCS#11-predicate gap. Both native probes now
+    return ABSENT (1) for an empty value, matching the generic branch;
+    `set-secret` also now refuses an empty value outright, so this class of
+    misconfiguration can no longer be created through the one command meant
+    to store these fields (an already-guarded wizard path in `setup.sh`
+    never allowed it in the first place).
+   **A staged PKCS#11 PIN file had exactly one cleanup path — the end of
+    `run_admitted_connection` — which an abnormal termination never
+    reaches.** The PIN is written to a `mktemp`-named, mode-0600 file for
+    OpenConnect's `pin-source` attribute (§ above, finding on staged-PIN
+    checking); the only code that ever removed it was the epilogue at the
+    end of `run_admitted_connection`, reached solely when dispatch
+    (`connect_via_helper`/`run_openconnect`) *returns*. Reproduced directly:
+    sending TERM to the process while dispatch was blocked mid-tunnel left
+    the plaintext PIN on disk indefinitely, since nothing else ever ran that
+    cleanup, and the file's name is no longer even deterministic (round 7)
+    for a later run to happen to overwrite. This is fixed at two points,
+    deliberately not by giving `release_attempt_owner`'s existing TERM/INT
+    handling a wider job — that handler stays signal-free by design (§3.0:
+    a locked cleanup on a signal can deadlock the very process it's meant to
+    clean up), and PIN cleanup does not need the state lock at all, so it is
+    safe to run from a signal in a way owner release is not:
+    - `run_admitted_connection` now installs an unlocked `trap ... TERM
+      INT` the moment the PIN file is staged, which removes it and then
+      re-raises the signal against itself (`$BASHPID`, not `$$` — the two
+      differ inside a subshell, which only matters for testing this in
+      isolation; in `vpn-up.command`'s normal, un-subshelled invocation
+      they are the same process). Verified empirically against real bash
+      signal semantics before relying on this: a trap set on a signal bash
+      is already blocked delivering to a foreground child (the tunnel
+      process, in the dispatch call this brackets) does not run until that
+      child itself exits — so this fires promptly precisely when a
+      supervisor's kill also reaches the tunnel process, which is how both
+      systemd's control-group kill and launchd's process-group signal
+      actually terminate a supervised job. A signal delivered to this shell
+      alone, with the tunnel child left untouched, is not covered by this
+      trap.
+    - `connect_via_helper` now removes the PIN file immediately once
+      `phase_one_authenticate` returns a cookie, rather than waiting for
+      the whole function to return: past that point the privileged tunnel
+      phase (`run_openconnect_helper`) is handed only the cookie and never
+      touches the certificate, key, or PIN again, so the file has finished
+      its job long before the (possibly hours-long) tunnel session ends —
+      unlike prompt mode, where OpenConnect itself is what reads
+      `pin-source`, for as long as it runs.
+    - `vpn-up doctor` gains a diagnostic-only check (`doctor_pin_files`,
+      mirroring the existing stuck-lock checks in shape): the PIN file's
+      owning process's pid is now embedded in its own filename
+      (`.<program>.pin.<pid>.XXXXXX`), and a file whose pid is
+      demonstrably dead — the same liveness test §3.5 already uses for
+      attempt-owner reclaim, never age, since a live session's PIN file is
+      expected to survive for hours — is reported, never auto-removed. The
+      same pid-reuse caveat §3.5 already documents applies here too, in the
+      opposite direction: a reused pid reads a genuinely orphaned file as
+      still-owned and silently skips it, a false negative in a diagnostic
+      check rather than a safety gap, since nothing privileged ever trusts
+      this file's presence.
+    An unhandled `SIGKILL`, or a signal delivered to this process alone
+    without reaching its tunnel child, is covered by neither the trap nor
+    the early helper-mode removal — `doctor_pin_files` is the only backstop
+    for those, by design (diagnostic, not automatic), matching how the
+    existing stuck-lock cases are handled.
+   **`pin-source=file:<path>` embedded the PIN file's path completely
+    unescaped**, even though `DATA_DIR` — and so the PIN file's path — is
+    configurable via `VPN_UP_HOME`/`XDG_CONFIG_HOME` and is not guaranteed
+    to be URI-safe. Reproduced directly: a path containing a space and `&`
+    produced `pkcs11:...?pin-source=file:/tmp/VPN Up/pin&copy#1`, which is
+    not a valid representation of that filename under RFC 7512 — a space is
+    not a valid `pk11-qattr` character, and `&`/`#` are themselves pkcs11-URI
+    delimiters (query-attribute separator, fragment start), so a conforming
+    parser would read `copy#1` as a fragment and `Up/pin` as an unrelated,
+    unintended query attribute. A small percent-encoder (`_uri_encode`) now
+    escapes everything outside `[A-Za-z0-9._~/-]` before the path is
+    appended; `/` is deliberately left unescaped, since it is not a
+    delimiter to the *outer* pkcs11 URI and must survive as the path
+    separator for the nested `file:` value to remain usable.
+   **Correcting a wrong stored PKCS#11 PIN did not clear the attempt-rate
+    history the way correcting a wrong password does.** `secrets_set`'s
+    field switch (encryption.sh) clears history on `password` and clears
+    both history and the TOTP-step reservation on `token_secret`, but had no
+    case for `key_password` at all — a PKCS#11 PIN is exactly as capable of
+    driving the repeated-PREAUTH/backoff cycle a wrong password already
+    correctly resets for, so a service stuck in an open breaker over a bad
+    stored PIN stayed asleep for the rest of it even after an operator
+    corrected the PIN via `set-secret ... key_password`. `key_password` now
+    clears history the same way `password` does; no TOTP-step reset is
+    needed, since a PIN correction has nothing to do with which TOTP step
+    was already reserved.
+
+   **A pkcs11: URI can embed its own PIN directly, via RFC 7512's
+    `pin-value` (the literal PIN, in the clear) or `pin-source` (a path this
+    project does not control) query attributes — completely bypassing the
+    managed `key_password`/`_prepare_pkcs11_pin` path this whole PKCS#11
+    branch exists to provide.** Reproduced directly against this codebase:
+    `clientCertificate="pkcs11:id=%01?pin-value=918273"` reached
+    `run_openconnect`'s argv verbatim. That is not merely a config-hygiene
+    problem — it puts the PIN in `profiles.xml` *and* on OpenConnect's own
+    process arguments, visible to anything that can inspect the process
+    table, exactly the argv exposure `_prepare_pkcs11_pin`'s transient
+    `pin-source` file exists to avoid. It is worse than simply coexisting
+    with the managed path, too: GnuTLS's own PKCS#11 code checks `pin-value`
+    before `pin-source`, so an embedded `pin-value` would silently *win*
+    over a correctly stored `key_password` VPN Up itself appends as
+    `pin-source` — an operator who believes they've moved to managed PIN
+    storage would still be using the leaked one. `_pkcs11_uri_embeds_pin`
+    (core.sh) checks each query attribute by its own name (the text before
+    its `=`, not a blunt substring search across the whole query string) and
+    `connection_preflight` refuses the profile if either the certificate or
+    the key URI carries either attribute — deliberately **unconditional on
+    mode**, unlike the neighbouring existence-only checks: a merely-missing
+    PIN is fine for an attended human to supply interactively, but an
+    embedded PIN is an active misconfiguration that leaks onto argv in
+    `INTERACTIVE` mode exactly the same way it would under `SERVICE`. The
+    setup wizard (`setup.sh`) refuses it too, so a profile can never be
+    *created* this way in the first place, rather than only being caught the
+    first time someone tries to connect with it.
+   **The TERM/INT cleanup for an abandoned PKCS#11 PIN file (the previous
+    finding, above) had two of its own signal-timing windows, both
+    reproduced directly against this codebase, not merely theorized.**
+    *Window A*: the trap was installed by `run_admitted_connection` only
+    *after* `_prepare_pkcs11_pin` had already returned — meaning the file's
+    entire staging sequence (write, `chmod 600`) ran with no cleanup path at
+    all. Reproduced by injecting `TERM` during that `chmod 600`, after the
+    PIN had already been written to disk: the process exited leaving the
+    plaintext file behind, since the trap that would have caught it did not
+    exist yet at that point in the call sequence. *Window B*: the epilogue's
+    order was `trap - TERM INT` followed by `_shred_pin_file`, so a signal
+    landing in the gap between those two statements found no trap installed
+    at all — reproduced by injecting `TERM` at exactly that point, with the
+    same result. Both are fixed by changing *when* protection exists, not by
+    adding a new mechanism: `_prepare_pkcs11_pin` now sets `_VPN_PIN_FILE`
+    and installs the TERM/INT trap the moment `mktemp` succeeds — while the
+    file is still empty, before the PIN is ever written to it — so there is
+    no point after the file can hold a secret where nothing is watching it;
+    and the epilogue now shreds *before* tearing the trap down, relying on
+    `_shred_pin_file` already being idempotent (a signal landing mid-shred
+    just re-enters it, which is a harmless no-op on an already-gone file,
+    before re-raising) so no ordering of the signal against this cleanup can
+    skip it.
+   **The staged PIN file's embedded owning-process pid used `$$`, which
+    `doctor_pin_files`' liveness check (previous finding) reads as the
+    owner to test — but `$$` names the *originating* shell even from inside
+    a subshell, unlike `$BASHPID`, which the TERM/INT trap's own re-raise
+    already (correctly) uses for exactly this reason.** Using `$$` for
+    staging while the trap used `$BASHPID` for re-raising was an
+    inconsistency with a real, if narrow, consequence: if PIN staging ever
+    happened inside a subshell that could die independently of its parent,
+    the embedded pid would name the (still-alive) parent, and
+    `doctor_pin_files` would read a genuinely orphaned file as still owned
+    and silently skip it. This does not affect `vpn-up.command`'s normal,
+    un-subshelled invocation, where `$$` and `$BASHPID` are the same value
+    — worth stating precisely rather than overselling: this is a
+    consistency and defense-in-depth fix, not a fix for an observed
+    production false-negative. Fixing it surfaced a second, deeper version
+    of the identical class of bug: an initial attempt wrote `$BASHPID`
+    *directly inside* the `mktemp` command substitution
+    (`mktemp ".../pin.${BASHPID}.XXXXXX"`), which is wrong for a subtler
+    reason — `$(...)` forks its own subshell to evaluate the *entire*
+    contained command, including argument expansion, so a bare `${BASHPID}`
+    written inline there is evaluated inside that transient subshell, not
+    the real, long-lived process doing the staging. Reproduced directly:
+    that inline form embedded a *third* pid, distinct from both `$$` and
+    the calling function's own `$BASHPID`, and one already dead by the
+    instant `mktemp` returned — silently defeating the very liveness check
+    this fix exists to make correct. The actual fix captures `$BASHPID`
+    into a plain local variable *before* the command substitution:
+    variables, unlike `$BASHPID` itself, are inherited by value into a
+    later subshell fork rather than re-evaluated inside it, so the frozen
+    value survives the fork intact.
+
+**The state file** (`${DATA_DIR}/state/<slug>.<sha256>.state`, per profile,
+mode `0600`) is a new input that gates whether an unattended attempt is
+admitted — worth recording explicitly as a security invariant rather than
+left implicit in a code comment: it is user-owned and same-UID-writable, and
+**no privileged component ever reads it or treats it as authorization
+input**. A same-UID attacker can deny availability (a poisoned
+`open_until_epoch`, clamped to at most an hour) or disable the guard entirely
+(clearing the attempt history), restoring exactly the unguarded behaviour
+that UID already had — neither path grants additional VPN or helper
+authority. The file also carries a TOTP step index (`last_totp_step`) next
+to the profile's other secrets-adjacent state; the index itself is not a
+secret (`floor(time/30)` is derivable by anyone with a clock), only the code
+generated from it is, and that code is never written to disk.
+
+**Both the state file's writes and the lock's own acquisition are checked,
+not assumed to succeed.** The state write itself is staged through a temp
+file and verified before the atomic rename that installs it — replacing an
+earlier version that let a partial write (a disk full mid-write, a vanishing
+state directory) still report success while silently truncating the file,
+which would have dropped fields like the attempt owner or the TOTP step
+reservation to their fail-open defaults on the next read. The lock that
+guards every transaction on that file has the identical guarantee for its
+own ownership metadata: `_state_lock` writes a small `owner` file (pid,
+token, creation time) immediately after `mkdir` succeeds, and that write —
+plus the rename that installs it — is now checked the same way; previously
+neither was, so a fault there could report a successful lock acquisition
+while leaving the lock directory with no readable owner file at all, which
+`_state_unlock` could never later match against (permanently wedging that
+profile's admission, since a metadata-less lock is deliberately never
+auto-reclaimed — see the reclaim-safety argument above). On failure now, the
+just-created (and uncontested, since this process alone knows it exists yet)
+lock directory is removed and the acquisition retried from the top, rather
+than reporting a token that can never be honoured.
+
+**An uncreatable state directory is now diagnosable, without changing the
+lock's "never gives up" contract.** `_state_lock` needs its parent directory
+(`${DATA_DIR}/state/`) to exist before `mkdir` on the lock itself can ever
+succeed; an earlier version attempted that once, ignored the result, and let
+the loop fall through to ordinary lock-contention polling regardless of
+whether the directory was ever actually created. Reproduced directly (a
+plain file blocking the path, so it can never become a directory): the
+result was indistinguishable from another process legitimately holding the
+lock — both simply polled forever with no diagnostic. The directory creation
+is now retried every iteration (so a transient condition, like a momentarily
+read-only filesystem, can still self-heal without this function ever needing
+to give up), and once it has failed persistently enough to rule out an
+ordinary race, a single warning is emitted naming the path — the retry loop
+itself is unchanged: a service keeps polling exactly as it already tolerates
+for ordinary contention, and this function still never proceeds unlocked.
+**That warning must be written to stderr, never stdout, and an earlier
+version of it got this backwards.** `_state_lock`'s entire stdout stream IS
+its return value — every caller reads it through command substitution
+(`token="$(_state_lock "$f")"`) — while `print_danger` (like every other
+`print_*` helper in this codebase) writes to stdout, correctly for the
+callers that treat it as ordinary program output. Calling it unredirected
+from inside `_state_lock` broke that assumption for the one function whose
+stdout is not ordinary output at all: reproduced directly, the caller
+received `"<warning text>\n<real token>"` as "the token," which
+`_state_unlock` could never match against the lock's actual on-disk
+metadata — the fix meant to make this condition diagnosable instead silently
+wedged the very lock it was warning about, with the warning itself invisible
+(swallowed into the corrupted token rather than shown to anyone). The call is
+now explicitly redirected to stderr.
+
+**Exit-status semantics changed to carry this.** Under `VPN_UP_SERVICE`,
+`vpn-up`'s exit status is now a supervisor instruction, not a Unix
+success/failure claim: exit 0 means *stop supervising* (a permanent,
+human-actionable condition — reflected in launchd's `KeepAlive` moving from
+the bare boolean to the `SuccessfulExit=false` dictionary, and systemd's
+`Restart=always` becoming `Restart=on-failure`), any other exit means
+*restart*. Only two conditions are terminal — a config/profile problem that
+needs a human, and a sudo/helper policy refusal before any tunnel — and
+reaching either requires the whole call tree beneath `start()` to route
+every failure through this mapping rather than `exit` directly, which two
+call sites used to do (`require_bin`, `check_file_existence`) and one path
+had no guard at all (a service with no configuration file entering the
+interactive setup wizard). **Fixing a stopped service requires an explicit
+restart afterward** once the underlying problem is fixed (the same operational
+step the passwordless-sudoers case already requires) — building an automatic
+"a relevant secret changed → restart the stopped service" path is deferred,
+not built.
+
+`connect()` is now a four-phase pipeline — `connection_preflight` (mode
+selection, dependency/compatibility/certificate checks, all non-authenticating),
+`admit_attempt` (the serialized rate-limiter transaction above), and
+`run_admitted_connection` (privilege authorization, credential retrieval,
+TOTP/Duo-passcode value entry, dispatch, and the epilogue that releases
+attempt ownership exactly once) — rather than one function that used to spend
+a TOTP code or read a Duo passcode before any of those checks ran.
+
+**What the attempt-owner marker does not, and should not, try to
+guarantee:** it serializes *VPN Up's own* authentication processes against
+each other. It says nothing about whether a privileged tunnel could outlive
+the VPN Up process that started it — if the supervised shell were killed
+unexpectedly after a helper-mode tunnel came up, a replacement process could,
+in principle, reclaim ownership and start a new attempt while an orphaned
+tunnel still existed. `ensure_profile_not_running()` only observes the
+user-side OpenConnect PID file, not root-owned helper state. This is a real
+boundary, not a gap in the rate limiter specifically — reconciling it belongs
+with §17.7's tunnel-up signal and helper-lifecycle work, not with admission.
 
 ### Release gate
 
@@ -1269,9 +1801,14 @@ implementation (§16 step 3).
     everything above is inert until the binaries sit on a root-owned path, and
     step 13's service preflight ("helper installed; helper rule present;
     `sudo -n` works") cannot be exercised before it exists.
-13. Linux hardened service
+13. **Hardened service (Linux classification tier)** — the rate limiter,
+    outcome codes and TOTP-step fix (§15.1) already shipped cross-platform,
+    ahead of this step; what remains here is Linux-first *outcome fidelity*
+    (helper mode's structural `PREAUTH`/`POLICY` distinction) and the closure
+    work below, not the limiter itself.
 14. MacPorts / macOS closure research and implementation
-15. macOS hardened service
+15. macOS hardened service — inherits §15.1 automatically once step 14 lands,
+    since the limiter does not depend on helper mode being available.
 
 Steps 4–7 encode a deliberate rule: **build and break the policy engine before
 introducing root execution.** Feed it hostile argv, registry, URL, proxy and
@@ -1332,12 +1869,22 @@ revision 1's path logic that would return. Check per protocol before v1 scope is
 frozen; it is the only identified case where §4's simplification might not fully
 hold.
 
-### 17.4 Cookie lifetime versus service restart loops
+### 17.4 Cookie lifetime versus service restart loops — **ANSWERED, §15.1**
 
-Phase one's cookie may have a short server-side validity. Interactive use is
-unaffected, and a service that restarts re-authenticates. The question is
-whether any protocol's cookie is single-use in a way that makes a fast restart
-loop fail confusingly, and what the backoff should be (§15).
+The backoff is specified: a sliding 2-hour attempt window, exponential delay
+(1m → 2m → 4m → 8m → 16m → 30m), and a temporary 1-hour breaker past six
+attempts within the window — see §15.1. The fast-restart-loop half of the
+question resolved into something more specific than "does a cookie replay":
+**TOTP codes can collide across a restart**, not because of anything
+protocol-specific about a cookie, but because launchd's `ThrottleInterval` has
+no floor after a session that ran long enough (a drop-and-respawn inside the
+same 30 s RFC 6238 step regenerates the code the gateway just consumed).
+Fixed by reserving the TOTP step before generating a code from it, not after
+— see the reserve-before-generate discussion in §15.1 and
+`tests/totpstep.bats`. Whether a *cookie* itself is single-use per protocol
+remains unverified by direct probe, but no longer matters for the restart-loop
+concern the question was originally about: the rate limiter bounds the loop
+regardless of cookie semantics.
 
 ### 17.5 Does `https://` work as a proxy scheme? — **ANSWERED, step 11**
 
@@ -1377,6 +1924,26 @@ Until one exists, the passwordless rule stays opt-in (§14). When one does, the
 rule can reasonably default on for installations that came through it, and the
 assumption paragraph in `SECURITY.md` changes rather than being deleted: an
 install from a user-writable checkout will still carry it.
+
+### 17.7 A structured tunnel-up/down signal
+
+Nothing in §15.1's rate limiter depends on knowing whether a tunnel actually
+came up — that is the whole point of gating admission rather than trying to
+classify outcomes. But a real signal would still let step 13 do better:
+accurate `connected`/`disconnected` hooks, real diagnostics, and a way to
+answer §15.1's closing question (whether an orphaned privileged tunnel can
+outlive the VPN Up process that started it) instead of merely documenting the
+boundary.
+
+OpenConnect invokes `--script` with `$reason=connect/disconnect/reconnect`,
+which the helper already pins (`helper/src/exec.c:82`) — well positioned,
+since the script path is already part of the closed, root-verified schema.
+**Prompt mode must not get an equivalent**: OpenConnect runs as root there, so
+a user-writable script executed as root is the exact arbitrary-root
+escalation this project exists to eliminate. The helper's state root is
+root-owned 0700 (`helper/src/state.c:307-309`), so any such channel is a
+deliberate, reviewed addition to the privileged ABI, not an incidental one —
+observability upgrade only, never a safety dependency.
 
 ---
 

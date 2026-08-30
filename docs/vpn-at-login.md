@@ -20,7 +20,16 @@ vpn-up service uninstall "Work VPN"   # remove it
 ```
 
 The service manager supervises `openconnect` in the foreground and relaunches it
-on drop (30-second throttle).
+on drop. Reconnecting means re-authenticating (VPN Up doesn't cache a session
+across restarts), so an unattended attempt is rate-limited before it can spend
+a credential: an ordinary drop reconnects immediately, but repeated failures
+back off (up to 30 minutes apart) and pause for an hour after six attempts
+within a couple of hours — so a rejected two-factor push, for example, can't
+retry every 30 seconds forever. A permanent problem (a missing dependency, an
+unrecognized certificate, a sudoers rule that isn't in place) stops the
+service outright rather than restarting into the same failure; fixing it
+requires reinstalling the service (or `launchctl kickstart` / `systemctl
+--user restart`) to bring it back.
 
 > ⚠️ **Not recommended for now.** The login service cannot work without a
 > passwordless sudoers rule for `openconnect`, and that rule currently grants

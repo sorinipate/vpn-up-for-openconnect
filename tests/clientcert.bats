@@ -16,6 +16,7 @@ setup() {
   print_primary() { printf -- "$1" "${@:2}"; }
   notify() { :; }
   source "$BATS_TEST_DIRNAME/../logging.sh"
+  source "$BATS_TEST_DIRNAME/../outcome.sh"
   source "$BATS_TEST_DIRNAME/../dependencies.sh"
   source "$BATS_TEST_DIRNAME/../profiles.sh"
   source "$BATS_TEST_DIRNAME/../core.sh"
@@ -63,6 +64,34 @@ XML
 
 # --- argv: cert/key flags present; path is fine on argv ---
 
+# --- an embedded PIN in the PKCS#11 URI must never reach argv (review round 9, BLOCKER #1) ---
+#
+# Reproduced directly against this codebase before this fix: a profile with
+# clientCertificate="pkcs11:id=%01?pin-value=918273" reached run_openconnect's
+# argv verbatim -- the literal test PIN below, "918273", is exactly the value
+# used in that reproduction. connection_preflight now refuses this profile
+# before admission, so dispatch (and so run_openconnect/sudo) is never
+# reached at all; this asserts that end to end, not just the return code.
+@test "a cert URI embedding pin-value never reaches dispatch, and the PIN never reaches argv" {
+  load_profile_fields "Cert VPN"   # any profile shape; fields overwritten below
+  VPN_NAME="Leaky VPN"
+  VPN_CLIENT_CERT="pkcs11:id=%01?pin-value=918273"
+  VPN_CLIENT_KEY=""
+  VPN_PASSWD="s3cret"
+  VPN_HOST="p.example.com"; PROTOCOL="anyconnect"
+  local argv="$BATS_TEST_TMPDIR/argv"
+  sudo() { if [ "$1" = openconnect ]; then shift; printf '%s\n' "$@" > "$argv"; cat >/dev/null; return 0; fi; return 0; }
+
+  run connection_preflight SERVICE
+  [ "$status" -eq "$VPN_RC_CONFIG" ]
+  [ ! -e "$argv" ]   # dispatch was never reached at all
+
+  # Belt and suspenders: even if something upstream of connection_preflight
+  # were ever bypassed, the underlying primitive this whole fix relies on --
+  # "does this URI embed a PIN" -- must actually detect the literal value.
+  _pkcs11_uri_embeds_pin "$VPN_CLIENT_CERT"
+}
+
 @test "run_openconnect passes --certificate/--sslkey for a file-based client cert" {
   _write_profiles
   local argv="$BATS_TEST_TMPDIR/argv"
@@ -72,19 +101,25 @@ XML
   SERVER_CERTIFICATE="pin-sha256:abc"   # skip trust-store lookup
   QUIET=FALSE; BACKGROUND=TRUE          # background branch (no tee/sleep)
 
-  connect
-
+  run_openconnect
   grep -qF -- "--certificate=/etc/vpn/me.pem" "$argv"
   grep -qF -- "--sslkey=/etc/vpn/me.key" "$argv"
 }
 
 # --- the security-critical path: PKCS#11 PIN via pin-source file, NEVER on argv ---
 
-@test "run_openconnect feeds a PKCS#11 PIN via a 0600 pin-source file and never on argv" {
+@test "run_openconnect feeds a pre-fetched PKCS#11 PIN via a 0600 pin-source file and never on argv" {
+  # run_openconnect no longer fetches key_password itself -- that fetch is
+  # now centralized in run_admitted_connection's _prepare_pkcs11_pin (review
+  # round 6, finding #3), shared with the helper dispatch path (see
+  # twophase.bats). This test covers run_openconnect's own half of the
+  # contract in isolation: given _VPN_PIN_FILE already staged, it must
+  # reference that file via pin-source and never put the PIN itself on argv.
   _write_profiles
   local argv="$BATS_TEST_TMPDIR/argv"
   local PIN="918273"
-  secrets_get() { [ "$2" = key_password ] && echo "$PIN"; }   # stored PKCS#11 PIN
+  _VPN_PIN_FILE="$BATS_TEST_TMPDIR/staged.pin"
+  ( umask 077; printf '%s' "$PIN" > "$_VPN_PIN_FILE" )
   sudo() {
     if [ "$1" = openconnect ]; then
       shift; printf '%s\n' "$@" > "$argv"
@@ -108,33 +143,368 @@ XML
   SERVER_CERTIFICATE="pin-sha256:abc"
   QUIET=FALSE; BACKGROUND=TRUE
 
-  connect
-
+  run_openconnect
   # argv references the PIN file, but never the PIN value itself
   grep -qF -- "pin-source=file:" "$argv"
   grep -qF -- "pkcs11:manufacturer=piv_II;id=%01" "$argv"
-  ! grep -qF -- "$PIN" "$argv"
+  if grep -qF -- "$PIN" "$argv"; then false; fi
   # the PIN actually lived in a 0600 file (read back inside the stub)
   [ "$(cat "$BATS_TEST_TMPDIR/pincontents")" = "$PIN" ]
   [[ "$(cat "$BATS_TEST_TMPDIR/pinperms")" == -rw------* ]]
-  # and the transient file is shredded after the session
-  [ ! -e "${DATA_DIR}/pids/.${PROGRAM_NAME}.$(profile_slug "PKCS VPN").pin" ]
 }
 
-@test "run_openconnect omits pin-source when no PKCS#11 PIN is stored (interactive prompt)" {
+@test "run_openconnect omits pin-source when _VPN_PIN_FILE is unset (interactive prompt)" {
   _write_profiles
   local argv="$BATS_TEST_TMPDIR/argv"
-  secrets_get() { echo ""; }            # no stored PIN
+  _VPN_PIN_FILE=""
   sudo() { if [ "$1" = openconnect ]; then shift; printf '%s\n' "$@" > "$argv"; cat >/dev/null; return 0; fi; return 0; }
   load_profile_fields "PKCS VPN"
   VPN_PASSWD=""
   SERVER_CERTIFICATE="pin-sha256:abc"
   QUIET=FALSE; BACKGROUND=TRUE
 
-  connect
-
+  run_openconnect
   grep -qF -- "--certificate=pkcs11:manufacturer=piv_II;id=%01" "$argv"
-  ! grep -qF -- "pin-source=file:" "$argv"
+  if grep -qF -- "pin-source=file:" "$argv"; then false; fi
+}
+
+# --- the full phase-4 lifecycle: fetch once, shred once, shared by both modes ---
+
+@test "run_admitted_connection fetches the PKCS#11 PIN once and shreds it once, in prompt mode" {
+  _write_profiles
+  local argv="$BATS_TEST_TMPDIR/argv" fetches="$BATS_TEST_TMPDIR/fetches"
+  : > "$fetches"
+  load_profile_fields "PKCS VPN"
+  VPN_PASSWD=""
+  SERVER_CERTIFICATE="pin-sha256:abc"
+  QUIET=FALSE; BACKGROUND=TRUE
+  secrets_get() {
+    case "$2" in
+      key_password) echo "call" >> "$fetches"; echo "918273"; return 0 ;;
+      password) echo "s3cret"; return 0 ;;
+      *) echo ""; return 0 ;;
+    esac
+  }
+  sudo() { if [ "$1" = openconnect ]; then shift; printf '%s\n' "$@" > "$argv"; cat >/dev/null; return 0; fi; return 0; }
+
+  run_admitted_connection "PKCS VPN" SERVICE
+  grep -qF -- "pin-source=file:" "$argv"
+  [ "$(wc -l < "$fetches")" -eq 1 ]   # fetched exactly once
+  # The PIN file is now a uniquely-named mktemp path (review round 7, finding
+  # #1), not a deterministic profile_slug()-based name -- assert no PIN file
+  # of any name is left behind in pids/, rather than checking one specific
+  # (now-nonexistent-by-construction) path.
+  local leftover; leftover="$(find "${DATA_DIR}/pids" -maxdepth 1 -name ".${PROGRAM_NAME}.pin.*" 2>/dev/null)"
+  [ -z "$leftover" ]
+}
+
+# --- abnormal termination must not abandon the PIN file (review round 8, HIGH #2) ---
+#
+# The only cleanup used to live at the very end of run_admitted_connection,
+# reached only when dispatch RETURNS -- reproduced directly: TERM'ing the
+# owning process mid-tunnel left the plaintext PIN file behind indefinitely.
+# The fix is an unlocked TERM/INT trap installed the moment the PIN is
+# staged (it needs no lock -- only release_attempt_owner does; see the
+# design doc for why a locked signal handler was rejected there).
+#
+# This drives the signal from INSIDE the dispatch stub (a synchronous
+# self-`kill`, not a real blocking child) deliberately: verified empirically
+# against real bash semantics first (a plain script, outside this suite) that
+# a trap set on a signal bash is already blocked delivering to a genuinely
+# blocking foreign child (e.g. `sleep`) does NOT run until that child exits --
+# so a test that tried to reproduce a real supervisor's kill by putting the
+# dispatch stub in its own process group and signalling the whole group is
+# possible in principle, but manipulating real process groups from inside a
+# bats test proved unsafe in practice (an earlier version of this test did
+# exactly that and ended up delivering TERM to bats' own test runner). A
+# synchronous self-signal with nothing left blocking after it avoids that
+# entirely, and still genuinely exercises the trap handler and its cleanup.
+@test "a TERM received while a PIN is staged removes the file before the process exits" {
+  _write_profiles
+  load_profile_fields "PKCS VPN"
+  VPN_PASSWD=""
+  SERVER_CERTIFICATE="pin-sha256:abc"
+  secrets_get() {
+    case "$2" in
+      key_password) echo "918273"; return 0 ;;
+      password) echo "s3cret"; return 0 ;;
+      *) echo ""; return 0 ;;
+    esac
+  }
+  local pinfile_seen="$BATS_TEST_TMPDIR/pinfile_seen"
+  run_openconnect() {
+    printf '%s' "$_VPN_PIN_FILE" > "$pinfile_seen"
+    # $$ inside a backgrounded subshell still names the ORIGINATING shell
+    # (bats' own test-runner process, here), not this subshell -- a classic
+    # bash gotcha, confirmed by an earlier version of this test that
+    # accidentally TERM'd bats itself via a bare `kill -TERM $$`. $BASHPID is
+    # this subshell's own real pid, matching what run_admitted_connection's
+    # trap does in production, where it runs un-subshelled and $$ already
+    # names the right process.
+    kill -TERM "$BASHPID"
+  }
+
+  ( run_admitted_connection "PKCS VPN" SERVICE ) &
+  local bgpid=$!
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "$bgpid" 2>/dev/null || break
+    command sleep 0.3
+  done
+  if kill -0 "$bgpid" 2>/dev/null; then
+    kill -9 "$bgpid" 2>/dev/null   # never expected: proves this test's own guard failed, not the code under test
+  fi
+  wait "$bgpid" 2>/dev/null || true
+
+  local pinfile; pinfile="$(cat "$pinfile_seen" 2>/dev/null)"
+  [ -n "$pinfile" ]     # sanity: the PIN really was staged before the signal
+  [ ! -e "$pinfile" ]
+}
+
+# --- two narrower signal windows the test above did not cover (review round 9, BLOCKER #2) ---
+#
+# The test above signals from INSIDE dispatch, well after _prepare_pkcs11_pin
+# has already returned with the trap installed -- so it never exercised
+# either boundary the reviewer actually reproduced against:
+#
+#   A. between the PIN being WRITTEN and _prepare_pkcs11_pin returning to its
+#      caller, where an earlier version installed the trap only AFTER this
+#      function returned;
+#   B. between the epilogue's shred call and its `trap - TERM INT`, where an
+#      earlier version tore the trap down BEFORE shredding, not after.
+
+@test "a TERM during PIN staging itself (window A) still removes the file" {
+  _write_profiles
+  load_profile_fields "PKCS VPN"
+  VPN_PASSWD=""
+  SERVER_CERTIFICATE="pin-sha256:abc"
+  secrets_get() {
+    case "$2" in
+      key_password) echo "918273"; return 0 ;;
+      password) echo "s3cret"; return 0 ;;
+      *) echo ""; return 0 ;;
+    esac
+  }
+  run_openconnect() { return 0; }   # never reached if staging is interrupted
+  local signalled="$BATS_TEST_TMPDIR/chmod-signalled"
+  chmod() {
+    # Fire exactly once, on the PIN file's own `chmod 600` -- not the
+    # earlier `chmod 700` on the pids directory -- reproducing "TERM
+    # injected during the chmod 600, after the PIN had been written but
+    # before _prepare_pkcs11_pin() returned" precisely as found.
+    if [ "$1" = 600 ] && [ ! -e "$signalled" ]; then
+      : > "$signalled"
+      kill -TERM "$BASHPID"
+    fi
+    command chmod "$@"
+  }
+
+  ( run_admitted_connection "PKCS VPN" SERVICE ) &
+  local bgpid=$!
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "$bgpid" 2>/dev/null || break
+    command sleep 0.3
+  done
+  if kill -0 "$bgpid" 2>/dev/null; then
+    kill -9 "$bgpid" 2>/dev/null   # never expected: proves this test's own guard failed, not the code under test
+  fi
+  wait "$bgpid" 2>/dev/null || true
+
+  [ -e "$signalled" ]   # sanity: the injection point was actually reached
+  local leftover; leftover="$(find "${DATA_DIR}/pids" -maxdepth 1 -name ".${PROGRAM_NAME}.pin.*" 2>/dev/null)"
+  [ -z "$leftover" ]
+}
+
+@test "a TERM at the moment of cleanup itself (window B) still removes the file" {
+  _write_profiles
+  load_profile_fields "PKCS VPN"
+  VPN_PASSWD=""
+  SERVER_CERTIFICATE="pin-sha256:abc"
+  secrets_get() {
+    case "$2" in
+      key_password) echo "918273"; return 0 ;;
+      password) echo "s3cret"; return 0 ;;
+      *) echo ""; return 0 ;;
+    esac
+  }
+  run_openconnect() { return 0; }   # ordinary return -> reaches the epilogue normally
+  local signalled="$BATS_TEST_TMPDIR/shred-signalled"
+  # _shred_pin_file calls the `shred` binary when available; stubbing it lets
+  # this fire the signal from exactly the point real deletion happens,
+  # reproducing "TERM injected immediately before _shred_pin_file()" -- the
+  # trap handler's own call back into _shred_pin_file re-enters this same
+  # stub, so it only self-signals ONCE (guarded by $signalled) and performs
+  # the real deletion on every call, including the re-entrant one.
+  shred() {
+    if [ ! -e "$signalled" ]; then
+      : > "$signalled"
+      kill -TERM "$BASHPID"
+    fi
+    command shred "$@"
+  }
+
+  ( run_admitted_connection "PKCS VPN" SERVICE ) &
+  local bgpid=$!
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "$bgpid" 2>/dev/null || break
+    command sleep 0.3
+  done
+  if kill -0 "$bgpid" 2>/dev/null; then
+    kill -9 "$bgpid" 2>/dev/null   # never expected: proves this test's own guard failed, not the code under test
+  fi
+  wait "$bgpid" 2>/dev/null || true
+
+  [ -e "$signalled" ]   # sanity: the injection point was actually reached
+  local leftover; leftover="$(find "${DATA_DIR}/pids" -maxdepth 1 -name ".${PROGRAM_NAME}.pin.*" 2>/dev/null)"
+  [ -z "$leftover" ]
+}
+
+@test "the staged PIN filename embeds \$BASHPID, not \$\$ (review round 9, MEDIUM #3)" {
+  # doctor_pin_files reads the pid embedded in a PIN file's own name to
+  # decide liveness (§3.5's kill-0-not-age pattern). $$ inside a subshell
+  # still names the ORIGINATING process, not the subshell actually doing the
+  # staging -- the same mismatch already fixed for the TERM/INT trap's own
+  # re-raise (core.sh uses $BASHPID there specifically because of this). If
+  # staging used $$ instead, a subshell that died while the parent lived on
+  # would embed the parent's (still-alive) pid, and doctor would read a
+  # genuinely orphaned file as still owned.
+  _write_profiles
+  load_profile_fields "PKCS VPN"
+  secrets_get() { [ "$2" = key_password ] && { echo "918273"; return 0; }; echo ""; return 0; }
+
+  local outfile="$BATS_TEST_TMPDIR/pinfile-path"
+  (
+    _prepare_pkcs11_pin SERVICE
+    printf '%s\n%s\n' "$_VPN_PIN_FILE" "$BASHPID" > "$outfile"
+  )
+  local pinfile subshell_pid
+  pinfile="$(sed -n 1p "$outfile")"
+  subshell_pid="$(sed -n 2p "$outfile")"
+
+  [ -n "$pinfile" ]
+  [ -n "$subshell_pid" ]
+  [ "$subshell_pid" != "$$" ]   # sanity: the subshell really did get its own pid
+  [[ "$pinfile" == *".pin.${subshell_pid}."* ]]
+  [[ "$pinfile" != *".pin.$$."* ]]
+
+  rm -f "$pinfile" 2>/dev/null
+}
+
+@test "a service with a PKCS#11 certificate and no stored PIN is CONFIG, never prompts" {
+  _write_profiles
+  load_profile_fields "PKCS VPN"
+  VPN_PASSWD=""
+  SERVER_CERTIFICATE="pin-sha256:abc"
+  # password fetch must succeed cleanly so the PIN check is what's under test
+  secrets_get() {
+    [ "$2" = password ] && { echo "s3cret"; return 0; }
+    echo ""; return 0   # no stored PIN
+  }
+  run run_admitted_connection "PKCS VPN" SERVICE
+  [ "$status" -eq "$VPN_RC_CONFIG" ]
+}
+
+# --- a PIN-file write that fails must never be reported as success (review round 7, BLOCKER #1) ---
+#
+# An earlier version of _prepare_pkcs11_pin wrote the PIN to a fixed,
+# deterministic path and never checked whether the write (or the mkdir before
+# it) actually succeeded -- reproduced directly by replacing
+# ${DATA_DIR}/pids with a plain file, which made `printf ... > "$_VPN_PIN_FILE"`
+# fail silently while the function still returned 0 with _VPN_PIN_FILE set to
+# a path that was never created. Any failure here must be reported as
+# SECRETS_UNAVAILABLE (a service can retry) in SERVICE mode -- never rc=0 with
+# a dangling reference to a file that doesn't exist -- and dispatch must never
+# be reached.
+
+@test "a PIN-file write failure is SECRETS_UNAVAILABLE, not a false success, and dispatch never runs" {
+  _write_profiles
+  load_profile_fields "PKCS VPN"
+  VPN_PASSWD=""
+  SERVER_CERTIFICATE="pin-sha256:abc"
+  secrets_get() {
+    [ "$2" = password ] && { echo "s3cret"; return 0; }
+    echo "918273"; return 0   # PIN IS stored -- the write itself is what fails
+  }
+  rm -rf "${DATA_DIR}/pids"
+  : > "${DATA_DIR}/pids"   # a plain file where the pids DIRECTORY must be -- mkdir/mktemp inside it can't succeed
+  local dispatched="$BATS_TEST_TMPDIR/dispatched"
+  run_openconnect() { touch "$dispatched"; return 0; }
+  connect_via_helper() { touch "$dispatched"; return 0; }
+
+  run run_admitted_connection "PKCS VPN" SERVICE
+  [ "$status" -eq "$VPN_RC_SECRETS_UNAVAILABLE" ]
+  [ ! -e "$dispatched" ]
+  [ -z "${_VPN_PIN_FILE:-}" ]
+}
+
+@test "an INTERACTIVE PIN-file write failure falls back to the interactive prompt instead of refusing" {
+  # A human is present in INTERACTIVE mode, so a local filesystem hiccup
+  # staging the PIN should degrade to openconnect's own interactive PIN
+  # prompt (same as "no PIN stored") rather than block the whole connection --
+  # only a SERVICE, which has no TTY to fall back to, needs to refuse.
+  _write_profiles
+  load_profile_fields "PKCS VPN"
+  VPN_PASSWD="s3cret"
+  SERVER_CERTIFICATE="pin-sha256:abc"
+  secrets_get() {
+    [ "$2" = password ] && { echo "s3cret"; return 0; }
+    echo "918273"; return 0
+  }
+  rm -rf "${DATA_DIR}/pids"
+  : > "${DATA_DIR}/pids"
+  sudo() { if [ "$1" = openconnect ]; then shift; cat >/dev/null; return 0; fi; return 0; }
+
+  run run_admitted_connection "PKCS VPN" INTERACTIVE
+  [ "$status" -eq 0 ]
+  [ -z "${_VPN_PIN_FILE:-}" ]
+}
+
+# --- PKCS#11 PIN staging happens before the one-time value, not after (review round 7, HIGH #3) ---
+#
+# _prepare_pkcs11_pin can call out to Keychain/Secret Service/the vault and do
+# filesystem I/O -- none of it instant. An earlier version of
+# run_admitted_connection ran it AFTER TOTP generation, so a TOTP code could be
+# produced and then sit idle while PIN staging ran, exactly the kind of
+# staleness totp_wait_for_fresh_step exists to prevent. Recorded call order
+# must show the PIN staged before the TOTP code is generated.
+
+@test "PKCS#11 PIN staging happens before TOTP generation, not after" {
+  _write_profiles
+  # PKCS VPN has no tokenMode in its fixture XML; force it to totp for this
+  # ordering check without needing a second fixture profile.
+  cat > "$PROFILES_FILE" <<'XML'
+<VPNs>
+  <VPN><name>PKCS TOTP VPN</name><protocol>anyconnect</protocol><host>p.example.com</host><authGroup></authGroup><user>bob</user><password></password><duo2FAMethod></duo2FAMethod><serverCertificate></serverCertificate><authMode>password</authMode><tokenMode>totp</tokenMode><extraArgs></extraArgs><clientCertificate>pkcs11:manufacturer=piv_II;id=%01</clientCertificate></VPN>
+</VPNs>
+XML
+  load_profile_fields "PKCS TOTP VPN"
+  VPN_PASSWD=""
+  SERVER_CERTIFICATE="pin-sha256:abc"
+  local order="$BATS_TEST_TMPDIR/order"
+  secrets_get() {
+    case "$2" in
+      key_password) echo "918273"; return 0 ;;
+      password) echo "s3cret"; return 0 ;;
+      token_secret) echo "JBSWY3DPEHPK3PXP"; return 0 ;;
+      *) echo ""; return 0 ;;
+    esac
+  }
+  # totp_wait_for_fresh_step isn't stubbed for its own logic -- it's the probe
+  # point: at the moment TOTP reservation begins, has the PKCS#11 PIN already
+  # been staged to disk? If PIN staging still ran AFTER TOTP/Duo entry (the
+  # pre-fix order), no PIN file would exist yet when this runs.
+  totp_wait_for_fresh_step() {
+    local pinfile; pinfile="$(find "${DATA_DIR}/pids" -maxdepth 1 -name ".${PROGRAM_NAME}.pin.*" 2>/dev/null)"
+    if [ -n "$pinfile" ]; then echo "staged-before-totp" > "$order"; else echo "NOT-staged-before-totp" > "$order"; fi
+    return 0
+  }
+  generate_totp() { echo "123456"; }
+  run_openconnect() { return 0; }
+
+  run_admitted_connection "PKCS TOTP VPN" SERVICE
+  [ "$(cat "$order")" = "staged-before-totp" ]
 }
 
 # --- collision warning includes the cert flags ---
@@ -184,4 +554,39 @@ XML
   run _append_pkcs11_pin_source "pkcs11:id=%01?type=cert" "/run/pin"
   [ "$status" -eq 0 ]
   [ "$output" = "pkcs11:id=%01?type=cert&pin-source=file:/run/pin" ]
+}
+
+# --- pin-source percent-encoding (review round 8, MEDIUM #3) ---
+#
+# DATA_DIR (and so the PIN file's path) is configurable via VPN_UP_HOME /
+# XDG_CONFIG_HOME and is not guaranteed to be URI-safe. A space is not a valid
+# pk11-qattr character, and '&' / '#' / '%' are themselves delimiters within a
+# pkcs11 URI (query-attribute separator, fragment start, percent-encoding
+# escape) -- reproduced directly: an earlier version emitted
+# "pkcs11:...?pin-source=file:/tmp/VPN Up/pin&copy#1" verbatim, which a URI
+# parser reads as a "copy#1" fragment and an unintended "Up/pin" query
+# attribute, not as that literal filename.
+
+@test "_append_pkcs11_pin_source percent-encodes a space in the PIN file path" {
+  run _append_pkcs11_pin_source "pkcs11:id=%01" "/tmp/VPN Up/pin"
+  [ "$status" -eq 0 ]
+  [ "$output" = "pkcs11:id=%01?pin-source=file:/tmp/VPN%20Up/pin" ]
+}
+
+@test "_append_pkcs11_pin_source percent-encodes &, #, and % in the PIN file path" {
+  run _append_pkcs11_pin_source "pkcs11:id=%01" "/tmp/pin&copy#1%done"
+  [ "$status" -eq 0 ]
+  [ "$output" = "pkcs11:id=%01?pin-source=file:/tmp/pin%26copy%231%25done" ]
+}
+
+@test "_append_pkcs11_pin_source leaves '/' unescaped in the PIN file path" {
+  # '/' is not a delimiter to the OUTER pkcs11 URI and must survive as the
+  # path separator for the nested file: value to remain a usable path.
+  run _append_pkcs11_pin_source "pkcs11:id=%01" "/tmp/a/b/c"
+  [ "$status" -eq 0 ]
+  [ "$output" = "pkcs11:id=%01?pin-source=file:/tmp/a/b/c" ]
+}
+
+@test "_uri_encode round-trips a plain path unchanged" {
+  [ "$(_uri_encode "/tmp/normal/path.XXXXXX")" = "/tmp/normal/path.XXXXXX" ]
 }

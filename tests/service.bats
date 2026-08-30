@@ -11,6 +11,11 @@ setup() {
   export PROFILES_FILE="$DATA_DIR/profiles.xml"
   print_warning() { :; }; print_danger() { :; }; print_success() { :; }; print_primary() { :; }
   source "$BATS_TEST_DIRNAME/../logging.sh"
+  # core.sh, for _secret_check/_pkcs11_pin_needed: _service_preflight now
+  # routes secret existence checks through these (review round 7, finding
+  # #5) instead of a raw secrets_get, the same tri-state check the runtime
+  # preflight already uses.
+  source "$BATS_TEST_DIRNAME/../core.sh"
   source "$BATS_TEST_DIRNAME/../service.sh"
 }
 
@@ -44,6 +49,15 @@ setup() {
   [[ "$output" == *"<key>KeepAlive</key>"* ]]
   # well-formed XML
   printf '%s\n' "$output" | xmlstarlet val -q -
+  # KeepAlive must be the SuccessfulExit=false DICTIONARY, not the bare
+  # boolean: exit 0 (service_exit_code(), outcome.sh) is a permanent
+  # condition and must STOP the job, not relaunch it. XPath, not a substring,
+  # so a regression to the bare `<true/>` form (which also happens to
+  # contain "KeepAlive" as a string) is actually caught.
+  local n
+  n="$(printf '%s\n' "$output" | xmlstarlet sel -t -v \
+    "count(//key[.='KeepAlive']/following-sibling::dict[1]/key[.='SuccessfulExit']/following-sibling::false)")"
+  [ "$n" -ge 1 ]
 }
 
 @test "write_systemd_unit produces a unit with restart and service env" {
@@ -51,7 +65,11 @@ setup() {
   [ "$status" -eq 0 ]
   [[ "$output" == *'ExecStart='*'start "Work VPN"'* ]]
   [[ "$output" == *"Environment=VPN_UP_SERVICE=1"* ]]
-  [[ "$output" == *"Restart=always"* ]]
+  # on-failure, not always: exit 0 (service_exit_code(), outcome.sh) means a
+  # permanent condition and must STOP the unit, not restart it.
+  [[ "$output" == *"Restart=on-failure"* ]]
+  [[ "$output" == *"StartLimitIntervalSec=300"* ]]
+  [[ "$output" == *"StartLimitBurst=20"* ]]
 }
 
 @test "_service_path_for uses slugged per-profile filenames" {

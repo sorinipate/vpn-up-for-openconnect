@@ -3,33 +3,150 @@
 _host_only() { printf '%s' "${1%%:*}"; }
 _port_only() { local hp="$1"; case "$hp" in *:*) printf '%s' "${hp##*:}" ;; *) printf '443' ;; esac; }
 
+# True for a dotted-decimal IPv4 literal. Loose on purpose (it doesn't reject
+# an out-of-range octet) -- this only decides which openssl verification flag
+# to use (-verify_ip vs -verify_hostname), and passing either flag a value it
+# doesn't like fails the TLS handshake rather than silently skipping the
+# check, which is the safe direction. host:port parsing elsewhere in this
+# file already can't represent an IPv6 literal (it splits on the first
+# colon), so this never needs to consider that case either.
+_is_ipv4_literal() {
+  case "$1" in
+    ''|*[!0-9.]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 # Compute the RFC 7469 public-key pin (pin-sha256:...) for a gateway.
+#
+# Captures and validates the certificate BEFORE deriving anything from it.
+# The previous form piped s_client straight through x509/pkey/dgst/base64
+# with no check that a certificate was ever actually produced -- when the
+# gateway is unreachable, s_client emits nothing, but `openssl dgst` still
+# happily hashes that empty input and produces a perfectly plausible-looking
+# (and entirely bogus) pin: SHA-256 of the empty string, reproduced directly
+# against 127.0.0.1:1. A caller comparing that against a configured pin sees
+# a mismatch and reports "certificate rejected" for what was actually "could
+# not reach the gateway at all" -- exactly the transient-vs-terminal
+# distinction this project's connect-time preflight depends on getting right.
 fetch_server_pin() {
-  local host port
+  local host port cert pubkey
   host="$(_host_only "$1")"; port="$(_port_only "$1")"
+  cert="$(openssl s_client -connect "${host}:${port}" -servername "${host}" </dev/null 2>/dev/null)"
+  [ -n "$cert" ] || return 1
+  printf '%s' "$cert" | openssl x509 -noout >/dev/null 2>&1 || return 1
+  pubkey="$(printf '%s' "$cert" | openssl x509 -pubkey -noout 2>/dev/null)"
+  [ -n "$pubkey" ] || return 1
+
+  # From here the data is binary DER, which a bash variable cannot hold
+  # safely (embedded NUL bytes get silently stripped by command
+  # substitution) -- so, unlike the cert/pubkey steps above, this stage is
+  # validated through a temp file and an explicit exit-code check rather than
+  # by inspecting the bytes in a variable. Without this, a failure here (a
+  # pubkey openssl can't otherwise reparse, a `pkey` invocation that errors)
+  # would feed empty input into `dgst`, which happily hashes it into the same
+  # plausible-looking bogus pin the cert-existence check above was added to
+  # rule out -- just one stage later.
+  local tmp_der; tmp_der="$(mktemp "${TMPDIR:-/tmp}/vpn-up-pin.XXXXXX")" || return 1
+  if ! printf '%s' "$pubkey" | openssl pkey -pubin -outform der 2>/dev/null > "$tmp_der"; then
+    rm -f "$tmp_der"
+    return 1
+  fi
+  if [ ! -s "$tmp_der" ]; then
+    rm -f "$tmp_der"
+    return 1
+  fi
+
   local pin
-  pin="$(openssl s_client -connect "${host}:${port}" -servername "${host}" </dev/null 2>/dev/null \
-    | openssl x509 -pubkey -noout 2>/dev/null \
-    | openssl pkey -pubin -outform der 2>/dev/null \
-    | openssl dgst -sha256 -binary 2>/dev/null \
-    | base64)"
+  pin="$(openssl dgst -sha256 -binary "$tmp_der" 2>/dev/null | base64)"
+  rm -f "$tmp_der"
   [ -n "$pin" ] || return 1
   printf 'pin-sha256:%s\n' "$pin"
 }
 
+# Whether this openssl(1) build's s_client actually supports
+# -verify_hostname/-verify_ip (added in OpenSSL 1.1.0). Checked by asking
+# s_client itself rather than parsing `openssl version` -- the version string
+# describes the linked library, not necessarily the same build that PATH
+# resolves `openssl` to.
+_openssl_has_verify_hostname() {
+  openssl s_client -help 2>&1 | grep -q -- '-verify_hostname'
+}
+
 # True if the gateway's certificate chain validates against the system trust
-# store. Used to fail closed when no pin is configured.
+# store AND is valid for this hostname/IP. Used to fail closed when no pin is
+# configured.
+#
+# -verify_return_error alone checks the chain but never asked openssl to
+# check the certificate actually names this host -- a certificate that
+# chains to a trusted CA but was issued for a DIFFERENT hostname passed this
+# check with no warning, spending an admitted attempt before OpenConnect's
+# own (real) hostname check would eventually reject it. -verify_hostname /
+# -verify_ip make that an explicit part of this verification, matching
+# invariant 8's intent that a locally-decidable certificate failure is caught
+# here, before admission, not discovered later.
+#
+# Those two flags are NOT available in every openssl(1) this runs against --
+# confirmed directly against this project's own documented macOS install
+# (`brew install bash openconnect xmlstarlet`, which pulls in neither
+# Homebrew OpenSSL nor a GnuTLS-linked OpenConnect): macOS's own
+# /usr/bin/openssl is LibreSSL, whose s_client rejects -verify_hostname
+# outright ("unknown option -verify_hostname"), which would make every
+# unpinned profile on a stock Mac fail preflight permanently. So this
+# capability-detects rather than assumes the flags exist, and on Darwin
+# without them, uses the platform's own evaluator instead of silently
+# downgrading to chain-only trust: `security verify-cert <url>` performs a
+# real TLS connection and checks BOTH trust and hostname against Apple's own
+# trust store -- confirmed directly (badssl.com test certificates): exits 0
+# for a valid, correctly-named cert, and non-zero alike for an expired cert,
+# a self-signed/untrusted cert, and a hostname mismatch.
 verify_gateway_cert() {
-  local host port
+  local host port verify_flag
   host="$(_host_only "$1")"; port="$(_port_only "$1")"
+  if _openssl_has_verify_hostname; then
+    if _is_ipv4_literal "$host"; then
+      verify_flag="-verify_ip"
+    else
+      verify_flag="-verify_hostname"
+    fi
+    openssl s_client -connect "${host}:${port}" -servername "${host}" -verify_return_error \
+      "$verify_flag" "$host" </dev/null >/dev/null 2>&1
+    return $?
+  fi
+  if [ "$(uname)" = "Darwin" ] && command -v security >/dev/null 2>&1; then
+    security verify-cert "https://${host}:${port}/" >/dev/null 2>&1
+    return $?
+  fi
+  # No hostname-aware verification available on this platform/openssl build
+  # (an old Linux openssl predating 1.1.0, with no Darwin fallback to use
+  # instead) -- fall back to the chain-only check this function used before
+  # hostname verification was added, rather than failing every unpinned
+  # profile closed outright. A real, documented gap (a wrong-hostname cert
+  # would pass here), not a silent one -- see PRIVILEGED-HELPER-DESIGN.md.
   openssl s_client -connect "${host}:${port}" -servername "${host}" -verify_return_error \
     </dev/null >/dev/null 2>&1
+}
+
+# Step-A-only reachability for the connect-time certificate preflight
+# (core.sh): true once a TLS handshake completes and a certificate can be
+# parsed out of it, regardless of whether that certificate is trusted.
+# verify_gateway_cert above additionally requires trust (-verify_return_error
+# makes it fail on an untrusted chain), which conflates "couldn't reach the
+# gateway at all" with "reached it, and the certificate is bad" into one
+# boolean — exactly the distinction connect-time preflight needs to keep
+# separate: the first is transient (VPN_RC_NO_NETWORK, restart), the second
+# is a real, terminal problem (VPN_RC_CONFIG).
+gateway_tls_reachable() {
+  local host port
+  host="$(_host_only "$1")"; port="$(_port_only "$1")"
+  openssl s_client -connect "${host}:${port}" -servername "${host}" \
+    </dev/null 2>/dev/null | openssl x509 -noout >/dev/null 2>&1
 }
 
 # Fetch a profile's gateway pin and write it into <serverCertificate>.
 pin_save() {
   local profile="$1"
-  check_file_existence "$PROFILES_FILE" "Profiles"
+  check_file_existence "$PROFILES_FILE" "Profiles" || return 1
   profiles_xml_ok || return 1
   if ! profile_exists "$profile"; then
     print_danger "Unknown profile '%s'.\n" "$profile"

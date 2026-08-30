@@ -282,9 +282,21 @@ phase_one_authenticate() {
 
   # Client certificate / PKCS#11: used HERE, with the user's own access to the
   # token. Neither the path nor the PIN ever crosses the privilege boundary.
+  # A stored PKCS#11 PIN (key_password) was already fetched once by
+  # run_admitted_connection (core.sh, _prepare_pkcs11_pin) and staged in
+  # _VPN_PIN_FILE, shared with run_openconnect's prompt-mode path -- an
+  # earlier version of this function had no equivalent at all, so a service
+  # using a PKCS#11 certificate through helper mode (the preferred,
+  # documented path) could never supply a stored PIN and would be left
+  # waiting on a PIN prompt with no tty to answer it.
   if [ -n "${VPN_CLIENT_CERT:-}" ]; then
-    args+=("--certificate=${VPN_CLIENT_CERT}")
-    [ -n "${VPN_CLIENT_KEY:-}" ] && args+=("--sslkey=${VPN_CLIENT_KEY}")
+    local _cc="${VPN_CLIENT_CERT}" _ck="${VPN_CLIENT_KEY:-}"
+    if [ -n "${_VPN_PIN_FILE:-}" ]; then
+      _cc="$(_append_pkcs11_pin_source "$_cc" "$_VPN_PIN_FILE")"
+      [ -n "$_ck" ] && _ck="$(_append_pkcs11_pin_source "$_ck" "$_VPN_PIN_FILE")"
+    fi
+    args+=("--certificate=${_cc}")
+    [ -n "$_ck" ] && args+=("--sslkey=${_ck}")
   fi
 
   [ "${VPN_TOKEN_MODE:-}" = totp ] && args+=(--token-mode=totp)
@@ -305,7 +317,10 @@ phase_one_authenticate() {
   fi
 
   if [ "$rc" -ne 0 ]; then
-    print_danger "Authentication failed (openconnect exited %d).\n" "$rc"
+    # "Authentication failed" would overclaim: this non-zero code covers a
+    # DNS failure, a TLS failure and a rejected credential identically (see
+    # VPN_RC_PREAUTH, outcome.sh) -- there is no seam here to tell them apart.
+    print_danger "Authentication or session setup failed (openconnect exited %d).\n" "$rc"
     return 1
   fi
 
@@ -368,12 +383,18 @@ run_openconnect_helper() {
   rm -f "$PID_FILE_PATH" "$STATE_FILE_PATH"
 
   # A refusal is not a disconnection. Announcing one fires the user's
-  # `disconnected` hooks for a tunnel that never existed.
+  # `disconnected` hooks for a tunnel that never existed. The same check also
+  # feeds the outcome code below (0/POLICY/ATTEMPT_FAILED, outcome.sh) — this
+  # is diagnostics/supervisor-instruction only and never feeds admit_attempt.
+  local had_tunnel=1
   if _helper_run_had_tunnel "$mark"; then
     notify "VPN Up" "Disconnected from ${VPN_NAME:-VPN}"
     run_hooks disconnected "${VPN_NAME:-}" "${VPN_HOST:-}"
+  else
+    had_tunnel=0
   fi
-  return "$rc"
+  local outcome; outcome="$(outcome_from_run "$rc" "$had_tunnel")"
+  return "$outcome"
 }
 
 # Did this run actually get a tunnel, or was it turned away at the door?
@@ -411,19 +432,31 @@ _helper_run_had_tunnel() {
   return 0
 }
 
-# Full helper-mode connect: translate, authenticate, hand off.
+# Authenticate, then hand off to the tunnel.
+#
+# Narrower than it used to be: `translate_extra_args` now runs in
+# connection_preflight() and `helper_sudo_prepare`'s interactive `sudo -v`
+# now runs in run_admitted_connection()'s epilogue (core.sh) — both before
+# this is ever reached, per the design's four-phase split. By the time this
+# runs, only phase_one_authenticate (-> VPN_RC_PREAUTH) and
+# run_openconnect_helper (-> 0/VPN_RC_POLICY/VPN_RC_ATTEMPT_FAILED) remain
+# its own concern.
 connect_via_helper() {
-  translate_extra_args "${VPN_EXTRA_ARGS:-}" || return 1
-
-  # Ask for the sudo password here, before phase one, or not at all. Failing
-  # after authentication would burn a second factor for nothing.
-  if ! helper_sudo_prepare; then
-    print_danger "sudo authentication failed; cannot start the tunnel.\n"
-    return 1
-  fi
-
   print_primary "Authenticating as %s (unprivileged) ...\n" "${USER:-$(id -un)}"
-  phase_one_authenticate || return 1
+  phase_one_authenticate || return "$VPN_RC_PREAUTH"
+
+  # The cookie is now all the privileged tunnel phase needs (run_openconnect_helper
+  # below hands it a COOKIE, never the certificate/key/PIN again) -- so a staged
+  # PKCS#11 PIN file (_VPN_PIN_FILE, core.sh) has finished its job the moment
+  # phase_one_authenticate returns, rather than needing to survive for the whole,
+  # possibly hours-long tunnel session the way it does in prompt mode (where
+  # openconnect itself, not a short-lived helper handoff, is what reads it).
+  # Review round 8 (HIGH #2) flagged this as the easiest place to shrink a
+  # plaintext credential's exposure window; run_admitted_connection's own
+  # end-of-function cleanup (core.sh) still runs afterward too, as a harmless
+  # no-op once this has already removed the file.
+  _shred_pin_file "${_VPN_PIN_FILE:-}"
+  _VPN_PIN_FILE=""
 
   if [ -n "${AUTH_HOST}" ] && [ "${VPN_UP_VERBOSE:-FALSE}" = TRUE ]; then
     print_warning "Gateway reported host %s\n" "${AUTH_HOST}"

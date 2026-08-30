@@ -67,5 +67,106 @@ EOF
   grep -q '^readonly SHOW_BANNER=FALSE$' "$CONFIGURATION_FILE"
   grep -q '^readonly NOTIFICATIONS=TRUE$' "$CONFIGURATION_FILE"
   # no template placeholders left behind
-  ! grep -q '__' "$CONFIGURATION_FILE"
+  if grep -q '__' "$CONFIGURATION_FILE"; then false; fi
+}
+
+# --- add_profile_wizard: PKCS#11 PIN offer (review round 7, finding #4) ---
+#
+# Checking only the certificate for a pkcs11: URI (an earlier version of this
+# wizard) missed the equally valid, documented case of a file-path
+# certificate paired with a PKCS#11 private key: it printed the
+# "passphrase-protected" warning for a profile that actually needed a stored
+# PIN, and never offered to store one. _pkcs11_pin_needed (core.sh) checks
+# both the certificate and the key.
+
+_wizard_stubs() {
+  source "$BATS_TEST_DIRNAME/../core.sh"
+  export PROFILES_FILE="$BATS_TEST_TMPDIR/profiles.xml"
+  profiles_xml_ok() { return 0; }
+  profile_exists() { return 1; }
+  append_profile() { return 0; }
+  pin_save() { return 0; }
+  SECRETS_SET_CALLS="$BATS_TEST_TMPDIR/secrets_set-calls"; : > "$SECRETS_SET_CALLS"
+  secrets_set() { printf '%s\n' "$2" >> "$SECRETS_SET_CALLS"; return 0; }
+  WARNINGS="$BATS_TEST_TMPDIR/warnings"; : > "$WARNINGS"
+  print_warning() { printf -- "$1" "${@:2}" >> "$WARNINGS"; }
+  DANGERS="$BATS_TEST_TMPDIR/dangers"; : > "$DANGERS"
+  print_danger() { printf -- "$1" "${@:2}" >> "$DANGERS"; }
+  print_success() { :; }
+}
+
+@test "add_profile_wizard offers and stores a PKCS#11 PIN for a file certificate paired with a pkcs11: key" {
+  _wizard_stubs
+  add_profile_wizard <<'EOF'
+FileKeyPKCS11
+anyconnect
+h.example.com
+
+user
+n
+n
+/tmp/cert.pem
+pkcs11:id=%02
+y
+1234
+
+
+n
+n
+EOF
+  grep -qF "key_password" "$SECRETS_SET_CALLS"
+  if grep -qF "passphrase-protected" "$WARNINGS"; then false; fi
+}
+
+@test "add_profile_wizard refuses a client certificate URI that embeds a PIN directly" {
+  # Reproduced directly against this codebase before this fix: a profile
+  # created with clientCertificate="pkcs11:id=%01?pin-value=918273" stored
+  # the PIN in the clear in profiles.xml (review round 9, BLOCKER #1). The
+  # wizard must refuse this rather than silently accepting it, so a profile
+  # can never be CREATED this way in the first place -- clearing both cert
+  # and key fields, same as if neither had been entered.
+  _wizard_stubs
+  APPENDED_CERT="$BATS_TEST_TMPDIR/appended-cert"; : > "$APPENDED_CERT"
+  APPENDED_KEY="$BATS_TEST_TMPDIR/appended-key"; : > "$APPENDED_KEY"
+  append_profile() { printf '%s' "${10}" > "$APPENDED_CERT"; printf '%s' "${11}" > "$APPENDED_KEY"; return 0; }
+  add_profile_wizard <<'EOF'
+LeakyPin
+anyconnect
+h.example.com
+
+user
+n
+n
+pkcs11:id=%01?pin-value=918273
+
+
+
+n
+n
+EOF
+  [[ "$(cat "$DANGERS")" == *"pin-value"* || "$(cat "$DANGERS")" == *"PIN"* ]]
+  [ -z "$(cat "$APPENDED_CERT")" ]
+  [ -z "$(cat "$APPENDED_KEY")" ]
+  if grep -qF "918273" "$APPENDED_CERT" "$APPENDED_KEY" "$SECRETS_SET_CALLS"; then false; fi
+}
+
+@test "add_profile_wizard does not offer a PKCS#11 PIN for a plain file certificate and key" {
+  _wizard_stubs
+  add_profile_wizard <<'EOF'
+FileKeyOnly
+anyconnect
+h.example.com
+
+user
+n
+n
+/tmp/cert.pem
+/tmp/cert.key
+
+
+n
+n
+EOF
+  if grep -qF "key_password" "$SECRETS_SET_CALLS"; then false; fi
+  grep -qF "passphrase-protected" "$WARNINGS"
 }

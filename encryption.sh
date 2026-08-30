@@ -35,9 +35,15 @@ secrets_key() {
 # The secret is passed via `security -i` (commands on stdin) rather than -w on
 # the command line, so it never appears in the process table.
 _security_quote() { local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; printf '"%s"' "$s"; }
+# `-U` already means "update in place if the item exists" (confirmed directly
+# against `security add-generic-password -h`: "-U  Update item if it already
+# exists"), so a pre-delete gains nothing and is actively dangerous: if the
+# subsequent add then fails for any reason, the item is gone with nothing
+# written in its place, destroying the only surviving copy of a credential
+# that was valid a moment earlier. Reproduced directly on a disposable test
+# keychain that `-U` alone updates an existing item without a prior delete.
 secrets_set_keychain() {
   local k="$1"; local v="$2"
-  security delete-generic-password -a "$k" -s "${SECRETS_NAMESPACE}" >/dev/null 2>&1 || true
   printf 'add-generic-password -a %s -s %s -w %s -U\n' \
     "$(_security_quote "$k")" "$(_security_quote "${SECRETS_NAMESPACE}")" "$(_security_quote "$v")" \
     | security -i >/dev/null
@@ -45,10 +51,104 @@ secrets_set_keychain() {
 secrets_get_keychain() { local k="$1"; security find-generic-password -a "$k" -s "${SECRETS_NAMESPACE}" -w 2>/dev/null; }
 secrets_delete_keychain() { local k="$1"; security delete-generic-password -a "$k" -s "${SECRETS_NAMESPACE}" >/dev/null 2>&1 || true; }
 
+# security's own exit status DOES distinguish these on macOS: 44 is
+# errSecItemNotFound specifically (confirmed directly: a lookup against a
+# nonexistent account/service reproducibly exits 44, distinct from any other
+# failure), so a genuinely absent secret must map to ABSENT here, not to a
+# backend error -- a generic "any non-zero exit means the backend errored"
+# reading would make a password that was simply never stored retry forever
+# instead of ever reaching the terminal "store it first" message.
+#
+# On success, prints the fetched value to stdout -- this is a single backend
+# round-trip that both checks AND fetches, not merely a check. A previous
+# version discarded the value here and made callers call secrets_get_keychain
+# again afterward; that left a real gap between "confirmed present" and
+# "actually read" where the backend could fail in between (review round 5,
+# BLOCKER #2), and for the openssl vault backend the equivalent pattern is
+# worse than just a race -- it decrypts the vault twice, prompting for the
+# passphrase twice in an interactive session. One fetch, reused by the caller.
+#
+# An empty stored value is treated as ABSENT (return 1), not PRESENT --
+# reproduced directly against a real Keychain: `security add-generic-password
+# -w ""` succeeds, and the later `-w` lookup returns rc=0 with an empty
+# result. Every field this gates (password, token_secret, key_password) is
+# useless empty, so a bare rc==0 here previously let a SERVICE profile with an
+# empty stored secret sail through connection_preflight's existence check --
+# reproduced directly for the TOTP case: an empty-but-"present" token_secret
+# let preflight continue past the missing-seed check, reaching the
+# interactive `read` in run_admitted_connection with no tty to answer it. The
+# openssl/file backend below (the generic branch, this file's secrets_get()
+# path) already required non-empty; this brings Keychain in line with it.
+_secret_check_keychain() {
+  local k="$1" out
+  out="$(security find-generic-password -a "$k" -s "${SECRETS_NAMESPACE}" -w 2>/dev/null)"
+  case $? in
+    0)  [ -n "$out" ] || return 1
+        printf '%s' "$out"; return 0 ;;
+    44) return 1 ;;
+    *)  return 2 ;;
+  esac
+}
+
 # ----- Linux Secret Service -----
 secrets_set_secrettool() { local k="$1"; local v="$2"; secret-tool store --label="${SECRETS_NAMESPACE}" app "${SECRETS_NAMESPACE}" account "$k" <<<"$v"; }
 secrets_get_secrettool() { local k="$1"; secret-tool lookup app "${SECRETS_NAMESPACE}" account "$k"; }
 secrets_delete_secrettool() { local k="$1"; secret-tool clear app "${SECRETS_NAMESPACE}" account "$k" 2>/dev/null || true; }
+
+# Unlike Keychain, secret-tool's own EXIT STATUS does not distinguish "not
+# found" from a backend/D-Bus error -- both return 1. An earlier version of
+# this function tried to disambiguate by probing whether the Secret Service
+# was reachable on the session bus (NameHasOwner), reasoning that a reachable
+# service's own failed lookup must mean "not found". Review round 5 (BLOCKER
+# #1) correctly identified that as unsound: a reachable, live Secret Service
+# can still fail a specific lookup for a reason that has nothing to do with
+# "not found" -- a locked collection, a malformed request, any other D-Bus
+# error -- and NameHasOwner proves none of that.
+#
+# The actual, structural signal is on STDERR, not the exit code -- verified
+# directly against libsecret's own tool/secret-tool.c
+# (secret_tool_action_lookup): the GError branch prints
+# "<prgname>: <error->message>\n" to stderr before returning 1; the
+# value==NULL ("no matching secret") branch returns 1 with nothing printed at
+# all. So whether this invocation produced ANY stderr output is exactly the
+# distinction needed, and it comes from the one lookup already being made --
+# no second probe, no D-Bus dependency, no environment-specific heuristic.
+# Captured through a scratch file (not a second invocation) so this stays a
+# single backend round-trip, matching _secret_check_keychain above; the value
+# itself is printed to stdout on success, for the same reason.
+_secret_check_secrettool() {
+  local k="$1" out err rc errfile
+  ensure_secret_paths
+  errfile="${SECRETS_DIR}/.secrettool-err.$$"
+  # Prove the capture file is actually writable BEFORE trusting anything
+  # downstream of it. If SECRETS_DIR is missing/unwritable (or blocked by a
+  # plain file), the `2>"$errfile"` redirection below fails on its own,
+  # before secret-tool ever runs -- reproduced directly: the command
+  # substitution then captures nothing, $errfile is never created, and
+  # reading it back as empty looked identical to "no error message", which
+  # this function reads as ABSENT. That is exactly backwards: a local I/O
+  # failure is a backend/environment error, and must never be classified as
+  # "the secret does not exist" -- a genuinely unrelated, transient local
+  # condition would otherwise permanently stop a service the same way a
+  # truly missing secret does.
+  if ! : > "$errfile" 2>/dev/null; then
+    return 2
+  fi
+  out="$(secret-tool lookup app "${SECRETS_NAMESPACE}" account "$k" 2>"$errfile")"
+  rc=$?
+  err="$(cat "$errfile" 2>/dev/null)"
+  rm -f "$errfile" 2>/dev/null
+  if [ "$rc" -eq 0 ]; then
+    # An empty stored value is ABSENT, not PRESENT -- see the matching
+    # comment on _secret_check_keychain above for why this cannot be a bare
+    # rc==0 check.
+    [ -n "$out" ] || return 1
+    printf '%s' "$out"
+    return 0
+  fi
+  [ -n "$err" ] && return 2
+  return 1
+}
 
 # ----- OpenSSL encrypted vault -----
 # Vault contents only ever exist decrypted in shell variables and pipes —
@@ -177,8 +277,47 @@ secrets_delete_file() {
 }
 
 # ----- Unified API -----
-secrets_set() { local profile="$1"; local field="$2"; local value="$3"; local b; b="$(secrets_backend)"; local k; k="$(secrets_key "$profile" "$field")"; case "$b" in keychain) secrets_set_keychain "$k" "$value" ;; secret-tool) secrets_set_secrettool "$k" "$value" ;; openssl) secrets_set_openssl "$k" "$value" ;; file) secrets_set_file "$k" "$value" ;; esac; }
+#
+# secrets_set clears the rate limiter's attempt history on a successful
+# password change (outcome.sh: attempt_history_clear) — the natural repair
+# workflow once a stored credential was wrong — and additionally clears the
+# TOTP step reservation on a token_secret change, since a new seed makes any
+# previously reserved step meaningless. Neither clear applies to any other
+# field, and neither ever runs on a failed write.
+secrets_set() {
+  local profile="$1"; local field="$2"; local value="$3"; local b rc=0; b="$(secrets_backend)"
+  local k; k="$(secrets_key "$profile" "$field")"
+  case "$b" in
+    keychain)    secrets_set_keychain "$k" "$value" ;;
+    secret-tool) secrets_set_secrettool "$k" "$value" ;;
+    openssl)     secrets_set_openssl "$k" "$value" ;;
+    file)        secrets_set_file "$k" "$value" ;;
+  esac
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    command -v attempt_history_clear >/dev/null 2>&1 || . "${PROGRAM_PATH}/outcome.sh"
+    case "$field" in
+      password)     attempt_history_clear "$profile" ;;
+      token_secret) attempt_history_clear "$profile"; totp_step_reservation_clear "$profile" ;;
+      # A PKCS#11 PIN is a first-class unattended credential too (see
+      # _pkcs11_pin_needed, core.sh): a wrong stored PIN can drive the same
+      # repeated-PREAUTH/backoff cycle a wrong password does, so correcting
+      # it must clear the same history rather than leaving the service
+      # asleep for the rest of an already-open breaker. No TOTP-step reset is
+      # needed here -- a PIN correction has nothing to do with TOTP step
+      # exclusivity.
+      key_password) attempt_history_clear "$profile" ;;
+    esac
+  fi
+  return "$rc"
+}
 secrets_get() { local profile="$1"; local field="$2"; local b; b="$(secrets_backend)"; local k; k="$(secrets_key "$profile" "$field")"; case "$b" in keychain) secrets_get_keychain "$k" ;; secret-tool) secrets_get_secrettool "$k" ;; openssl) secrets_get_openssl "$k" ;; file) secrets_get_file "$k" ;; esac; }
+# _secret_check() (core.sh) is the tri-state entry point callers use; it
+# dispatches to _secret_check_keychain/_secret_check_secrettool above for
+# those two backends and falls back to a generic secrets_get()-based check
+# (correct for the openssl/file backends) for everything else -- including
+# whenever this file hasn't been sourced at all, which several existing unit
+# tests rely on when they stub secrets_get() directly without a real backend.
 secrets_delete() { local profile="$1"; local field="$2"; local b; b="$(secrets_backend)"; local k; k="$(secrets_key "$profile" "$field")"; case "$b" in keychain) secrets_delete_keychain "$k" ;; secret-tool) secrets_delete_secrettool "$k" ;; openssl) secrets_delete_openssl "$k" ;; file) secrets_delete_file "$k" ;; esac; }
 
 # Every secret field a profile can own. Deleting a profile must clear all of

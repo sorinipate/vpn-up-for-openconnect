@@ -153,13 +153,49 @@ scrub_profile_password() {
 }
 
 migrate_or_fetch_password() {
+  # $1: SERVICE | INTERACTIVE. A backend read error checking the stored
+  # secret does NOT bail out immediately -- a legacy plaintext <password> or
+  # a client certificate are both independent of the secrets backend, so
+  # either lets this proceed exactly as before this check existed. Only when
+  # NEITHER fallback exists does the reason for having nothing left actually
+  # matter: a backend error there is reported as VPN_RC_SECRETS_UNAVAILABLE
+  # (2, for SERVICE only) rather than being folded into the terminal "no
+  # password stored" case below it, which is what invariant 8's SERVICE
+  # preflight already refuses for a genuinely absent secret.
+  local mode="$1"
   # prefer stored secret; migrate plaintext if found
-  local s; s="$(secrets_get "${VPN_NAME}" "password")"
+  #
+  # One fetch, not check-then-fetch: _secret_check's stdout IS the value on
+  # success, so a separate secrets_get() call here is not needed -- review
+  # round 5 (BLOCKER #2) found the previous two-call shape left a real gap
+  # where the backend could fail between the check and the fetch, and for
+  # the openssl vault backend it also meant decrypting (and prompting for the
+  # passphrase) twice.
+  local s="" backend_err=0
+  s="$(_secret_check "${VPN_NAME}" password)"
+  case $? in
+    0) : ;;
+    2) backend_err=1; s="" ;;
+  esac
   if [ -z "$s" ] && [ -n "$VPN_PASSWD" ]; then
+    # Only scrub the plaintext <password> element once the migrated copy is
+    # actually durable. secrets_set's result used to be ignored here: if the
+    # write failed (backend unavailable, vault write-verify failure, ...),
+    # scrub_profile_password ran anyway and deleted the only surviving copy
+    # of the credential, leaving this run's in-memory VPN_PASSWD as the sole
+    # remaining copy of a secret that had otherwise been fully migrated to
+    # nowhere (review round 5, finding #3). The security posture is not
+    # worsened by keeping the plaintext around a while longer on a failed
+    # migration -- it was already plaintext; deleting the only copy after
+    # failing to establish its replacement is the actual regression.
     print_warning "Migrating plaintext password for '%s' to secure storage...\n" "${VPN_NAME}"
-    secrets_set "${VPN_NAME}" "password" "${VPN_PASSWD}"
-    s="${VPN_PASSWD}"
-    scrub_profile_password "${VPN_NAME}"
+    if secrets_set "${VPN_NAME}" "password" "${VPN_PASSWD}"; then
+      s="${VPN_PASSWD}"
+      scrub_profile_password "${VPN_NAME}"
+    else
+      print_warning "Could not migrate the plaintext password for '%s' to secure storage; leaving it in place until migration can succeed.\n" "${VPN_NAME}"
+      s="${VPN_PASSWD}"
+    fi
   fi
   if [ -z "$s" ] && [ -n "${VPN_CLIENT_CERT:-}" ]; then
     # Cert-only auth: the client certificate stands in for the password. Don't
@@ -169,6 +205,10 @@ migrate_or_fetch_password() {
     return 0
   fi
   if [ -z "$s" ]; then
+    if [ "$backend_err" = 1 ] && [ "$mode" = SERVICE ]; then
+      print_danger "Could not read the secrets store to fetch the password for '%s'; will retry.\n" "${VPN_NAME}"
+      return 2
+    fi
     if [ -n "${VPN_UP_SERVICE:-}" ]; then
       print_danger "No stored password for '%s' and service mode cannot prompt. Store one first: %s set-secret '%s' password\n" "${VPN_NAME}" "${DISPLAY_NAME}" "${VPN_NAME}"
       return 1
@@ -199,7 +239,7 @@ profile_exists() {
 
 # Tabular overview of all profiles (no secrets shown).
 list_profiles() {
-  check_file_existence "$PROFILES_FILE" "Profiles"
+  check_file_existence "$PROFILES_FILE" "Profiles" || return 1
   profiles_xml_ok || return 1
   xmlstarlet sel -t -m '//VPN' \
       -v name -o $'\t' \

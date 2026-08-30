@@ -19,6 +19,7 @@ setup() {
   print_primary() { printf -- "$1" "${@:2}"; }
   notify() { :; }
   source "$BATS_TEST_DIRNAME/../logging.sh"
+  source "$BATS_TEST_DIRNAME/../outcome.sh"
   source "$BATS_TEST_DIRNAME/../profiles.sh"
   source "$BATS_TEST_DIRNAME/../core.sh"
   source "$BATS_TEST_DIRNAME/../twophase.sh"
@@ -358,4 +359,64 @@ STUB
   # It must point at the caveat that still applies in prompt mode rather than
   # implying everything is fine.
   [[ "$output" == *"SECURITY.md"* ]]
+}
+
+# --- orphaned PKCS#11 PIN files (review round 8, HIGH #2) ------------------
+#
+# A staged PIN file legitimately survives for as long as its tunnel session
+# does -- possibly hours -- so this uses the same liveness test (kill -0) as
+# attempt-owner reclaim (§3.5), never age, to tell a live session's PIN file
+# apart from one an abnormal termination left behind. Diagnostic only: like
+# the lock checks above, doctor never removes anything itself.
+
+@test "doctor_pin_files reports a PIN file whose owning pid is dead" {
+  # A guaranteed-dead pid, not a hardcoded 99999: fork a real process,
+  # capture its pid, and wait for it -- by the time `wait` returns it is
+  # provably gone, with no assumption about what else might be running on
+  # this test runner. (review round 9, LOW #4: a bare `! kill -0 99999`
+  # here was itself the bare-negation form this suite has already
+  # established is unsafe under bats' `set -e` test bodies -- if the
+  # assertion ever failed, that non-zero status would abort the test
+  # silently instead of reporting the failure.)
+  local deadpid
+  ( exit 0 ) &
+  deadpid=$!
+  wait "$deadpid" 2>/dev/null
+  if kill -0 "$deadpid" 2>/dev/null; then
+    false   # the fixture itself is broken, not the code under test
+  fi
+
+  local f="$DATA_DIR/pids/.${PROGRAM_NAME}.pin.${deadpid}.abc123"
+  printf '1234' > "$f"
+
+  run doctor_pin_files
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Orphaned PKCS#11 PIN file"* ]]
+  [[ "$output" == *"$f"* ]]
+  [ -e "$f" ]   # diagnostic only -- never removed by doctor itself
+}
+
+@test "doctor_pin_files does not flag a PIN file whose owning process is alive" {
+  # A live, still-connecting/connected session legitimately keeps this file
+  # for as long as it runs -- age must never be the signal here.
+  local f="$DATA_DIR/pids/.${PROGRAM_NAME}.pin.$$.def456"
+  printf '1234' > "$f"
+
+  run doctor_pin_files
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Orphaned"* ]]
+  [[ "$output" == *"no orphaned PIN files found"* ]]
+}
+
+@test "doctor_pin_files reports OK when the pids directory has no PIN files" {
+  run doctor_pin_files
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no orphaned PIN files found"* ]]
+}
+
+@test "doctor_pin_files reports OK when no state directory exists at all" {
+  rm -rf "$DATA_DIR/pids"
+  run doctor_pin_files
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"no PIN files found"* ]]
 }

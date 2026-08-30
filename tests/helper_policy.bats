@@ -37,7 +37,7 @@ setup() {
   # only the first match would miss the second. Done with a line-anchored grep
   # rather than a glob over the whole output, which is what the first attempt at
   # this used and which matched incidental digits between the two summaries.
-  ! printf '%s\n' "$output" | grep -qE '^[0-9]+ checks, [1-9][0-9]* failures$'
+  if printf '%s\n' "$output" | grep -qE '^[0-9]+ checks, [1-9][0-9]* failures$'; then false; fi
 }
 
 @test "vpn-up-admin refuses to run without privilege" {

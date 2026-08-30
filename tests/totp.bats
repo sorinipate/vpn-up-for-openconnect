@@ -13,6 +13,7 @@ setup() {
   print_primary() { printf -- "$1" "${@:2}"; }
   notify() { :; }
   source "$BATS_TEST_DIRNAME/../logging.sh"
+  source "$BATS_TEST_DIRNAME/../outcome.sh"
   source "$BATS_TEST_DIRNAME/../dependencies.sh"
   source "$BATS_TEST_DIRNAME/../profiles.sh"
   source "$BATS_TEST_DIRNAME/../core.sh"
@@ -58,7 +59,7 @@ XML
   [ "$(generate_totp JBSWY3DPEHPK3PXP)" = "654321" ]
 
   # The seed must not appear anywhere in the process table.
-  ! grep -q "JBSWY3DPEHPK3PXP" "$BATS_TEST_TMPDIR/argv"
+  if grep -q "JBSWY3DPEHPK3PXP" "$BATS_TEST_TMPDIR/argv"; then false; fi
   # It must arrive on stdin instead, and '-' must be the key argument.
   grep -qx -- "JBSWY3DPEHPK3PXP" "$BATS_TEST_TMPDIR/stdin"
   grep -qx -- "-" "$BATS_TEST_TMPDIR/argv"
@@ -88,37 +89,46 @@ XML
 
 # --- the security-critical path: code on stdin, seed never on argv ---
 
-@test "connect (totp) feeds the generated code on stdin and never puts the seed/token flags on argv" {
+@test "run_openconnect feeds the generated code on stdin and never puts the seed/token flags on argv" {
   _write_profiles
   local argv="$BATS_TEST_TMPDIR/argv" stdin="$BATS_TEST_TMPDIR/stdin"
-  oathtool() { echo "424242"; }                       # fixed code
-  secrets_get() { echo "JBSWY3DPEHPK3PXP"; }           # stored seed
   sudo() {
     if [ "$1" = openconnect ]; then shift; printf '%s\n' "$@" > "$argv"; cat > "$stdin"; return 0; fi
-    return 0   # sudo -v
+    return 0
   }
   load_profile_fields "Token VPN"
   VPN_PASSWD="s3cret"
+  # Generating the code from the seed is now run_admitted_connection's job
+  # (core.sh), not run_openconnect's; this test is specifically about
+  # run_openconnect's own stdin/argv construction, so the already-generated
+  # code is supplied directly, exactly as run_admitted_connection would.
+  VPN_SECOND_FACTOR="424242"
   SERVER_CERTIFICATE="pin-sha256:abc"   # skip trust-store lookup
   QUIET=FALSE; BACKGROUND=TRUE          # use the background branch (no tee/sleep)
 
-  connect
+  run_openconnect
 
   # stdin: line 1 = password, line 2 = the generated TOTP code
   [ "$(sed -n 1p "$stdin")" = "s3cret" ]
   [ "$(sed -n 2p "$stdin")" = "424242" ]
-  # argv: password-on-stdin, but NEVER the token flags or the seed
+  # argv: password-on-stdin, but NEVER the token flags or a seed
   grep -qF -- "--passwd-on-stdin" "$argv"
-  ! grep -qiE -- "--token-(secret|mode)" "$argv"
-  ! grep -qF -- "JBSWY3DPEHPK3PXP" "$argv"
+  if grep -qiE -- "--token-(secret|mode)" "$argv"; then false; fi
+  if grep -qF -- "JBSWY3DPEHPK3PXP" "$argv"; then false; fi
 }
 
 # --- precedence: SSO wins over token (token branch is skipped) ---
 
-@test "connect (sso + totp) takes the SSO path and never generates a TOTP code" {
+@test "run_admitted_connection (sso + totp) takes the SSO path and never generates a TOTP code" {
   _write_profiles
   local argv="$BATS_TEST_TMPDIR/argv"
+  export VPN_UP_NO_TOTP_WAIT=1
   require_openconnect_sso() { return 0; }
+  fetch_server_pin() { echo "pin-sha256:abc"; }   # avoid a real network call
+  # twophase.sh isn't sourced in this file; force prompt mode so the test
+  # exercises run_openconnect's dispatch (what it actually cares about) via
+  # the stubbed `sudo`, not the unrelated helper-mode path.
+  helper_mode_usable() { return 1; }
   oathtool() { touch "$BATS_TEST_TMPDIR/oathtool-called"; echo "000000"; }
   sleep() { :; }
   tee() { cat >/dev/null; }
@@ -130,10 +140,16 @@ XML
   QUIET=FALSE; BACKGROUND=FALSE
   VPN_UP_EXTERNAL_BROWSER="my-opener"
 
-  connect
+  # _VPN_CONNECT_MODE is left unset (defaults to the prompt-mode dispatch,
+  # exactly as connection_preflight would leave it after the SSO/TOTP
+  # precedence checks below run) -- this test is specifically about that
+  # precedence, which now lives in connection_preflight + run_admitted_connection
+  # rather than a single connect() function.
+  connection_preflight INTERACTIVE
+  run_admitted_connection "Token VPN" INTERACTIVE
 
   grep -qF -- "--external-browser=my-opener" "$argv"
-  ! grep -qF -- "--passwd-on-stdin" "$argv"
+  if grep -qF -- "--passwd-on-stdin" "$argv"; then false; fi
   [ ! -e "$BATS_TEST_TMPDIR/oathtool-called" ]   # token branch was skipped
 }
 

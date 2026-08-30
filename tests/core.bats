@@ -14,6 +14,7 @@ setup() {
   print_primary() { printf -- "$1" "${@:2}"; }
   notify() { :; }
   source "$BATS_TEST_DIRNAME/../logging.sh"
+  source "$BATS_TEST_DIRNAME/../outcome.sh"
   source "$BATS_TEST_DIRNAME/../profiles.sh"
   source "$BATS_TEST_DIRNAME/../core.sh"
 }
@@ -94,7 +95,9 @@ EOF
   is_network_available() { return 0; }
   show_banner() { :; }
   migrate_or_fetch_password() { :; }
-  connect() { printf 'connected:%s\n' "$VPN_NAME"; }
+  connection_preflight() { return 0; }
+  admit_attempt() { return 0; }
+  run_admitted_connection() { printf 'connected:%s\n' "$VPN_NAME"; return 0; }
 
   run start "Lab VPN"
   [ "$status" -eq 0 ]
@@ -109,7 +112,7 @@ EOF
   is_network_available() { return 0; }
   show_banner() { :; }
   migrate_or_fetch_password() { echo "migrate-called"; }
-  connect() { echo "connect-called"; }
+  run_admitted_connection() { echo "connect-called"; }
 
   run start "Work VPN"
   [ "$status" -ne 0 ]
