@@ -35,7 +35,7 @@ static void usage(void)
         "          (--proxy URL | --no-proxy)\n"
         "  revoke  --profile-id ID\n"
         "  list\n"
-        "  verify-closure\n"
+        "  verify-closure [--wrapper-candidate PATH]\n"
         "  version\n"
         "\n"
         "Approvals are per-user and are keyed by the invoking user's SUDO_UID.\n"
@@ -202,18 +202,35 @@ static int cmd_revoke(int argc, char **argv, uid_t uid)
  * It lives HERE and not in vpn-up-helper on purpose. The helper is the
  * passwordless binary, and every subcommand it gains is something an attacker
  * holding that grant can run; a diagnostic belongs with the tool that already
- * costs a password. The helper runs the same check itself before every execve —
- * this just shows you the result before you rely on it.
+ * costs a password. The helper runs the same two checks itself before every
+ * execve — this just shows you the result before you rely on it.
+ *
+ * Two objects, two different depths (connection-state design plan §2): the
+ * REAL vpnc-script gets the full §11.4 walk (hooks, PATH, library closure),
+ * via VU_VPNC_SCRIPT_REAL; the vpnc-script WRAPPER OpenConnect actually
+ * invokes gets only the lighter-weight vu_wrapper_precheck (file ownership
+ * and its own shebang interpreter) — walking it through the full check too
+ * would just duplicate rows for objects that belong to the real script.
+ *
+ * `wrapper_candidate`, when non-NULL, is an installer's staged-but-not-yet-
+ * activated wrapper file (Phase B's candidate-then-atomic-activate design,
+ * round 4 item 3): checking a candidate path here, rather than always the
+ * compiled-in VU_VPNC_SCRIPT, is what lets an installer verify a REPLACEMENT
+ * wrapper before ever touching the live one a currently-installed helper
+ * still depends on. NULL means "check whatever is installed right now" —
+ * the ordinary, no-argument diagnostic use.
  *
  * Deliberately usable when the answer is "no": it prints every row and exits
  * non-zero, rather than stopping at the first failure, because a machine that
  * fails the closure usually fails several rows for one underlying reason (a
  * user-owned prefix) and seeing them together is what identifies it.
  */
-static int cmd_verify_closure(void)
+static int cmd_verify_closure(const char *wrapper_candidate)
 {
+    const char *wrapper_path = wrapper_candidate ? wrapper_candidate : VU_VPNC_SCRIPT;
+
     vu_closure_spec spec;
-    vu_closure_spec_default(&spec, VU_OPENCONNECT, VU_VPNC_SCRIPT, 0);
+    vu_closure_spec_default(&spec, VU_OPENCONNECT, VU_VPNC_SCRIPT_REAL, 0);
 
     /*
      * The ACL probe needs root (to drop privilege) AND a caller uid to drop TO.
@@ -234,20 +251,28 @@ static int cmd_verify_closure(void)
     vu_err e; vu_err_clear(&e);
     bool ok = vu_closure_check(&spec, &report, &e);
 
+    static vu_closure_report wrapper_report;
+    vu_err werr; vu_err_clear(&werr);
+    bool wrapper_ok = vu_wrapper_precheck(wrapper_path, 0, &wrapper_report, &werr);
+
     printf("trusted execution closure\n");
-    printf("  openconnect   %s\n", VU_OPENCONNECT);
-    printf("  vpnc-script   %s\n", VU_VPNC_SCRIPT);
-    printf("  PATH          %s\n", VU_HELPER_PATH);
-    printf("  ACL probe     %s\n\n", spec.probe
+    printf("  openconnect      %s\n", VU_OPENCONNECT);
+    printf("  vpnc-script.real %s\n", VU_VPNC_SCRIPT_REAL);
+    printf("  vpnc-script      %s (wrapper%s)\n", wrapper_path,
+           wrapper_candidate ? ", STAGED CANDIDATE — not yet activated" : "");
+    printf("  PATH             %s\n", VU_HELPER_PATH);
+    printf("  ACL probe        %s\n\n", spec.probe
            ? "on (checking effective write access for the invoking user)"
            : "skipped (needs sudo, so that privilege can be dropped to test it)");
     vu_closure_print(&report, stdout);
+    vu_closure_print(&wrapper_report, stdout);
 
-    if (ok) {
+    if (ok && wrapper_ok) {
         printf("\nhelper mode: the closure is trustworthy on this machine\n");
         return 0;
     }
-    printf("\n%s\n", e.msg);
+    if (!ok) printf("\n%s\n", e.msg);
+    if (!wrapper_ok) printf("\n%s\n", werr.msg);
     printf("helper mode is unavailable until every object above is root-owned and\n"
            "outside your write control. The usual cause on macOS is a Homebrew\n"
            "OpenConnect: its prefix belongs to the installing user, so handing root\n"
@@ -300,8 +325,10 @@ int main(int argc, char **argv)
 
     if (strcmp(cmd, "version") == 0) {
         printf("vpn-up-admin (policy engine %d)\n", VU_APPROVAL_VERSION);
-        printf("  registry root %s\n", VU_REGISTRY_ROOT);
-        printf("  state root    %s\n", VU_STATE_ROOT);
+        printf("  vpnc-script      %s (wrapper)\n", VU_VPNC_SCRIPT);
+        printf("  vpnc-script.real %s\n", VU_VPNC_SCRIPT_REAL);
+        printf("  registry root    %s\n", VU_REGISTRY_ROOT);
+        printf("  state root       %s\n", VU_STATE_ROOT);
         return 0;
     }
 
@@ -314,8 +341,19 @@ int main(int argc, char **argv)
      * than faked when absent (see cmd_verify_closure).
      */
     if (strcmp(cmd, "verify-closure") == 0) {
-        if (argc > 2) { fprintf(stderr, "vpn-up-admin: verify-closure takes no arguments\n"); return 2; }
-        return cmd_verify_closure();
+        const char *candidate = NULL;
+        if (argc == 4 && strcmp(argv[2], "--wrapper-candidate") == 0) {
+            candidate = argv[3];
+            if (candidate[0] != '/') {
+                fprintf(stderr, "vpn-up-admin: --wrapper-candidate needs an absolute path\n");
+                return 2;
+            }
+        } else if (argc != 2) {
+            fprintf(stderr, "vpn-up-admin: verify-closure takes no arguments, or "
+                            "--wrapper-candidate PATH\n");
+            return 2;
+        }
+        return cmd_verify_closure(candidate);
     }
 
     vu_err e; vu_err_clear(&e);

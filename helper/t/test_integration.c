@@ -212,7 +212,10 @@ static void test_execve_boundary(void)
 
         if (!vu_harden_process(lock_fd, &ce)) _exit(95);
 
-        execve(fake, cmd.argv, vu_clean_env());
+        execve(fake, cmd.argv,
+               vu_clean_env(me, req.profile_id,
+                            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"));
         _exit(96);
     }
 
@@ -328,12 +331,24 @@ static void test_execve_boundary(void)
     CHECK(um && strcmp(um, "0077") == 0, "umask must be 077, got %s", um ? um : "(none)");
 
     const char *nenv = report_line(report, "env_count", buf, sizeof buf);
-    CHECK(nenv && strcmp(nenv, "1") == 0,
-          "the environment must be PATH and nothing else, got %s entries", nenv ? nenv : "(none)");
+    CHECK(nenv && strcmp(nenv, "5") == 0,
+          "the environment must be PATH plus the four VUP_* telemetry variables "
+          "and nothing else, got %s entries", nenv ? nenv : "(none)");
     {
         char want[VU_PATH_MAX];
         vu_path(want, sizeof want, "env=PATH=%s", VU_HELPER_PATH);
         CHECK(report_has(report, want), "PATH must be exactly the pinned value");
+    }
+    {
+        char want[VU_PATH_MAX];
+        vu_path(want, sizeof want, "env=VUP_STATE_UID=%lu", (unsigned long)me);
+        CHECK(report_has(report, want), "VUP_STATE_UID must carry the caller's uid");
+        vu_path(want, sizeof want, "env=VUP_PROFILE_ID=%s", req.profile_id);
+        CHECK(report_has(report, want), "VUP_PROFILE_ID must carry the canonical profile id");
+        CHECK(report_has(report, "env=VUP_SESSION_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+              "VUP_SESSION_ID must survive into the exec'd environment");
+        CHECK(report_has(report, "env=VUP_REQUEST_ID=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+              "VUP_REQUEST_ID must survive into the exec'd environment");
     }
 
     /*

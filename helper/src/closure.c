@@ -447,6 +447,28 @@ bool vu_closure_check(const vu_closure_spec *s, vu_closure_report *out, vu_err *
     return true;
 }
 
+bool vu_wrapper_precheck(const char *wrapper_path, uid_t owner,
+                         vu_closure_report *out, vu_err *e)
+{
+    if (!wrapper_path || !out) { vu_err_set(e, "closure: null argument"); return false; }
+    memset(out, 0, sizeof *out);
+
+    check_file(out, "vpnc-script wrapper (executed as root on every connect)",
+               wrapper_path, owner, true);
+    check_shebang(out, wrapper_path, owner);
+
+    if (out->truncated) {
+        vu_err_set(e, "closure: more objects than the report can hold (%d)", VU_CLOSURE_MAX);
+        return false;
+    }
+    if (out->n_failed > 0) {
+        vu_err_set(e, "closure: %zu of %zu wrapper objects are not trustworthy",
+                   out->n_failed, out->n);
+        return false;
+    }
+    return true;
+}
+
 void vu_closure_print(const vu_closure_report *r, FILE *to)
 {
     if (!r || !to) return;

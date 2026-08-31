@@ -1,0 +1,106 @@
+#!/bin/sh
+#
+# vpn-up-vpnc-wrapper — the vpnc-script wrapper OpenConnect actually invokes in
+# helper mode (connection-state design plan §2). Root-owned, not group/other
+# writable, installed at the exact path baked into the C constant
+# VU_VPNC_SCRIPT (see helper/include/vu_exec.h) — never anywhere else, and
+# never resolved from an environment variable, since OpenConnect's --script
+# argument is what names this file in the first place.
+#
+# What this does, and no more: records tunnel-event telemetry (which of
+# connect/disconnect/reconnect/attempt-reconnect just happened, and whether the
+# real script itself reported success) into a root-owned per-(uid,profile)
+# state leaf, then delegates UNCHANGED to the real, third-party vpnc-script —
+# network configuration happens exactly as it always has, this file never
+# touches it. It is not a substitute for that script and does not attempt to
+# be one.
+#
+# @VU_VPNC_SCRIPT_REAL@ and @VU_STATE_ROOT@ below are literals, substituted at
+# build time from the SAME source of truth as the matching C compile-time
+# constants (see helper/Makefile) — never read from the environment or probed
+# at runtime, since either would be exactly the kind of thing a caller
+# controls.
+#
+# $reason, $VUP_STATE_UID, $VUP_PROFILE_ID, $VUP_SESSION_ID and
+# $VUP_REQUEST_ID all arrive as inherited environment: $reason is OpenConnect's
+# own, standard vpnc-script contract (connect/disconnect/reconnect/
+# attempt-reconnect); the four VUP_* variables are set by vu_clean_env()
+# (helper/src/proc.c) immediately before the execve that starts this whole
+# chain. Every one of them is validated against its exact expected grammar
+# before use — an old helper, an old client, or a caller with no business
+# invoking this script at all all look the same here: no telemetry write, and
+# a normal delegation to the real script.
+
+REAL_VPNC_SCRIPT="@VU_VPNC_SCRIPT_REAL@"
+STATE_ROOT="@VU_STATE_ROOT@"
+
+: "${VUP_STATE_UID:=}" "${VUP_PROFILE_ID:=}" "${VUP_SESSION_ID:=}" "${VUP_REQUEST_ID:=}"
+
+is_hex32() {
+  [ "${#1}" -eq 32 ] || return 1
+  [ "$(printf '%s' "$1" | tr -dc '0-9a-f')" = "$1" ]
+}
+
+is_canon_uuid() {
+  case "$1" in
+    ????????-????-????-????-????????????) : ;;
+    *) return 1 ;;
+  esac
+  s="$(printf '%s' "$1" | tr -d '-')"
+  [ "${#s}" -eq 32 ] && [ "$(printf '%s' "$s" | tr -dc '0-9a-f')" = "$s" ]
+}
+
+valid=1
+case "$VUP_STATE_UID" in ''|*[!0-9]*) valid=0 ;; esac
+is_canon_uuid "$VUP_PROFILE_ID" || valid=0
+is_hex32 "$VUP_SESSION_ID"      || valid=0
+is_hex32 "$VUP_REQUEST_ID"      || valid=0
+
+f=""
+[ "$valid" -eq 1 ] && f="$STATE_ROOT/$VUP_STATE_UID/$VUP_PROFILE_ID/status"
+
+# Written as a fresh temp file plus rename, so a reader (event-status) never
+# observes a partially written record: rename is atomic within one directory.
+record() {   # $1 = current_verified, $2 = last_connected_epoch
+  [ "$valid" -eq 1 ] && [ -n "$f" ] || return 0
+  tmp="$f.tmp.$$"
+  now="$(date +%s)"
+  { printf 'version=1\nsession=%s\nrequest_id=%s\nlast_connected_epoch=%s\ncurrent_verified=%s\nlast_reason=%s\nlast_event_epoch=%s\n' \
+      "$VUP_SESSION_ID" "$VUP_REQUEST_ID" "$2" "$1" "$reason" "$now"
+  } > "$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null
+}
+
+# Only ever preserve a prior last_connected_epoch if it demonstrably belongs to
+# THIS generation's own request id. cmd_connect already writes a fresh, zeroed
+# record before execve, so this is normally a same-generation read (an
+# attempt-reconnect/reconnect cycle after the initial connect); it is still
+# checked explicitly, defensively, rather than trusted, so a wrapper invocation
+# left over from a killed prior generation can never smuggle its epoch into a
+# new one.
+old_lce=0
+if [ "$valid" -eq 1 ] && [ -n "$f" ] && [ -f "$f" ]; then
+  old_req="$(awk -F= '$1=="request_id"{print $2}' "$f" 2>/dev/null)"
+  if [ "$old_req" = "$VUP_REQUEST_ID" ]; then
+    old_lce="$(awk -F= '$1=="last_connected_epoch"{print $2}' "$f" 2>/dev/null)"
+    case "$old_lce" in ''|*[!0-9]*) old_lce=0 ;; esac
+  fi
+fi
+
+# Negative/downgrade evidence is true regardless of the real script's own
+# result, so it is recorded BEFORE delegating: a session that is about to be
+# torn down (or that is mid-reconnect) really is no longer verified-connected,
+# whether or not the real script's own teardown or reconfiguration succeeds.
+case "$reason" in
+  attempt-reconnect|disconnect) record 0 "$old_lce" ;;
+esac
+
+"$REAL_VPNC_SCRIPT" "$@"
+rc=$?
+
+# Positive evidence only after the real, trusted script confirms success —
+# never recorded merely because OpenConnect asked for a connect/reconnect.
+case "$reason" in
+  connect|reconnect) [ "$rc" -eq 0 ] && record 1 "$(date +%s)" ;;
+esac
+
+exit "$rc"

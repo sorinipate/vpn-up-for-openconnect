@@ -154,4 +154,26 @@ bool vu_closure_check(const vu_closure_spec *s, vu_closure_report *out, vu_err *
 /* Print the report, failures first, one object per line. */
 void vu_closure_print(const vu_closure_report *r, FILE *to);
 
+/*
+ * A lighter-weight check for the vpnc-script WRAPPER specifically (connection-
+ * state design plan §2, round 4 item on closure duplication): file ownership/
+ * permissions and its own shebang interpreter only — the same two checks
+ * vu_closure_check applies to a script, without the hooks/PATH/library walk
+ * that follows them there.
+ *
+ * That fuller treatment stays on VU_VPNC_SCRIPT_REAL alone, via the ordinary
+ * vu_exec_precheck/vu_closure_check path: the sourced hook directories, every
+ * PATH entry, and the library closure are properties of the machine's real
+ * network-configuration script, not of whichever thin wrapper happens to name
+ * it, so walking all of that a second time for the wrapper would be redundant
+ * work and duplicate report rows for the same shared objects.
+ *
+ * Used both at runtime (helper_main.c, immediately before every execve,
+ * alongside the ordinary check of VU_VPNC_SCRIPT_REAL) and at install time
+ * (vpn-up-admin verify-closure, checking a STAGED CANDIDATE wrapper path
+ * before it is ever atomically activated over a working installation).
+ */
+bool vu_wrapper_precheck(const char *wrapper_path, uid_t owner,
+                         vu_closure_report *out, vu_err *e);
+
 #endif /* VU_CLOSURE_H */

@@ -30,6 +30,13 @@
 #define VU_URL_MAX      2048
 #define VU_FPR_MAX       128   /* "pin-sha256:" + 44 base64 chars, or "sha256:" + 64 hex */
 #define VU_UUID_MAX       37
+/* One shared format for the authoritative `session` id, the (client- or
+ * internally generated) `request_id`, and any other per-generation
+ * correlation id this design needs: 32 lowercase hex characters. Defined here
+ * rather than in vu_state.h so that vu_request (below) can carry an optional
+ * request_id without vu.h depending on the higher-level state header. */
+#define VU_HEXID_LEN      32
+#define VU_HEXID_MAX      (VU_HEXID_LEN + 1)
 #define VU_UA_MAX        129   /* §8: 1..128 bytes */
 #define VU_PROXY_MAX     320
 #define VU_PROTO_MAX      16
@@ -112,6 +119,16 @@ bool vu_canon_fingerprint(const char *in, char *out, size_t out_cap, vu_err *e);
 
 /* RFC 4122 UUID or 32 bare hex, canonicalised to lowercase 8-4-4-4-12. */
 bool vu_canon_profile_id(const char *in, char *out, size_t out_cap, vu_err *e);
+
+/*
+ * Exactly VU_HEXID_LEN lowercase hex characters, no canonicalisation. Used
+ * for a client-supplied --request-id (§8): unlike vu_canon_profile_id this is
+ * a strict grammar check, not a normaliser — a value that means the same
+ * thing spelled differently (uppercase, or a UUID-shaped 36 characters) is
+ * refused rather than accepted and rewritten, since a session/request id
+ * carries no external meaning to canonicalise toward.
+ */
+bool vu_valid_hexid(const char *in, vu_err *e);
 
 /* Closed enum; no pass-through. */
 bool vu_valid_protocol(const char *in, vu_err *e);
@@ -200,6 +217,14 @@ typedef struct {
     char       tunables[VU_TUNABLE_MAX][VU_TUNABLE_LEN];
     size_t     n_tunables;
     bool       quiet;
+    /* Optional (connection-state design plan §2, round 4 item 5): a client-
+     * generated, non-authoritative correlation id, exactly VU_HEXID_LEN
+     * lowercase hex characters when present. Never forwarded to OpenConnect's
+     * own argv. Omission is valid — an older client that does not know about
+     * this flag still connects normally; cmd_connect generates its own
+     * internal id for that generation instead. */
+    char       request_id[VU_HEXID_MAX];
+    bool       has_request_id;
 } vu_request;
 
 /* One approved capability record (§7). Not merely a certificate: protocol,

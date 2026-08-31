@@ -660,7 +660,9 @@ static void test_environment(void)
     setenv("IFS", " \t\n", 1);
     setenv("PATH", "", 1);
 
-    char **env = vu_clean_env();
+    char **env = vu_clean_env(1000, "11111111-1111-1111-1111-111111111111",
+                              "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                              "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
     CHECK(env != NULL && env[0] != NULL, "the constructed environment must not be empty");
 
     size_t n = 0;
@@ -677,7 +679,8 @@ static void test_environment(void)
         CHECK(strncmp(*p, "LD_", 3) != 0, "no LD_* variable may survive: %s", *p);
         CHECK(strncmp(*p, "DYLD_", 5) != 0, "no DYLD_* variable may survive: %s", *p);
     }
-    CHECK(n == 1, "the environment should be PATH and nothing else, got %zu entries", n);
+    CHECK(n == 5, "the environment should be PATH plus the four VUP_* telemetry "
+                  "variables and nothing else, got %zu entries", n);
 
     /*
      * PATH must be present, absolute, and NOT empty. Verified chain: the shipped
@@ -695,8 +698,11 @@ static void test_environment(void)
               "PATH must contain no relative entry");
     }
 
-    /* Called twice, the same answer: the caller execve's straight after. */
-    char **again = vu_clean_env();
+    /* Called twice with the same arguments, the same answer: the caller
+     * execve's straight after. */
+    char **again = vu_clean_env(1000, "11111111-1111-1111-1111-111111111111",
+                                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
     CHECK(again != NULL && strcmp(again[0], env[0]) == 0, "vu_clean_env must be stable");
 
     for (size_t i = 0; i < sizeof hostile / sizeof *hostile; ++i) {

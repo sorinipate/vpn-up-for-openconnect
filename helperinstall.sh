@@ -37,6 +37,13 @@
 _vu_sudoers_dir()          { printf '%s' "/etc/sudoers.d"; }
 _vu_legacy_sudoers_file()  { printf '%s/vpn-up' "$(_vu_sudoers_dir)"; }
 _vu_uid_sudoers_file()     { printf '%s/vpn-up-%s' "$(_vu_sudoers_dir)" "$(id -u)"; }
+# The always-installed, narrower grant (connection-state design plan §2, round
+# 4 item 2): a SEPARATE file from the whole-binary rule above, never a second
+# line appended to it, so the two can be created, checked and rolled back
+# independently without ever parsing a multi-line sudoers fragment. An
+# existing installation's whole-binary file is untouched by this file's
+# existence either way.
+_vu_uid_telemetry_sudoers_file() { printf '%s/vpn-up-%s-status' "$(_vu_sudoers_dir)" "$(id -u)"; }
 _vu_manifest_file()        { printf '%s/manifest' "$(helper_dir)"; }
 _vu_build_dir()            { printf '%s/helper/build' "${PROGRAM_PATH}"; }
 
@@ -238,6 +245,19 @@ vu_sudo_nopasswd() { vu_sudo -k -n "$@"; }
 vu_helper_passwordless() { vu_sudo_nopasswd "$(helper_bin)" version >/dev/null 2>&1; }
 vu_admin_passwordless()  { vu_sudo_nopasswd "$(admin_bin)"  version >/dev/null 2>&1; }
 
+# Cache-independent, and deliberately a SEPARATE probe from vu_helper_passwordless
+# (round 4 item 2): the narrow event-status grant is a different sudoers Cmnd_Spec
+# than the whole-binary one, so a version-based probe cannot answer whether it is
+# in force, and neither can it stand in for the reverse (a foreign rule scoped
+# only to event-status is invisible to vu_helper_passwordless, which is exactly
+# the uninstall-safety gap this probe closes). The dummy profile id only needs
+# the right SHAPE - event-status reports "no telemetry" for one that has never
+# connected, which is a real, successful (exit 0) answer, not an error.
+vu_event_status_passwordless() {
+  vu_sudo_nopasswd "$(helper_bin)" event-status \
+    --profile-id 00000000-0000-0000-0000-000000000000 >/dev/null 2>&1
+}
+
 # Theirs: openconnect may be user-writable, and executing it to discover whether
 # it can be executed as root would run attacker-controlled code as root to
 # answer the question. Policy listing only.
@@ -300,6 +320,13 @@ EOF
 # the problem entirely, and matches a registry already keyed by SUDO_UID.
 _vu_helper_rule_line() { printf '#%s ALL=(root) NOPASSWD: %s\n' "$(id -u)" "$(helper_bin)"; }
 
+# The narrow grant: sudoers(5) says a Cmnd_Spec with NO command-line arguments
+# permits ANY arguments, and one WITH arguments restricts to those (globs
+# allowed) - so "event-status *" really does refuse connect/stop/version while
+# permitting any --profile-id, and is a different grammar from the line above
+# on purpose, not merely a stylistic difference.
+_vu_event_status_rule_line() { printf '#%s ALL=(root) NOPASSWD: %s event-status *\n' "$(id -u)" "$(helper_bin)"; }
+
 # Read a root-only file exactly, trailing newlines included. Command
 # substitution strips them, so a sentinel goes on the end and comes back off.
 # Returns non-zero when the file does not exist or cannot be read, which doubles
@@ -344,26 +371,37 @@ _vu_is_our_helper_rule_file() {
   return 1
 }
 
-# Stage inert, validate, then activate.
+_vu_is_our_event_status_rule_file() {
+  local content="$1" expected
+  expected="$(_vu_event_status_rule_line)"
+  [ "$content" = "$expected" ] && return 0
+  [ "$content" = "${expected%
+}" ] && return 0
+  return 1
+}
+
+# Stage inert, validate, then activate. Generic over which rule: the
+# whole-binary grant and the always-on event-status grant are two independent
+# files (round 4 item 2), and this is the one place either gets written, so
+# they cannot drift in how that happens.
 #
 # The staged name begins with a dot: sudo skips any filename containing one when
 # processing an @includedir, so the file has no effect while it exists. visudo
 # runs BEFORE the move, never after, and the move is a rename within one
 # directory, so activation is atomic.
-_vu_activate_helper_rule() {
-  local final staged tmp
-  final="$(_vu_uid_sudoers_file)"
+_vu_activate_sudoers_rule() {   # _vu_activate_sudoers_rule <final-path> <rule-line> <label>
+  local final="$1" line="$2" label="$3" staged tmp
   staged="$(_vu_sudoers_dir)/.$(basename "$final").new"
   tmp="$(mktemp "${TMPDIR:-/tmp}/vpn-up-sudoers.XXXXXX")" || return 1
 
-  _vu_helper_rule_line > "$tmp"
+  printf '%s' "$line" > "$tmp"
   if ! vu_sudo "$VU_INSTALL" -o 0 -g 0 -m 0440 -- "$tmp" "$staged"; then
     rm -f "$tmp"; print_danger "Could not stage %s\n" "$staged"; return 1
   fi
   rm -f "$tmp"
 
   if ! vu_sudo "$VU_VISUDO" -cf "$staged" >/dev/null; then
-    print_danger "visudo rejected the generated rule; nothing was activated.\n"
+    print_danger "visudo rejected the generated %s rule; nothing was activated.\n" "$label"
     vu_sudo "$VU_RM" -f -- "$staged"
     return 1
   fi
@@ -372,8 +410,17 @@ _vu_activate_helper_rule() {
     vu_sudo "$VU_RM" -f -- "$staged"
     return 1
   fi
-  print_success "Wrote %s (helper only).\n" "$final"
+  print_success "Wrote %s (%s).\n" "$final" "$label"
   return 0
+}
+
+_vu_activate_helper_rule() {
+  _vu_activate_sudoers_rule "$(_vu_uid_sudoers_file)" "$(_vu_helper_rule_line)" "helper only"
+}
+
+_vu_activate_event_status_rule() {
+  _vu_activate_sudoers_rule "$(_vu_uid_telemetry_sudoers_file)" \
+    "$(_vu_event_status_rule_line)" "event-status only"
 }
 
 # ------------------------------------------------------------------- pieces
@@ -392,6 +439,18 @@ _vu_sha256() {
 _vu_admin_root() {   # _vu_admin_root <bin> registry|state
   local bin="$1" which="$2"
   "$bin" version 2>/dev/null | sed -n "s/^  ${which} root *//p" | head -1
+}
+
+# The wrapper's compiled-in install path, asked from either binary's own
+# `version` output rather than restated here - same reasoning as
+# _vu_admin_root. Matched against exactly the line this project's own
+# admin_main.c/helper_main.c print: "  vpnc-script     PATH (wrapper)". The
+# [[:space:]] requirement right after "vpnc-script" is what keeps this from
+# also matching the "vpnc-script.real PATH" line on the row below it.
+_vu_wrapper_path() {   # _vu_wrapper_path <bin>
+  "$1" version 2>/dev/null \
+    | sed -n 's/^[[:space:]]*vpnc-script[[:space:]]\{1,\}\([^[:space:]]*\).*/\1/p' \
+    | head -1
 }
 
 # Which directories in the install path are VPN Up's own? Only those may be
@@ -497,6 +556,55 @@ _vu_install_binary() {
   return 0
 }
 
+# Stage the vpnc-script wrapper, prove its FULL closure (openconnect + the
+# real vpnc-script + the STAGED candidate's own lightweight check, via the
+# extended `verify-closure --wrapper-candidate`), and only on success
+# atomically rename it over the live path.
+#
+# Never touches the live wrapper before the candidate has already passed
+# (connection-state design plan §2, round 4 item 3): on a first install there
+# is nothing there yet, so this is equivalent to _vu_install_binary's
+# stage/prove/rename shape, but on a SECOND or later install the live wrapper
+# is what the currently-installed, still-running helper depends on right now -
+# removing it on a failed check (as an earlier design draft did) would break a
+# working installation to protect against an upgrade that never happens.
+# Renaming only after proof is what makes both cases safe with one code path.
+_vu_install_script() {   # _vu_install_script <src> <built-admin-bin, unprivileged>
+  local src="$1" built_admin_path="$2" final dir staged
+  final="$(_vu_wrapper_path "$built_admin_path")"
+  if [ -z "$final" ]; then
+    print_danger "Could not determine the wrapper's install path from %s.\n" "$built_admin_path"
+    return 1
+  fi
+  dir="$(dirname "$final")"
+  staged="$dir/.$(basename "$final").new"
+
+  vu_sudo "$VU_INSTALL" -o 0 -g 0 -m 0755 -- "$src" "$staged" || return 1
+
+  # Run UNPRIVILEGED, like Phase A's own closure gate: the checks are read-only
+  # ownership/mode/shebang walks over paths whose PARENT directories are
+  # already verified root-owned and 0755, so no privilege is needed to read
+  # them, and a root exec that buys nothing is a root exec that should not
+  # happen (same reasoning as _vu_install_binary's "run it as yourself").
+  local closure_out closure_rc=0
+  closure_out="$("$built_admin_path" verify-closure --wrapper-candidate "$staged" 2>&1)" || closure_rc=$?
+  if [ "$closure_rc" -ne 0 ]; then
+    printf '%s\n' "$closure_out" | sed 's/^/  /'
+    print_danger "The staged wrapper failed its closure check; nothing was activated.\n"
+    print_warning "Any wrapper already installed at %s is untouched and still works.\n" "$final"
+    vu_sudo "$VU_RM" -f -- "$staged"
+    return 1
+  fi
+
+  vu_sudo "$VU_MV" -f -- "$staged" "$final" || {
+    print_danger "Could not activate %s\n" "$final"
+    vu_sudo "$VU_RM" -f -- "$staged"
+    return 1
+  }
+  print_success "Installed the vpnc-script wrapper at %s.\n" "$final"
+  return 0
+}
+
 # Hashes of the INSTALLED files, not of helper/build - the installed copies are
 # root-owned and outside the same-UID window, so the manifest records what root
 # actually installed rather than what a build directory held earlier.
@@ -595,16 +703,31 @@ install_helper() {
     return 1
   fi
 
+  local built_wrapper
+  built_wrapper="$(_vu_build_dir)/vpn-up-vpnc-wrapper"
+  if [ ! -x "$built_wrapper" ]; then
+    print_danger "Build produced no vpnc-script wrapper; nothing was installed.\n"
+    return 1
+  fi
+
   # The closure gate. On macOS this is where the install stops today: the Mach-O
   # library closure is unimplemented, so verify-closure refuses (§11.7) rather
   # than installing a boundary nobody has verified.
+  #
+  # PHASE A / PHASE B split (connection-state design plan §2, round 3 item 2):
+  # --wrapper-candidate points this at the FRESHLY BUILT wrapper still sitting
+  # in the build directory, never at the compiled-in FINAL path - nothing is
+  # installed there yet on a fresh machine, so checking the final path here
+  # would refuse every first-ever install. This answers "is this machine
+  # eligible for helper mode at all"; _vu_install_script re-checks the actual
+  # STAGED (root-owned) candidate later, right before it is ever activated.
   printf "\nChecking this machine's OpenConnect execution closure...\n"
   # Status captured BEFORE the indenting pipe: a pipeline reports the exit status
   # of its LAST command, so `verify-closure | sed` would have reported sed's - it
   # always succeeds - and this gate would have passed everything. That is the gate
   # that makes macOS fail closed, so it silently mattered a great deal.
   local closure_out closure_rc=0
-  closure_out="$("$built_admin" verify-closure 2>&1)" || closure_rc=$?
+  closure_out="$("$built_admin" verify-closure --wrapper-candidate "$built_wrapper" 2>&1)" || closure_rc=$?
   printf '%s\n' "$closure_out" | sed 's/^/  /'
   if [ "$closure_rc" -ne 0 ]; then
     print_danger "\nThis machine cannot run helper mode: the OpenConnect execution closure failed.\n"
@@ -675,13 +798,39 @@ install_helper() {
     print_warning "Leaving it alone. Review it by hand; passwordless state is unchanged.\n"
   fi
 
+  # The always-on, narrow event-status grant (round 4 item 2): a SEPARATE file
+  # and a SEPARATE state from the whole-binary rule above, present or absent
+  # independently of --passwordless. Written on every plain install, not just
+  # a --passwordless one, because the connection-state design's poller and
+  # final read need it regardless of whether connect/stop themselves ask for
+  # a password.
+  local telemetry_file telemetry_state="absent" telemetry_content
+  telemetry_file="$(_vu_uid_telemetry_sudoers_file)"
+  if [ "$dry_run" = 1 ]; then
+    telemetry_state="unknown"
+  elif telemetry_content="$(_vu_read_root_file "$telemetry_file")"; then
+    if _vu_is_our_event_status_rule_file "$telemetry_content"; then
+      telemetry_state="ours"
+    else
+      telemetry_state="foreign"
+    fi
+  fi
+  if [ "$telemetry_state" = foreign ]; then
+    print_danger "\n%s exists and is not the rule this installer writes.\n" "$telemetry_file"
+    print_warning "Leaving it alone. 'vpn-up status' will only show unverified evidence until this\n"
+    print_warning "is resolved by hand.\n"
+  fi
+
   if [ "$dry_run" = 1 ]; then
     printf "\nDry run - the following would change:\n"
     printf '%s' "$VU_DIRS_TO_CREATE" | sed -n 's/^\(..*\)$/  create directory \1 (root, 0755)/p'
+    printf "  install %s -> %s\n" "$built_wrapper" "$(_vu_wrapper_path "$built_admin")"
     printf "  install %s -> %s\n" "$built_helper" "$(helper_bin)"
     printf "  install %s -> %s\n" "$built_admin"  "$(admin_bin)"
     printf "  write   %s\n" "$(_vu_manifest_file)"
     printf "  retire  %s (if it holds VPN Up's legacy rule)\n" "$legacy_file"
+    printf "  write   %s (always: needed for verified connection evidence)\n" "$telemetry_file"
+    printf '          %s' "$(_vu_event_status_rule_line)"
     if [ "$want_passwordless" = 1 ]; then
       printf "  write   %s\n" "$uid_file"
       printf '          %s' "$(_vu_helper_rule_line)"
@@ -708,9 +857,15 @@ install_helper() {
 $VU_DIRS_TO_CREATE
 EOF
 
-  _vu_install_binary "$built_helper" vpn-up-helper || return 1
+  # Order matters (round 4 item 3): the wrapper candidate is proven and
+  # activated FIRST, admin next, and the helper binary LAST - so if anything
+  # earlier in this phase fails, the previously installed helper (the binary
+  # that actually execve's OpenConnect) is the one thing guaranteed to still be
+  # in place and fully functional, having depended on nothing that changed yet.
+  _vu_install_script "$built_wrapper" "$built_admin" || return 1
   _vu_install_binary "$built_admin"  vpn-up-admin  || return 1
-  print_success "Installed vpn-up-helper and vpn-up-admin in %s.\n" "$(helper_dir)"
+  _vu_install_binary "$built_helper" vpn-up-helper || return 1
+  print_success "Installed vpn-up-helper, vpn-up-admin and the vpnc-script wrapper in %s.\n" "$(helper_dir)"
 
   # ABI drift: approval records carry a version, and a record from another ABI is
   # refused at connect time. Better to hear that now than on the next connect.
@@ -743,6 +898,23 @@ EOF
     fi
   fi
 
+  # The always-on event-status grant, written regardless of --passwordless:
+  # the poller and the mandatory final read (twophase.sh) both need it, and
+  # neither has anything to do with whether connect/stop themselves prompt.
+  case "$telemetry_state" in
+    ours)
+      print_success "Event-status rule already present at %s; keeping it.\n" "$telemetry_file"
+      vu_sudo "$VU_VISUDO" -cf "$telemetry_file" >/dev/null || {
+        print_danger "The existing event-status rule no longer validates.\n"; return 1; }
+      ;;
+    foreign)
+      print_warning "Not touching %s; it is not the rule this installer writes.\n" "$telemetry_file"
+      ;;
+    *)
+      _vu_activate_event_status_rule || return 1
+      ;;
+  esac
+
   local created_rule=0
   if [ "$want_passwordless" = 1 ]; then
     case "$uid_state" in
@@ -769,6 +941,20 @@ EOF
   # it. Cache-independent, or this would just read back the password typed above.
   printf "\n"
   local failed=0
+  # Non-fatal on purpose, unlike the checks below: a narrow, read-only grant
+  # not taking effect (some other sudoers file overriding it, say) means
+  # 'vpn-up status' only ever shows unverified evidence - a real gap, but not
+  # a security regression the way vpn-up-admin being passwordless would be,
+  # and twophase.sh's own sudo -n discipline already degrades to that heuristic
+  # path gracefully, by design, whenever this grant does not work.
+  if [ "$telemetry_state" != foreign ]; then
+    if vu_event_status_passwordless; then
+      print_success "vpn-up-helper's event-status is reachable without a password (verified connection evidence is available).\n"
+    else
+      print_warning "vpn-up-helper's event-status is not passwordless; connecting still works, but\n"
+      print_warning "'vpn-up status' will only ever show unverified (heuristic) evidence.\n"
+    fi
+  fi
   if [ "$want_passwordless" = 1 ] && [ "$uid_state" != foreign ]; then
     if vu_helper_passwordless; then
       print_success "vpn-up-helper runs without a password (the intended rule).\n"
@@ -851,13 +1037,16 @@ uninstall_helper() {
   # Ask the installed binary where its roots are BEFORE removing it. A duplicated
   # constant in shell would be one that can drift from the compile-time pin, and
   # reading it afterwards would read it from a binary that no longer exists.
-  local reg_root state_root
+  local reg_root state_root wrapper_path
   reg_root="$(_vu_admin_root "$(admin_bin)" registry 2>/dev/null || true)"
   state_root="$(_vu_admin_root "$(admin_bin)" state 2>/dev/null || true)"
+  wrapper_path="$(_vu_wrapper_path "$(admin_bin)" 2>/dev/null || true)"
 
   # Privilege comes down BEFORE the binaries do. Removing the executable while a
   # grant still names its path would leave a passwordless rule pointing at a path
-  # whose lifecycle nobody controls any more.
+  # whose lifecycle nobody controls any more. Both possible VPN Up-owned rule
+  # shapes (round 4 item 2) are removed independently, each only if recognisably
+  # ours.
   local uid_file content
   uid_file="$(_vu_uid_sudoers_file)"
   if content="$(_vu_read_root_file "$uid_file")"; then
@@ -869,10 +1058,28 @@ uninstall_helper() {
     fi
   fi
 
-  # Cache-independent, and this is the clearest case for it: the step above used
-  # sudo, so a plain `sudo -n` would succeed on the warm timestamp and an
+  local telemetry_file telemetry_content
+  telemetry_file="$(_vu_uid_telemetry_sudoers_file)"
+  if telemetry_content="$(_vu_read_root_file "$telemetry_file")"; then
+    if _vu_is_our_event_status_rule_file "$telemetry_content"; then
+      vu_sudo "$VU_RM" -f -- "$telemetry_file" || { print_danger "Could not remove %s\n" "$telemetry_file"; return 1; }
+      print_success "Removed %s.\n" "$telemetry_file"
+    else
+      print_warning "%s is not the rule this installer wrote; leaving it alone.\n" "$telemetry_file"
+    fi
+  fi
+
+  # Cache-independent, and this is the clearest case for it: the steps above
+  # used sudo, so a plain `sudo -n` would succeed on the warm timestamp and an
   # ordinary uninstall would refuse to finish itself.
-  if vu_helper_passwordless; then
+  #
+  # BOTH probes, not just the whole-binary one (round 4 item 2's uninstall-
+  # safety gap): vu_helper_passwordless alone cannot see a FOREIGN rule scoped
+  # only to `event-status`, since that shape never matches `... NOPASSWD:
+  # <helper>` with no arguments. Removing the binary while such a rule still
+  # named its path would leave a passwordless grant pointing at a now-vacant
+  # path that anything could later occupy.
+  if vu_helper_passwordless || vu_event_status_passwordless; then
     print_danger "vpn-up-helper is still reachable as root without a password.\n"
     print_warning "Some other sudoers rule names it. Keeping the binaries: a stale grant pointing\n"
     print_warning "at this constrained helper is safer than one pointing at a path that no longer\n"
@@ -881,7 +1088,8 @@ uninstall_helper() {
   fi
 
   local f
-  for f in "$(helper_bin)" "$(admin_bin)" "$(_vu_manifest_file)"; do
+  for f in "$(helper_bin)" "$(admin_bin)" "${wrapper_path:-}" "$(_vu_manifest_file)"; do
+    [ -n "$f" ] || continue
     if [ -e "$f" ]; then
       vu_sudo "$VU_RM" -f -- "$f" && print_success "Removed %s.\n" "$f"
     fi

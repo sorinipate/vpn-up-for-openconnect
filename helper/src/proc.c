@@ -210,15 +210,40 @@ bool vu_harden_process(int keep_fd, vu_err *e)
     return true;
 }
 
-char **vu_clean_env(void)
+char **vu_clean_env(uid_t uid, const char *profile_id,
+                    const char *session_id, const char *request_id)
 {
     /*
      * Built, never inherited. Nothing from the caller's environment survives:
      * no IFS, no LD_ or DYLD_ interposition, no BASH_ENV, no CDPATH, no PS4.
      * PATH is explicit and deliberately non-empty (see vu_harden_process).
+     *
+     * The four VUP_* variables are how the vpnc-script wrapper (connection-
+     * state design plan §2) learns which state leaf to update without ever
+     * trusting argv or a caller-controlled path: OpenConnect's script.c forks
+     * and execs /bin/sh after applying its own script-specific variables on
+     * top of whatever it already inherited, so these survive to the wrapper
+     * untouched. static buffers: valid until the next call, matching every
+     * other function in this file that hands back process-lifetime storage.
      */
-    static char path_var[] = "PATH=" VU_HELPER_PATH;
-    static char *env[] = { path_var, NULL };
+    static char path_var[]    = "PATH=" VU_HELPER_PATH;
+    static char uid_var[32];
+    static char profile_var[16 + VU_UUID_MAX];
+    static char session_var[16 + VU_HEXID_MAX];
+    static char request_var[16 + VU_HEXID_MAX];
+    static char *env[6];
+
+    snprintf(uid_var, sizeof uid_var, "VUP_STATE_UID=%lu", (unsigned long)uid);
+    snprintf(profile_var, sizeof profile_var, "VUP_PROFILE_ID=%s", profile_id ? profile_id : "");
+    snprintf(session_var, sizeof session_var, "VUP_SESSION_ID=%s", session_id ? session_id : "");
+    snprintf(request_var, sizeof request_var, "VUP_REQUEST_ID=%s", request_id ? request_id : "");
+
+    env[0] = path_var;
+    env[1] = uid_var;
+    env[2] = profile_var;
+    env[3] = session_var;
+    env[4] = request_var;
+    env[5] = NULL;
     return env;
 }
 

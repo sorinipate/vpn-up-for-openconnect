@@ -8,3 +8,4 @@ config/vpn-up.command.config
 
 # compiled policy engine (helper/) build products
 helper/build/
+docs/roadmap-secret.md

@@ -202,11 +202,31 @@ start() {
   return "$outcome"
 }
 
+# Convert an epoch (seconds) to the local "YYYY-MM-DD HH:MM:SS" format,
+# portable across BSD/macOS date (`-r <epoch>` reads epoch seconds directly)
+# and GNU/Linux date (whose `-r` means "mtime of FILE", so it fails on a
+# bare number and falls through to `-d @<epoch>`, which GNU understands).
+_epoch_to_local() {
+  local epoch="$1"
+  date -r "$epoch" '+%Y-%m-%d %H:%M:%S' 2>/dev/null \
+    || date -d "@$epoch" '+%Y-%m-%d %H:%M:%S' 2>/dev/null
+}
+
 # Record which profile is connected so `status` can report it.
+#
+# $1 (optional): the epoch this call is actually vouching for — defaults to
+# now. Prompt-mode/legacy call sites only ever have "now" to offer; the
+# helper-mode poller (twophase.sh) passes the real, script-confirmed
+# last_connected_epoch instead, so `Since:` reflects when the tunnel was
+# really established rather than when a poller happened to notice it.
+# $2 (optional): "verified" or "heuristic" (default) — see status()'s
+# strict, backward-compatible parsing in _print_state_details.
 write_connection_state() {
+  local epoch="${1:-$(date +%s)}"
+  local evidence="${2:-heuristic}"
   ( umask 077
-    printf 'profile=%s\nhost=%s\nconnected_at=%s\n' \
-      "${VPN_NAME}" "${VPN_HOST}" "$(date '+%Y-%m-%d %H:%M:%S')" > "$STATE_FILE_PATH"
+    printf 'profile=%s\nhost=%s\nconnected_at=%s\nconnected_at_epoch=%s\nevidence=%s\n' \
+      "${VPN_NAME}" "${VPN_HOST}" "$(_epoch_to_local "$epoch")" "$epoch" "$evidence" > "$STATE_FILE_PATH"
   )
 }
 
@@ -711,13 +731,24 @@ run_admitted_connection() {
 _print_state_details() {
   local statefile="$1" pid="$2"
   if [ -f "$statefile" ]; then
-    local profile host connected_at
+    local profile host connected_at evidence
     profile="$(awk -F= '$1=="profile"{print substr($0,9); exit}' "$statefile")"
     host="$(awk -F= '$1=="host"{print substr($0,6); exit}' "$statefile")"
     connected_at="$(awk -F= '$1=="connected_at"{print substr($0,14); exit}' "$statefile")"
+    # Strict, backward-compatible parsing: only the exact literal "verified"
+    # ever earns the stronger label. Missing, unrecognized, or malformed
+    # values (an old state file, a rolled-back build) all read as heuristic
+    # — never fail open into an unproven "verified" claim.
+    evidence="$(awk -F= '$1=="evidence"{print substr($0,10); exit}' "$statefile")"
+    local qualifier
+    if [ "$evidence" = verified ]; then
+      qualifier="(verified: OpenConnect connect event observed for this session)"
+    else
+      qualifier="(unverified: process liveness only)"
+    fi
     print_primary "  Profile : %s\n" "${profile:-unknown}"
     print_primary "  Gateway : %s\n" "${host:-unknown}"
-    print_primary "  Since   : %s\n" "${connected_at:-unknown}"
+    print_primary "  Since   : %s  %s\n" "${connected_at:-unknown}" "$qualifier"
   fi
   print_primary "  Uptime  : %s\n" "$(ps -p "$pid" -o etime= 2>/dev/null | tr -d ' ' || echo unknown)"
 }
@@ -1101,6 +1132,16 @@ _openconnect_pid_for_pid_file() {
       '
 }
 
+# Prompt mode has no better evidence than this, ever (see constraint 2 in
+# PRIVILEGED-HELPER-DESIGN.md §17.7 / the connection-state design plan): a
+# process named `openconnect` still existing 3 seconds after launch. A
+# process stuck at an SSO/Duo/CSD prompt at t=3s looks identical to one
+# about to succeed, and no amount of additional `ps` polling changes that —
+# this narrows one false-positive (the process having already exited), it
+# does not and cannot prove a tunnel exists. That's why the human-facing
+# notification below says "session started," never "Connected" — helper
+# mode's genuine, script-confirmed `reason=connect` signal has earned that
+# word (twophase.sh); this path never can.
 _record_foreground_openconnect_pid() {
   (
     sleep 3
@@ -1108,7 +1149,8 @@ _record_foreground_openconnect_pid() {
     _pid="$(_openconnect_pid_for_pid_file "$PID_FILE_PATH")"
     if [ -n "$_pid" ]; then
       printf '%s\n' "$_pid" > "$PID_FILE_PATH"
-      notify "VPN Up" "Connected to ${VPN_NAME}"
+      write_connection_state "" heuristic
+      notify "VPN Up" "VPN session started: ${VPN_NAME}"
       run_hooks connected "${VPN_NAME}" "${VPN_HOST}"
     fi
   ) &
@@ -1239,7 +1281,12 @@ run_openconnect() {
     # SSO: openconnect opens a browser and needs the controlling TTY, so pipe
     # NOTHING on stdin. Always foreground; capture the PID the same way as the
     # foreground password path so status/stop work during the session.
-    write_connection_state
+    #
+    # write_connection_state is NOT called here: it used to be, but that
+    # stamped `Since:` at the moment openconnect was merely about to be
+    # launched, not when anything was actually confirmed alive.
+    # _record_foreground_openconnect_pid now writes it itself, only once its
+    # own liveness probe succeeds.
     _record_foreground_openconnect_pid
     sudo openconnect "${args[@]}" 2>&1 | tee -a "$LOG_FILE_PATH"
     local _ps=("${PIPESTATUS[@]}"); oc_rc="${_ps[0]}"
@@ -1258,7 +1305,10 @@ run_openconnect() {
     # Foreground: openconnect only writes --pid-file when backgrounding, so
     # record the PID ourselves (after the tunnel has had time to come up) so
     # status/stop work during a foreground/service session.
-    write_connection_state
+    #
+    # write_connection_state is NOT called here — see the SSO branch above
+    # for why; _record_foreground_openconnect_pid writes it once its own
+    # liveness probe succeeds.
     _record_foreground_openconnect_pid
     printf "%s\n" "$stdin_lines" \
       | sudo openconnect "${args[@]}" 2>&1 | tee -a "$LOG_FILE_PATH"

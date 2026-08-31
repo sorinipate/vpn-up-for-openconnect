@@ -68,6 +68,116 @@ helper_mode_usable() {
   [ -t 0 ] || [ -t 1 ]
 }
 
+# ------------------------------------------------- connection-state telemetry
+#
+# Connection-state design plan §2: a genuine tunnel-up/down signal for helper
+# mode, via a vpnc-script wrapper that records telemetry the privileged helper
+# exposes through a new, read-only `event-status` verb. Everything below is
+# unprivileged except the event-status reads themselves, which use `sudo -k -n`
+# and must never prompt (see the design's round-3 item 7 / round-4 item 6).
+
+# Unprivileged capability marker (round 3 item 7 / round 4 item 6): whether the
+# installed helper understands `event-status`/`--request-id` at all is decided
+# from THIS line, checked before any credential is spent, never inferred from a
+# later privileged call happening to fail - which can mean many things besides
+# "old helper" (an expired sudo credential, corrupted state, a real bug).
+helper_supports_event_status() {
+  local h; h="$(helper_bin)"
+  [ -x "$h" ] || return 1
+  "$h" version 2>/dev/null | grep -q 'event-status-v1'
+}
+
+# 32 lowercase hex characters, unprivileged, client-side and NON-authoritative
+# (round 3 item 6 / round 4 item 5): its only job is telling this invocation's
+# own telemetry apart from a concurrent, unrelated one for THIS client's own
+# bookkeeping. Nothing about it needs to be unpredictable in a security sense,
+# only unlikely to collide with whatever else happens to be running.
+generate_request_id() {
+  local id
+  if command -v openssl >/dev/null 2>&1; then
+    id="$(openssl rand -hex 16 2>/dev/null)" && [ "${#id}" -eq 32 ] && { printf '%s' "$id"; return 0; }
+  fi
+  if [ -r /dev/urandom ]; then
+    id="$(od -An -tx1 -N16 /dev/urandom 2>/dev/null | tr -d ' \t\n')"
+    [ "${#id}" -eq 32 ] && { printf '%s' "$id"; return 0; }
+  fi
+  return 1
+}
+
+# Pull one key=value field out of an `event-status` report. Shared by the
+# poller and the mandatory final read so the two can never parse the same
+# format two different ways.
+_event_status_field() {   # _event_status_field <report-text> <key>
+  printf '%s\n' "$1" | sed -n "s/^$2=//p"
+}
+
+# ONE cache-independent read. Never a plain blocking `sudo`: this must be safe
+# to call from a background poller and from the mandatory final read, neither
+# of which may ever prompt (see the design's round-3 item 7).
+_read_event_status() {   # _read_event_status <helper-bin> <profile-id>
+  sudo -k -n "$1" event-status --profile-id "$2" 2>/dev/null
+}
+
+# Bounded foreground poller, run as a BACKGROUND job for the duration of the
+# blocking connect pipeline (constraint 4: the helper execs into OpenConnect,
+# so there is no long-lived process left to talk to; only this helper's own
+# brief `event-status` calls exist to ask). Publishes evidence exactly once,
+# and only for a reading whose OWN request_id matches this invocation's -
+# never a stale or concurrent, unrelated generation's (round 3 item 3).
+#
+# Ordering matters (part 1's rule): the pid file and the local state are
+# written BEFORE notify/run_hooks, since hooks are arbitrary user scripts that
+# should never gate evidence already in hand.
+poll_helper_event() {   # poll_helper_event <request-id> <profile-id> <helper-bin>
+  local request_id="$1" profile_id="$2" h="$3"
+  local attempt=0 max_attempts=150   # ~150 iterations, bounded either way
+  local out req_id verified pid lce
+
+  while [ "$attempt" -lt "$max_attempts" ]; do
+    attempt=$((attempt + 1))
+    out="$(_read_event_status "$h" "$profile_id")"
+    if [ -n "$out" ]; then
+      req_id="$(_event_status_field "$out" request_id)"
+      if [ "$req_id" = "$request_id" ]; then
+        verified="$(_event_status_field "$out" current_verified)"
+        if [ "$verified" = "1" ]; then
+          pid="$(_event_status_field "$out" pid)"
+          case "$pid" in ''|0|*[!0-9]*) pid="" ;; esac
+          if [ -n "$pid" ] && [ -n "${PID_FILE_PATH:-}" ]; then
+            ( umask 077; printf '%s\n' "$pid" > "$PID_FILE_PATH" )
+          fi
+          lce="$(_event_status_field "$out" last_connected_epoch)"
+          case "$lce" in ''|*[!0-9]*) lce="" ;; esac
+          write_connection_state "${lce:-}" verified
+          notify "VPN Up" "Connected to ${VPN_NAME}"
+          run_hooks connected "${VPN_NAME}" "${VPN_HOST}"
+          return 0
+        fi
+      fi
+    fi
+    sleep 0.2
+  done
+  return 1
+}
+
+# The mandatory final synchronous read, strictly AFTER the poller has been
+# joined (round 2's ordering fix: a late "Connected" must never follow
+# "Disconnected"). Returns 0 when THIS generation's own telemetry proves a
+# genuine connect happened at some point in this run - the caller then fires
+# `disconnected` on this authority, not on the heuristic below. Returns 1 -
+# no record, a request-id mismatch, or a connect that was never confirmed -
+# meaning the caller must fall back to _helper_run_had_tunnel instead.
+_helper_final_event_had_tunnel() {   # <request-id> <profile-id> <helper-bin>
+  local request_id="$1" profile_id="$2" h="$3" out req_id lce
+  out="$(_read_event_status "$h" "$profile_id")"
+  [ -n "$out" ] || return 1
+  req_id="$(_event_status_field "$out" request_id)"
+  [ "$req_id" = "$request_id" ] || return 1
+  lce="$(_event_status_field "$out" last_connected_epoch)"
+  case "$lce" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$lce" -gt 0 ]
+}
+
 # Authorize the privileged step BEFORE phase one spends anything.
 #
 # The interactive tier means sudo WILL ask for a password, and where it asks
@@ -340,6 +450,7 @@ phase_one_authenticate() {
 # no password, no certificate, no script, and nothing that did not come from the
 # closed schema.
 run_openconnect_helper() {
+  local request_id="${1:-}"
   local h; h="$(helper_bin)"
   local args=(connect
               "--profile-id" "${VPN_PROFILE_ID}"
@@ -354,13 +465,32 @@ run_openconnect_helper() {
   [ -n "${HELPER_USERAGENT:-}" ] && args+=("--useragent" "${HELPER_USERAGENT}")
   [ "${QUIET:-FALSE}" = TRUE ] && args+=("--quiet")
   [ "${#HELPER_TUNABLES[@]}" -gt 0 ] && args+=("${HELPER_TUNABLES[@]}")
+  # Optional (round 4 item 5): an old client that never generated one simply
+  # omits the flag, and the helper generates its own internal id instead - see
+  # request.c. Never itself a claim of anything; see poll_helper_event.
+  [ -n "$request_id" ] && args+=("--request-id" "$request_id")
 
   # Where this run's output starts, so a refusal can be told from a session that
   # ended (see _helper_run_had_tunnel below). Taken before anything is written.
   local mark=0
   [ -f "${LOG_FILE_PATH:-}" ] && mark=$(( $(wc -c < "$LOG_FILE_PATH" 2>/dev/null || printf 0) ))
 
-  write_connection_state
+  # write_connection_state no longer runs here (connection-state design plan,
+  # part 1): it used to fire before the tunnel was even attempted, which is
+  # exactly the premature-"Connected" bug this design exists to fix. The
+  # genuine signal, when both ends support it, comes from poll_helper_event
+  # below; a client/helper pair that does not falls back to
+  # _helper_run_had_tunnel exactly as it always has.
+
+  # The poller only ever runs when a request id was generated (i.e. the
+  # unprivileged capability check in connect_via_helper already confirmed
+  # event-status-v1 support) - an old client or an old helper skips this
+  # entirely, with no change in behaviour from before this design existed.
+  local poller_pid=""
+  if [ -n "$request_id" ]; then
+    poll_helper_event "$request_id" "${VPN_PROFILE_ID}" "$h" &
+    poller_pid=$!
+  fi
 
   # Plain `sudo`, NOT `sudo -n`.
   #
@@ -380,14 +510,29 @@ run_openconnect_helper() {
   local rc="${PIPESTATUS[1]}"
 
   unset AUTH_COOKIE
+
+  # Terminate and JOIN the poller before anything below - never the other way
+  # round, or a late "Connected" could print after "Disconnected" (round 2's
+  # ordering fix). A poller that already exited (it is bounded) is a no-op here.
+  if [ -n "$poller_pid" ]; then
+    kill "$poller_pid" 2>/dev/null
+    wait "$poller_pid" 2>/dev/null
+  fi
+
   rm -f "$PID_FILE_PATH" "$STATE_FILE_PATH"
 
   # A refusal is not a disconnection. Announcing one fires the user's
   # `disconnected` hooks for a tunnel that never existed. The same check also
   # feeds the outcome code below (0/POLICY/ATTEMPT_FAILED, outcome.sh) — this
   # is diagnostics/supervisor-instruction only and never feeds admit_attempt.
+  #
+  # The genuine telemetry read is tried FIRST, and only when a request id was
+  # generated; anything it cannot confirm (no record, a mismatched request id,
+  # a connect that was never verified) falls through to the same heuristic
+  # this always used, unchanged.
   local had_tunnel=1
-  if _helper_run_had_tunnel "$mark"; then
+  if { [ -n "$request_id" ] && _helper_final_event_had_tunnel "$request_id" "${VPN_PROFILE_ID}" "$h"; } \
+     || _helper_run_had_tunnel "$mark"; then
     notify "VPN Up" "Disconnected from ${VPN_NAME:-VPN}"
     run_hooks disconnected "${VPN_NAME:-}" "${VPN_HOST:-}"
   else
@@ -442,6 +587,16 @@ _helper_run_had_tunnel() {
 # run_openconnect_helper (-> 0/VPN_RC_POLICY/VPN_RC_ATTEMPT_FAILED) remain
 # its own concern.
 connect_via_helper() {
+  # Free, and genuinely before anything is spent (round 4 item 6): `version`
+  # sits above the helper's root gate, so this costs nothing and runs before
+  # phase_one_authenticate below spends a password, a TOTP code, a Duo push or
+  # an SSO round trip - constraint 8's call-order finding is exactly why this
+  # cannot live inside run_openconnect_helper instead.
+  local _request_id=""
+  if helper_supports_event_status; then
+    _request_id="$(generate_request_id)" || _request_id=""
+  fi
+
   print_primary "Authenticating as %s (unprivileged) ...\n" "${USER:-$(id -un)}"
   phase_one_authenticate || return "$VPN_RC_PREAUTH"
 
@@ -463,7 +618,7 @@ connect_via_helper() {
   fi
 
   print_primary "Establishing the tunnel via %s ...\n" "$(helper_bin)"
-  run_openconnect_helper
+  run_openconnect_helper "$_request_id"
 }
 
 # ------------------------------------------------------------------- stopping
