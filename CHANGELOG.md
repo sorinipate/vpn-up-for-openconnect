@@ -5,6 +5,62 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ---
 
+## [v3.13.0] — 2026-09-03
+### Added
+
+- **Helper mode now works on macOS.** The privileged helper's dynamic-library
+  closure check — the piece that proves every library OpenConnect will load is
+  outside your write control — was ELF/Linux only; macOS always fell back to
+  the deprecated, unrestricted raw-`openconnect` NOPASSWD rule for passwordless
+  service mode. A new Mach-O parser and recursive closure walk close that gap,
+  handling fat/universal binaries, `@rpath`/`@loader_path`/`@executable_path`,
+  and the dyld shared cache (verified via `_dyld_shared_cache_contains_path`,
+  no subprocess, no private header). Verified end-to-end against a real
+  MacPorts `openconnect` install: `vpn-up-admin verify-closure` now correctly
+  resolves the full 35-object transitive dependency graph.
+- **`vpn-up status` and connection hooks now distinguish a proven connection
+  from a guess.** A new root-owned `vpnc-script` wrapper records
+  connect/disconnect/reconnect telemetry, and `vpn-up-helper` exposes it
+  read-only via a new `event-status` verb. Helper-mode connections get a
+  genuine, script-confirmed tunnel-up signal instead of the old "OpenConnect
+  process still exists after 3 seconds" heuristic — `status` now shows
+  `(verified: OpenConnect connect event observed for this session)` or
+  `(unverified: process liveness only)` next to `Since:`, and the `connected`
+  hook only fires on the genuine signal when one is available. Prompt/SSO
+  mode keeps the heuristic (there's no root-owned component there to confirm
+  it), and is now labeled as such rather than implied to be proven.
+- **A login service that keeps failing to authenticate now pauses instead of
+  retrying forever.** The auth-rate breaker already throttled unattended
+  retries (v3.12.0); it's now also bounded in *duration*: past three full
+  breaker cycles with zero genuinely-verified connects in between, the
+  service pauses and asks a human to intervene (fix the credential, or
+  `vpn-up start` manually), rather than quietly resuming the retry curve
+  forever. Uses the new tunnel-up signal above, and only ever acts strictly
+  after an attempt already admitted has finished — it cannot change whether
+  or how long any single attempt is made to wait.
+
+### Fixed
+
+- **A profile using the `pulse` protocol could select browser SSO**, even
+  though only `anyconnect`/`gp` support it per `docs/protocols.md`; `pulse`
+  and `nc` use password/Duo flows. The SSO check existed twice (`setup.sh`,
+  `core.sh`), each independently denylisting only `nc`, which is how they
+  drifted from the docs in the first place — replaced with one shared
+  capability check.
+- **The compiled-in `vpnc-script` path for macOS was wrong.** It named
+  `/opt/local/etc/vpnc/vpnc-script`, which the real `vpnc-scripts` MacPorts
+  port (a declared dependency of `openconnect`) never creates — the actual
+  install path is `/opt/local/etc/vpnc-scripts/vpnc-script`. Found while
+  verifying the Mach-O closure work above against a real install.
+
+### Docs
+
+- Cross-referenced `usage.md`/`split-tunnel.md` with the fact that
+  `install-helper`'s closed argument schema refuses `--script`,
+  `--csd-wrapper`, `--config`, and `--xmlconfig` outright, and documented the
+  `VPN_UP_FORCE_PROMPT_MODE=TRUE` escape hatch for split-tunnelling setups
+  that need them.
+
 ## [v3.12.0] — 2026-08-30
 ### Added
 
