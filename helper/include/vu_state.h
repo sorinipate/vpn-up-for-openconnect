@@ -42,6 +42,13 @@
 
 #define VU_PATH_MAX 1024
 
+/* VU_HEXID_LEN / VU_HEXID_MAX (32 lowercase hex characters, the shared format
+ * for `session` and `request_id`) now live in vu.h, so that vu_request can
+ * carry an optional request_id field without a circular include. Fixed and
+ * non-guessable (see vu_generate_hex_id) — not for secrecy, since only root
+ * ever writes any of these paths, but so a stale or not-yet-rotated record
+ * can never coincide with a new one by construction. */
+
 typedef struct {
     char root[VU_PATH_MAX];         /* <root>                  */
     char uid_dir[VU_PATH_MAX];      /* <root>/<uid>            */
@@ -50,6 +57,20 @@ typedef struct {
     char pid[VU_PATH_MAX];          /* .../pid                 */
     char started[VU_PATH_MAX];      /* .../started             */
     char endpoint[VU_PATH_MAX];     /* .../endpoint            */
+    /*
+     * session/status are TELEMETRY, not runtime process state, and that
+     * distinction is load-bearing: vu_state_prune() below deliberately never
+     * touches either of them (connection-state design plan, round 2/round 4).
+     * An ordinary `stop` prunes pid/started/endpoint the moment the process
+     * is confirmed gone; if session/status were pruned the same way, the
+     * evidence a concurrently-running `start` is about to read synchronously
+     * (via the event-status verb) would already be gone on the single most
+     * common shutdown path there is. Telemetry is only ever REPLACED, by the
+     * next connect's fresh write, never explicitly deleted; it ages out
+     * naturally at reboot since VU_STATE_ROOT is /run or /var/run.
+     */
+    char session[VU_PATH_MAX];      /* .../session — authoritative generation id, diagnostic only */
+    char status[VU_PATH_MAX];       /* .../status  — wrapper-written tunnel-event telemetry */
 } vu_state_paths;
 
 /* ------------------------------------------------------------- caller's uid */
@@ -251,6 +272,83 @@ bool vu_state_check(const vu_state_paths *p, const char *expect_exe, uid_t expec
 
 bool vu_state_prune(const vu_state_paths *p, vu_err *e);
 
+/* ------------------------------------------------------------------ telemetry */
+/*
+ * session/status: connection-state design plan §2. Deliberately separate
+ * from pid/started/endpoint above — see vu_state_paths's struct comment for
+ * why vu_state_prune() never touches them.
+ */
+
+/* A cryptographically-uninteresting but non-guessable per-generation
+ * identifier: 32 lowercase hex characters read from /dev/urandom. Used both
+ * for the helper-generated, authoritative `session` id and, when a caller
+ * omits --request-id, an internally generated fallback request id — the
+ * one thing this design needs from either is that two generations never
+ * collide, not secrecy. */
+bool vu_generate_hex_id(char out[VU_HEXID_MAX], vu_err *e);
+
+/*
+ * Called once per `connect`, after the profile lock is held and BEFORE
+ * execve: writes the authoritative `session` leaf and a FRESHLY ZEROED
+ * `status` telemetry record for this brand-new generation. Never called
+ * again for this generation by this program — every later update to
+ * `status` comes from the vpnc-script wrapper's own read-modify-write.
+ *
+ * Writing a zeroed record here (rather than leaving whatever a previous
+ * generation left in `status`) is what stops the wrapper from ever
+ * inheriting a stale generation's last_connected_epoch, even before its own
+ * defensive request-id check runs.
+ */
+bool vu_state_write_fresh_telemetry(const vu_state_paths *p, const char *session_id,
+                                    const char *request_id, vu_err *e);
+
+/* Parsed contents of the `status` telemetry leaf. */
+typedef struct {
+    char request_id[VU_HEXID_MAX];
+    int32_t last_connected_epoch;
+    bool current_verified;
+    char last_reason[24];      /* "", "connect", "reconnect", "attempt-reconnect", "disconnect" */
+    int32_t last_event_epoch;
+} vu_telemetry;
+
+/*
+ * Read the `session` leaf alone — present=false is the normal, valid answer
+ * for a profile that has never connected, not an error. An ownership
+ * violation (wrong uid, group/other access) is a hard refusal, like every
+ * other state read in this file.
+ */
+bool vu_state_read_session(const vu_state_paths *p, uid_t expect_uid,
+                           char out[VU_HEXID_MAX], bool *present, vu_err *e);
+
+/*
+ * Read and strictly parse the `status` telemetry leaf, but ONLY if its own
+ * `session` field equals `want_session` (the value vu_state_read_session
+ * just returned) — a mismatch is treated exactly like an absent record
+ * (present=false, never an error, never partially-populated output), per
+ * the connection-state design plan's session-consistency check. Strict
+ * parsing: an unrecognised `version`, a malformed epoch, a `current_verified`
+ * outside {0,1}, or an undocumented `last_reason` are ALL treated as absent
+ * — never partially trusted, never surfaced as verified evidence.
+ *
+ * Deliberately does not call vu_state_check/vu_proc_identity or
+ * vu_state_prune: this must answer correctly even after OpenConnect has
+ * already exited, which is exactly when its most important caller (a
+ * connect's own mandatory final synchronous read) needs it.
+ */
+bool vu_state_read_status(const vu_state_paths *p, uid_t expect_uid,
+                          const char *want_session, vu_telemetry *out,
+                          bool *present, vu_err *e);
+
+/*
+ * Read the raw recorded pid, with no liveness check at all — the caller
+ * (event-status) hands this to an unprivileged poller purely so it can
+ * populate its OWN pid file for `vpn-up status`'s existing, unmodified
+ * `is_openconnect_pid` predicate to find and independently re-verify.
+ * Garbage or unparseable content reads as absent, never as an error.
+ */
+bool vu_state_read_pid(const vu_state_paths *p, uid_t expect_uid,
+                       int32_t *pid_out, bool *present, vu_err *e);
+
 /* ------------------------------------------------- privileged process hygiene */
 
 /*
@@ -305,9 +403,17 @@ bool vu_ensure_std_fds(vu_err *e);
  * is inherited: no IFS, no LD_ or DYLD_ variables, no BASH_ENV, no CDPATH. PATH
  * is set explicitly and is never empty, for the reason above.
  *
+ * Also carries the four variables the vpnc-script wrapper needs to find and
+ * validate its own telemetry leaf (connection-state design plan §2):
+ * VUP_STATE_UID, VUP_PROFILE_ID, VUP_SESSION_ID, VUP_REQUEST_ID. profile_id
+ * must already be canonical; session_id and request_id must already be
+ * VU_HEXID_LEN hex characters — this function does not validate them, it only
+ * formats what the caller already validated.
+ *
  * Returns a NULL-terminated array owned by the callee; valid until the next
  * call. Not thread-safe, and does not need to be.
  */
-char **vu_clean_env(void);
+char **vu_clean_env(uid_t uid, const char *profile_id,
+                    const char *session_id, const char *request_id);
 
 #endif /* VU_STATE_H */

@@ -60,17 +60,42 @@ HELPER_BIN = build/vpn-up-helper
 # expands to nothing in `all:`.
 FAKE_BIN   = build/fake-openconnect
 
+# The vpnc-script wrapper (connection-state design plan §2). Not compiled: a
+# template with two literals substituted in at build time from the SAME
+# defaults the C side uses for VU_VPNC_SCRIPT_REAL and VU_STATE_ROOT (see
+# vu_exec.h / vu_state.h) — matching that #ifdef __APPLE__ logic here rather
+# than letting the shell probe for it at runtime, because a probed value is
+# exactly the kind of thing a caller could influence.
+#
+# A packager overriding the C default with -DVU_VPNC_SCRIPT_REAL=... or
+# -DVU_STATE_ROOT=... must override these make variables to match; the two are
+# not derived from each other, so keeping them in sync is the packager's job,
+# the same as it already is for CFLAGS overrides of the other compiled-in pins.
+ifeq ($(UNAME_S),Darwin)
+  VU_VPNC_SCRIPT_REAL ?= /opt/local/etc/vpnc/vpnc-script
+  VU_STATE_ROOT       ?= /var/run/vpn-up
+else
+  VU_VPNC_SCRIPT_REAL ?= /etc/vpnc/vpnc-script
+  VU_STATE_ROOT       ?= /run/vpn-up
+endif
+WRAPPER_BIN = build/vpn-up-vpnc-wrapper
+
 SAN_FLAGS = $(CSTD) $(FEATURE) $(WARN) -g -O1 -fno-omit-frame-pointer -Iinclude -It
 
 .PHONY: all test clean ubsan asan sanitize test-elf-closure gcc-check wur-check
 
-all: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN) $(FAKE_BIN)
+all: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN) $(FAKE_BIN) $(WRAPPER_BIN)
 
 build:
 	mkdir -p build
 
 $(FAKE_BIN): t/integration/fake-openconnect.c | build
 	$(CC) $(CSTD) $(FEATURE) -Wall -Wextra -Werror $(OPT) -o $@ $<
+
+$(WRAPPER_BIN): vpn-up-vpnc-wrapper.sh.in | build
+	sed -e 's#@VU_VPNC_SCRIPT_REAL@#$(VU_VPNC_SCRIPT_REAL)#' \
+	    -e 's#@VU_STATE_ROOT@#$(VU_STATE_ROOT)#' $< > $@
+	chmod +x $@
 
 $(TEST_BIN): $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h | build
 	$(CC) $(CFLAGS) -o $@ $(SRC) $(TEST_SRC)
@@ -81,7 +106,7 @@ $(ADMIN_BIN): $(SRC) src/admin_main.c include/vu.h include/vu_state.h include/vu
 $(HELPER_BIN): $(SRC) src/helper_main.c include/vu.h include/vu_state.h include/vu_registry.h include/vu_exec.h | build
 	$(CC) $(CFLAGS) -o $@ $(SRC) src/helper_main.c
 
-test: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN) $(FAKE_BIN) test-elf-closure gcc-check wur-check
+test: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN) $(FAKE_BIN) $(WRAPPER_BIN) test-elf-closure gcc-check wur-check
 	./$(TEST_BIN)
 	# The admin tool must refuse to run without privilege, and must not need
 	# privilege merely to report its own version.
@@ -96,6 +121,24 @@ test: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN) $(FAKE_BIN) test-elf-closure gcc-ch
 	@if ./$(HELPER_BIN) connect --profile-id x >/dev/null 2>&1; then \
 		echo "FAIL: vpn-up-helper connect succeeded without root"; exit 1; \
 	else echo "ok: vpn-up-helper refuses to connect unprivileged"; fi
+	@if ./$(HELPER_BIN) event-status --profile-id x >/dev/null 2>&1; then \
+		echo "FAIL: vpn-up-helper event-status succeeded without root"; exit 1; \
+	else echo "ok: vpn-up-helper refuses event-status unprivileged"; fi
+	# The unprivileged capability marker (connection-state design plan, round 3
+	# item 7 / round 4 item 6): twophase.sh decides whether the installed helper
+	# supports event-status/request-id telemetry from THIS line, before any
+	# credential is spent, never by trying a privileged call first.
+	@if ! ./$(HELPER_BIN) version | grep -q "event-status-v1"; then \
+		echo "FAIL: vpn-up-helper version does not advertise the event-status-v1 feature marker"; exit 1; \
+	else echo "ok: vpn-up-helper version advertises event-status-v1"; fi
+	# The wrapper template must substitute cleanly (no placeholder left behind)
+	# and must be valid POSIX sh: it runs as root on every connect/disconnect/
+	# reconnect event, so a syntax error in it is a boundary failure, not a
+	# cosmetic one.
+	@if grep -q '@VU_' $(WRAPPER_BIN); then \
+		echo "FAIL: $(WRAPPER_BIN) still has an unsubstituted @VU_...@ placeholder"; exit 1; \
+	else echo "ok: vpn-up-vpnc-wrapper template substituted cleanly"; fi
+	@sh -n $(WRAPPER_BIN) && echo "ok: vpn-up-vpnc-wrapper is valid POSIX sh"
 	# Privilege separation (§5, §18). The passwordless binary must not be able to
 	# grant approvals: a NOPASSWD binary that can approve endpoints is a NOPASSWD
 	# binary that can approve anything.

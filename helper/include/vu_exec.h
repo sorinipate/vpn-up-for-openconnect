@@ -32,17 +32,38 @@
 #endif
 
 /*
- * The vpnc-script is passed EXPLICITLY rather than relying on OpenConnect's
- * compiled-in default, because that default may live in a user-writable prefix
- * (§1.3). OpenConnect runs this value through execl("/bin/sh", "-c", ...), so
- * the path is fixed, contains no caller input, and must contain no
- * shell-significant character.
+ * The REAL vpnc-script — the standard, third-party vpnc-scripts project file
+ * this program does not ship — is passed EXPLICITLY rather than relying on
+ * OpenConnect's compiled-in default, because that default may live in a
+ * user-writable prefix (§1.3). Named _REAL because OpenConnect itself never
+ * invokes this path directly any more: it invokes VU_VPNC_SCRIPT (below), a
+ * wrapper this program DOES ship, which records tunnel-up/down telemetry
+ * (connection-state design plan §2) and then delegates here unchanged so
+ * network configuration still happens exactly as it always has.
+ */
+#ifndef VU_VPNC_SCRIPT_REAL
+#  if defined(__APPLE__)
+#    define VU_VPNC_SCRIPT_REAL "/opt/local/etc/vpnc/vpnc-script"
+#  else
+#    define VU_VPNC_SCRIPT_REAL "/etc/vpnc/vpnc-script"
+#  endif
+#endif
+
+/*
+ * The vpnc-script wrapper OpenConnect actually invokes via --script. Root-owned,
+ * installed alongside the two privileged binaries (helper_dir() in twophase.sh),
+ * and subject to its own, lighter-weight closure check (vu_wrapper_precheck) —
+ * see the connection-state design plan for why this is a separate object from
+ * VU_VPNC_SCRIPT_REAL rather than a second full closure walk. Fixed at compile
+ * time, same reasoning as every other pinned path here: this value, and never
+ * anything caller- or environment-supplied, is what OpenConnect's --script
+ * names.
  */
 #ifndef VU_VPNC_SCRIPT
 #  if defined(__APPLE__)
-#    define VU_VPNC_SCRIPT "/opt/local/etc/vpnc/vpnc-script"
+#    define VU_VPNC_SCRIPT "/opt/vpn-up/bin/vpn-up-vpnc-wrapper"
 #  else
-#    define VU_VPNC_SCRIPT "/etc/vpnc/vpnc-script"
+#    define VU_VPNC_SCRIPT "/usr/local/libexec/vpn-up/vpn-up-vpnc-wrapper"
 #  endif
 #endif
 

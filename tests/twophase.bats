@@ -581,3 +581,306 @@ OLD
   [ "$status" -ne 0 ]
   [ ! -e "$HOOKS" ]
 }
+
+# --- connection-state telemetry (connection-state design plan §2) ----------
+
+@test "helper_supports_event_status detects the marker in a new helper's version output" {
+  export VPN_UP_HELPER_DIR="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$VPN_UP_HELPER_DIR"
+  cat > "$VPN_UP_HELPER_DIR/vpn-up-helper" <<'EOF'
+#!/bin/sh
+echo "vpn-up-helper (policy engine 1)"
+echo "  features        event-status-v1"
+EOF
+  chmod 755 "$VPN_UP_HELPER_DIR/vpn-up-helper"
+  run helper_supports_event_status
+  [ "$status" -eq 0 ]
+}
+
+@test "helper_supports_event_status reports false for an old helper with no marker" {
+  export VPN_UP_HELPER_DIR="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$VPN_UP_HELPER_DIR"
+  printf '#!/bin/sh\necho "vpn-up-helper (policy engine 1)"\n' > "$VPN_UP_HELPER_DIR/vpn-up-helper"
+  chmod 755 "$VPN_UP_HELPER_DIR/vpn-up-helper"
+  run helper_supports_event_status
+  [ "$status" -ne 0 ]
+}
+
+@test "generate_request_id produces exactly 32 lowercase hex characters, and does not repeat" {
+  local a b
+  a="$(generate_request_id)"
+  b="$(generate_request_id)"
+  [ "${#a}" -eq 32 ]
+  [[ "$a" =~ ^[0-9a-f]{32}$ ]]
+  [ "$a" != "$b" ]
+}
+
+@test "the capability check and request-id generation happen before phase_one_authenticate spends anything" {
+  # Constraint 8 / round 4 item 6: phase_one_authenticate spends a real
+  # credential, so anything that must run "before any credential is spent"
+  # cannot live inside run_openconnect_helper, reached only after that
+  # credential is already gone.
+  ORDER="$BATS_TEST_TMPDIR/order"
+  : > "$ORDER"
+  helper_supports_event_status() { echo capability_check >> "$ORDER"; return 0; }
+  generate_request_id() { echo generate_request_id >> "$ORDER"; printf '%s' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"; }
+  phase_one_authenticate() { echo phase_one >> "$ORDER"; return 1; }
+
+  run connect_via_helper
+  [ "$status" -eq "$VPN_RC_PREAUTH" ]
+  [ "$(sed -n '1p' "$ORDER")" = "capability_check" ]
+  [ "$(sed -n '2p' "$ORDER")" = "generate_request_id" ]
+  [ "$(sed -n '3p' "$ORDER")" = "phase_one" ]
+}
+
+@test "an old helper (capability check fails) never calls generate_request_id and never passes --request-id" {
+  ORDER="$BATS_TEST_TMPDIR/order"
+  : > "$ORDER"
+  helper_supports_event_status() { return 1; }
+  generate_request_id() { echo generate_request_id >> "$ORDER"; return 1; }
+  phase_one_authenticate() { return 1; }
+
+  run connect_via_helper
+  [ ! -s "$ORDER" ]
+}
+
+@test "poll_helper_event ignores a reading whose request_id does not match this invocation's own" {
+  _helper_argv_setup
+  HOOKS="$BATS_TEST_TMPDIR/hooks"; NOTIFIES="$BATS_TEST_TMPDIR/notifies"
+  run_hooks() { echo "$1" >> "$HOOKS"; }
+  notify() { printf '%s\n' "$2" >> "$NOTIFIES"; }
+  sleep() { :; }   # the loop must not block a bounded test on real time
+
+  # A concurrent, unrelated generation's own verified session - never this
+  # invocation's to claim (round 3 item 3).
+  sudo() {
+    cat >/dev/null 2>&1
+    printf 'session=ffffffffffffffffffffffffffffffff\n'
+    printf 'request_id=zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n'
+    printf 'last_connected_epoch=1700000000\n'
+    printf 'current_verified=1\n'
+    printf 'last_reason=connect\n'
+    printf 'last_event_epoch=1700000000\n'
+    printf 'pid=9999\n'
+  }
+
+  run poll_helper_event "cccccccccccccccccccccccccccccccc" "${VPN_PROFILE_ID}" "$(helper_bin)"
+  [ "$status" -ne 0 ]                # bounded, exhausted, never matched
+  [ ! -e "$PID_FILE_PATH" ]
+  [ ! -e "$HOOKS" ]
+  [ ! -e "$NOTIFIES" ]
+}
+
+@test "poll_helper_event publishes evidence once it observes a matching, verified record" {
+  # _helper_argv_setup stubs write_connection_state to a no-op for tests that
+  # do not care about it; this one specifically asserts on what it writes, so
+  # the real definition (still the one core.sh sourced, at this point in the
+  # test) is captured first and restored after.
+  eval "_real_write_connection_state() $(declare -f write_connection_state | tail -n +2)"
+  _helper_argv_setup
+  write_connection_state() { _real_write_connection_state "$@"; }
+  HOOKS="$BATS_TEST_TMPDIR/hooks"; NOTIFIES="$BATS_TEST_TMPDIR/notifies"
+  run_hooks() { echo "$1" >> "$HOOKS"; }
+  notify() { printf '%s\n' "$2" >> "$NOTIFIES"; }
+  local req="cccccccccccccccccccccccccccccccc"
+  sudo() {
+    cat >/dev/null 2>&1
+    printf 'session=dddddddddddddddddddddddddddddddd\n'
+    printf 'request_id=%s\n' "$req"
+    printf 'last_connected_epoch=1700000000\n'
+    printf 'current_verified=1\n'
+    printf 'last_reason=connect\n'
+    printf 'last_event_epoch=1700000000\n'
+    printf 'pid=4242\n'
+  }
+
+  run poll_helper_event "$req" "${VPN_PROFILE_ID}" "$(helper_bin)"
+  [ "$status" -eq 0 ]
+  [ "$(cat "$PID_FILE_PATH")" = "4242" ]
+  grep -q "evidence=verified" "$STATE_FILE_PATH"
+  grep -q "connected_at_epoch=1700000000" "$STATE_FILE_PATH"
+  grep -qx -- "connected" "$HOOKS"
+  grep -qx -- "Connected to Helper VPN" "$NOTIFIES"
+}
+
+@test "_helper_final_event_had_tunnel confirms a genuine disconnect only for a matching, once-verified record" {
+  _helper_argv_setup
+  local req="cccccccccccccccccccccccccccccccc"
+  sudo() {
+    cat >/dev/null 2>&1
+    printf 'session=dddddddddddddddddddddddddddddddd\n'
+    printf 'request_id=%s\n' "$req"
+    printf 'last_connected_epoch=1700000000\n'
+    printf 'current_verified=0\n'
+    printf 'last_reason=disconnect\n'
+    printf 'last_event_epoch=1700000100\n'
+    printf 'pid=0\n'
+  }
+  run _helper_final_event_had_tunnel "$req" "${VPN_PROFILE_ID}" "$(helper_bin)"
+  [ "$status" -eq 0 ]
+}
+
+@test "_helper_final_event_had_tunnel is inconclusive on a request-id mismatch, falling back to the heuristic" {
+  _helper_argv_setup
+  sudo() {
+    cat >/dev/null 2>&1
+    printf 'session=dddddddddddddddddddddddddddddddd\n'
+    printf 'request_id=zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz\n'
+    printf 'last_connected_epoch=1700000000\n'
+    printf 'current_verified=0\n'
+    printf 'last_reason=disconnect\n'
+    printf 'last_event_epoch=1700000100\n'
+    printf 'pid=0\n'
+  }
+  run _helper_final_event_had_tunnel "cccccccccccccccccccccccccccccccc" "${VPN_PROFILE_ID}" "$(helper_bin)"
+  [ "$status" -ne 0 ]
+}
+
+@test "_helper_final_event_had_tunnel is inconclusive when the profile never connected (epoch 0)" {
+  _helper_argv_setup
+  local req="cccccccccccccccccccccccccccccccc"
+  sudo() {
+    cat >/dev/null 2>&1
+    printf 'session=dddddddddddddddddddddddddddddddd\n'
+    printf 'request_id=%s\n' "$req"
+    printf 'last_connected_epoch=0\n'
+    printf 'current_verified=0\n'
+    printf 'last_reason=\n'
+    printf 'last_event_epoch=0\n'
+    printf 'pid=0\n'
+  }
+  run _helper_final_event_had_tunnel "$req" "${VPN_PROFILE_ID}" "$(helper_bin)"
+  [ "$status" -ne 0 ]
+}
+
+@test "an old client (no request id) still connects and falls back to the heuristic unchanged" {
+  # Round 4 item 5: a rolled-back or older vpn-up talking to an already-
+  # upgraded helper must still work, with no telemetry correlation rather
+  # than an error.
+  _helper_argv_setup
+  HOOKS="$BATS_TEST_TMPDIR/hooks"
+  run_hooks() { echo "$1" >> "$HOOKS"; }
+  sudo() {
+    printf '%s\n' "$@" > "$ARGV"
+    echo "Connected as 10.0.0.2, using SSL"
+    echo "Session terminated by server"
+    cat >/dev/null
+    return 0
+  }
+  run run_openconnect_helper ""
+  [ "$status" -eq 0 ]
+  if grep -qx -- "--request-id" "$ARGV"; then false; fi
+  grep -qx -- "disconnected" "$HOOKS"
+}
+
+@test "run_openconnect_helper: the poller's verified evidence reaches vpn-up status through the real, unmodified command" {
+  eval "_real_write_connection_state() $(declare -f write_connection_state | tail -n +2)"
+  _helper_argv_setup
+  write_connection_state() { _real_write_connection_state "$@"; }
+  is_openconnect_pid() { return 0; }     # the recorded (fake) pid is treated as a live process
+  local req="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  HOOKS="$BATS_TEST_TMPDIR/hooks"
+  NOTIFIES="$BATS_TEST_TMPDIR/notifies"
+  STATUS_OUT="$BATS_TEST_TMPDIR/status-out"
+  run_hooks() { echo "$1" >> "$HOOKS"; }
+  notify() { printf '%s\n' "$2" >> "$NOTIFIES"; }
+
+  sudo() {
+    case "$1" in
+      -k)
+        cat >/dev/null 2>&1
+        printf 'session=dddddddddddddddddddddddddddddddd\n'
+        printf 'request_id=%s\n' "$req"
+        printf 'last_connected_epoch=1700000000\n'
+        printf 'current_verified=1\n'
+        printf 'last_reason=connect\n'
+        printf 'last_event_epoch=1700000000\n'
+        printf 'pid=4242\n'
+        ;;
+      *)
+        cat >/dev/null
+        # Deterministic synchronisation without a stubbed sleep: the main
+        # connect call does not return until the backgrounded poller has
+        # actually finished ALL of its work, so this proves the real
+        # ordering rather than winning a race by luck. Waiting on HOOKS
+        # rather than PID_FILE_PATH matters: PID_FILE_PATH is the FIRST
+        # thing poll_helper_event writes (part 1's ordering rule), so
+        # releasing the main pipeline - and with it run_openconnect_helper's
+        # own kill of the poller - the moment it appears could still SIGTERM
+        # the poller mid-flight, before its own notify/run_hooks calls ever
+        # run. HOOKS is the LAST thing it writes. Bounded to 5s so a genuine
+        # bug (the poller never finishing) fails the test instead of hanging
+        # it.
+        local waited=0
+        while [ ! -f "$HOOKS" ] && [ "$waited" -lt 500 ]; do
+          command sleep 0.01
+          waited=$((waited + 1))
+        done
+        # Captured HERE, before run_openconnect_helper's own end-of-run
+        # cleanup removes these files - the direct proof that the ordinary,
+        # completely unmodified `status` command reaches the poller's
+        # evidence through the command a user actually runs.
+        status > "$STATUS_OUT" 2>&1
+        echo "Connected as 10.0.0.2, using SSL"
+        return 0
+        ;;
+    esac
+  }
+
+  run run_openconnect_helper "$req"
+  [ "$status" -eq 0 ]
+  grep -qx -- "connected" "$HOOKS"
+  grep -qx -- "Connected to Helper VPN" "$NOTIFIES"
+  grep -q "VPN is running" "$STATUS_OUT"
+  grep -q "verified: OpenConnect connect event observed for this session" "$STATUS_OUT"
+}
+
+@test "run_openconnect_helper joins the poller before its own final decision (no late Connected after Disconnected)" {
+  eval "_real_write_connection_state() $(declare -f write_connection_state | tail -n +2)"
+  _helper_argv_setup
+  write_connection_state() { _real_write_connection_state "$@"; }
+  ORDER="$BATS_TEST_TMPDIR/order"
+  : > "$ORDER"
+  local req="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  notify() { printf '%s\n' "$2" >> "$ORDER"; }
+  run_hooks() { printf '%s\n' "$1" >> "$ORDER"; }
+
+  sudo() {
+    case "$1" in
+      -k)
+        cat >/dev/null 2>&1
+        printf 'session=dddddddddddddddddddddddddddddddd\n'
+        printf 'request_id=%s\n' "$req"
+        printf 'last_connected_epoch=1700000000\n'
+        printf 'current_verified=1\n'
+        printf 'last_reason=connect\n'
+        printf 'last_event_epoch=1700000000\n'
+        printf 'pid=4242\n'
+        ;;
+      *)
+        cat >/dev/null
+        # Wait for BOTH of the poller's writes to ORDER (notify, then
+        # run_hooks - the last thing it does), not merely its first side
+        # effect: releasing the main pipeline (and with it
+        # run_openconnect_helper's kill of the poller) any earlier could
+        # SIGTERM it mid-flight, before run_hooks ever fires.
+        local waited=0
+        while [ "$(wc -l < "$ORDER" 2>/dev/null || echo 0)" -lt 2 ] && [ "$waited" -lt 500 ]; do
+          command sleep 0.01
+          waited=$((waited + 1))
+        done
+        echo "Connected as 10.0.0.2, using SSL"
+        return 0
+        ;;
+    esac
+  }
+
+  run run_openconnect_helper "$req"
+  [ "$status" -eq 0 ]
+  # "connected" (from the poller) must be recorded strictly before
+  # "disconnected" (from the parent's own final decision) - never the reverse.
+  [ "$(sed -n '1p' "$ORDER")" = "Connected to Helper VPN" ]
+  [ "$(sed -n '2p' "$ORDER")" = "connected" ]
+  [ "$(sed -n '3p' "$ORDER")" = "Disconnected from Helper VPN" ]
+  [ "$(sed -n '4p' "$ORDER")" = "disconnected" ]
+}

@@ -529,6 +529,22 @@ bool vu_canon_profile_id(const char *in, char *out, size_t out_cap, vu_err *e)
     return true;
 }
 
+bool vu_valid_hexid(const char *in, vu_err *e)
+{
+    if (!in) { vu_err_set(e, "request-id: null"); return false; }
+    size_t n = strlen(in);
+    if (n != VU_HEXID_LEN) {
+        vu_err_set(e, "request-id: must be exactly %d hex characters", VU_HEXID_LEN);
+        return false;
+    }
+    for (size_t i = 0; i < n; ++i) {
+        char c = in[i];
+        bool ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
+        if (!ok) { vu_err_set(e, "request-id: must be lowercase hex"); return false; }
+    }
+    return true;
+}
+
 bool vu_valid_protocol(const char *in, vu_err *e)
 {
     static const char *ok[] = { "anyconnect", "nc", "gp", "pulse", "f5", "fortinet", "array" };

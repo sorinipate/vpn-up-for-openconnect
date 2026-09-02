@@ -67,6 +67,7 @@ bool vu_request_from_argv(int argc, char **argv, vu_request *req, vu_err *e)
 
     const char *raw_id = NULL, *raw_proto = NULL, *raw_url = NULL;
     const char *raw_resolve = NULL, *raw_proxy = NULL, *raw_ua = NULL;
+    const char *raw_request_id = NULL;
     const char *raw_tunables[VU_TUNABLE_MAX];
     size_t n_tun = 0;
     bool seen_quiet = false;
@@ -91,6 +92,9 @@ bool vu_request_from_argv(int argc, char **argv, vu_request *req, vu_err *e)
         } else if (strcmp(a, "--useragent") == 0) {
             if (!once(&raw_ua, a, e)) return false;
             if (!(raw_ua = next_value(argc, argv, &i, a, e))) return false;
+        } else if (strcmp(a, "--request-id") == 0) {
+            if (!once(&raw_request_id, a, e)) return false;
+            if (!(raw_request_id = next_value(argc, argv, &i, a, e))) return false;
         } else if (strcmp(a, "--quiet") == 0) {
             if (seen_quiet) { vu_err_set(e, "--quiet was given more than once"); return false; }
             seen_quiet = true;
@@ -138,6 +142,11 @@ bool vu_request_from_argv(int argc, char **argv, vu_request *req, vu_err *e)
             vu_err_set(e, "useragent: too long"); return false;
         }
         memcpy(req->useragent, raw_ua, strlen(raw_ua) + 1);
+    }
+    if (raw_request_id) {
+        if (!vu_valid_hexid(raw_request_id, e)) return false;
+        memcpy(req->request_id, raw_request_id, strlen(raw_request_id) + 1);
+        req->has_request_id = true;
     }
 
     /*

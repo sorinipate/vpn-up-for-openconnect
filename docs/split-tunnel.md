@@ -107,6 +107,14 @@ route**: it auto-detects the interface and works the same everywhere.
   a full root-execution path for your account — see
   [Known limitations](https://github.com/sorinipate/vpn-up-for-openconnect/blob/main/SECURITY.md#known-limitations).
   VPN Up prints a warning whenever `extraArgs` contains it.
+- **Incompatible with the privileged helper (`vpn-up install-helper`).** Its closed
+  argument schema refuses `--script` outright, so a vpn-slice profile fails to
+  connect once the helper is installed — with a config error, not a silent
+  fallback. Either keep that profile on the legacy sudoers rule, or run it with
+  `VPN_UP_FORCE_PROMPT_MODE=TRUE` for a typed sudo password instead. Either way,
+  split tunnelling via `--script` can't run unattended (`service install`) on a
+  machine that has the helper installed. See
+  [Advanced: extra openconnect arguments]({{ '/usage/' | relative_url }}#advanced-extra-openconnect-arguments).
 
 ## Related
 

@@ -155,6 +155,16 @@ printf '#!/bin/sh\n# stand-in vpnc-script\nexit 0\n' > /tmp/vu-fake-script
 sudo install -o 0 -g 0 -m 0755 /tmp/vu-fake-script "$PREFIX/etc/vpnc-script"
 rm -f /tmp/vu-fake-script
 
+# VU_VPNC_SCRIPT_REAL — the third-party vpnc-script the wrapper delegates to —
+# is a SEPARATE pin from VU_VPNC_SCRIPT above, and the closure check walks it
+# too (vu_closure_check, not just vu_wrapper_precheck). Left unpinned, the
+# build falls back to the compiled-in host default (/etc/vpnc/vpnc-script),
+# which does not exist on a CI runner, so the closure check fails on a path
+# this test never claimed to touch. Give it its own fixture stand-in.
+printf '#!/bin/sh\n# stand-in REAL vpnc-script\nexit 0\n' > /tmp/vu-fake-script-real
+sudo install -o 0 -g 0 -m 0755 /tmp/vu-fake-script-real "$PREFIX/etc/vpnc-script-real"
+rm -f /tmp/vu-fake-script-real
+
 # Build the binaries with their compile-time pins pointed at the fixture. That
 # the roots are compile-time constants rather than environment variables is the
 # whole reason this is safe to do: a test build cannot become a runtime override.
@@ -180,6 +190,7 @@ rm -f /tmp/vu-ldso.conf
 make -C "$HERE" --no-print-directory build/vpn-up-helper build/vpn-up-admin \
   OPT="-O1 -DVU_OPENCONNECT='\"$PREFIX/bin/openconnect\"' \
        -DVU_VPNC_SCRIPT='\"$PREFIX/etc/vpnc-script\"' \
+       -DVU_VPNC_SCRIPT_REAL='\"$PREFIX/etc/vpnc-script-real\"' \
        -DVU_STATE_ROOT='\"$PREFIX/run\"' \
        -DVU_REGISTRY_ROOT='\"$PREFIX/registry\"' \
        -DVU_LDSO_PRELOAD='\"$PREFIX/ldso/ld.so.preload\"' \
@@ -339,8 +350,26 @@ assert $? "the exec'd process runs from /"
 grep -q '^umask=0077$' /tmp/vu-report.txt
 assert $? "umask is 077"
 
-grep -q '^env_count=1$' /tmp/vu-report.txt
-assert $? "the environment is PATH and nothing else"
+# Stale as of the connection-state telemetry work: the helper used to hand the
+# child PATH and nothing else (env_count=1). It now also sets the four VUP_*
+# variables the vpnc-script wrapper needs to find its state leaf (proc.c,
+# vu_clean_env) — env_count=5, and the values are worth checking, not just the
+# count, since a wrong profile id or uid here would misattribute telemetry to
+# the wrong tunnel.
+grep -q '^env_count=5$' /tmp/vu-report.txt
+assert $? "the environment is PATH plus the four VUP_* telemetry variables, and nothing else"
+
+grep -q -- "^env=VUP_PROFILE_ID=${PROFILE_ID}\$" /tmp/vu-report.txt
+assert $? "VUP_PROFILE_ID matches the connecting profile"
+
+grep -q -- "^env=VUP_STATE_UID=${UID_NOW}\$" /tmp/vu-report.txt
+assert $? "VUP_STATE_UID matches the invoking uid"
+
+grep -qE -- '^env=VUP_SESSION_ID=[0-9a-f]{32}$' /tmp/vu-report.txt
+assert $? "VUP_SESSION_ID is a fresh 32-hex-char id"
+
+grep -q -- '^env=VUP_REQUEST_ID=' /tmp/vu-report.txt
+assert $? "VUP_REQUEST_ID is present (empty when the client supplied none)"
 
 grep -q -- '^argv\[.*\]=--cookie-on-stdin$' /tmp/vu-report.txt
 assert $? "--cookie-on-stdin is present"

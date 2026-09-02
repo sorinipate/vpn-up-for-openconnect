@@ -79,6 +79,8 @@ bool vu_state_paths_in(const char *root, uid_t uid, const char *profile_id,
         { out->pid,      sizeof out->pid,      "pid"      },
         { out->started,  sizeof out->started,  "started"  },
         { out->endpoint, sizeof out->endpoint, "endpoint" },
+        { out->session,  sizeof out->session,  "session"  },
+        { out->status,   sizeof out->status,   "status"   },
     };
     for (size_t i = 0; i < sizeof f / sizeof *f; ++i) {
         if (snprintf(f[i].dst, f[i].cap, "%s/%s", out->profile_dir, f[i].leaf) >= (int)f[i].cap) {
@@ -551,6 +553,9 @@ bool vu_state_check(const vu_state_paths *p, const char *expect_exe, uid_t expec
 bool vu_state_prune(const vu_state_paths *p, vu_err *e)
 {
     if (!p) { vu_err_set(e, "state: null argument"); return false; }
+    /* session/status are deliberately NOT in this list — see vu_state.h's
+     * struct comment. They are telemetry, replaced only by the next
+     * connect's fresh write, never pruned here. */
     const char *files[] = { p->pid, p->started, p->endpoint };
     for (size_t i = 0; i < sizeof files / sizeof *files; ++i) {
         if (unlink(files[i]) != 0 && errno != ENOENT) {
@@ -558,6 +563,180 @@ bool vu_state_prune(const vu_state_paths *p, vu_err *e)
             return false;
         }
     }
+    return true;
+}
+
+/* ------------------------------------------------------------------ telemetry */
+
+bool vu_generate_hex_id(char out[VU_HEXID_MAX], vu_err *e)
+{
+    if (!out) { vu_err_set(e, "hexid: null argument"); return false; }
+    unsigned char raw[VU_HEXID_LEN / 2];
+    int fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
+    if (fd < 0) { vu_err_set(e, "hexid: cannot open /dev/urandom: %s", strerror(errno)); return false; }
+    size_t got = 0;
+    while (got < sizeof raw) {
+        ssize_t r = read(fd, raw + got, sizeof raw - got);
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            vu_err_set(e, "hexid: cannot read /dev/urandom: %s", strerror(errno));
+            close(fd);
+            return false;
+        }
+        if (r == 0) break;
+        got += (size_t)r;
+    }
+    close(fd);
+    if (got != sizeof raw) { vu_err_set(e, "hexid: short read from /dev/urandom"); return false; }
+
+    static const char hexch[] = "0123456789abcdef";
+    for (size_t i = 0; i < sizeof raw; ++i) {
+        out[i * 2]     = hexch[(raw[i] >> 4) & 0x0F];
+        out[i * 2 + 1] = hexch[raw[i] & 0x0F];
+    }
+    out[VU_HEXID_LEN] = '\0';
+    return true;
+}
+
+bool vu_state_write_fresh_telemetry(const vu_state_paths *p, const char *session_id,
+                                    const char *request_id, vu_err *e)
+{
+    if (!p || !session_id || !request_id) { vu_err_set(e, "state: null argument"); return false; }
+
+    char line[VU_HEXID_MAX + 1];
+    if (snprintf(line, sizeof line, "%s\n", session_id) >= (int)sizeof line) {
+        vu_err_set(e, "state: session id too long"); return false;
+    }
+    if (!write_small(p->session, line, e)) return false;
+
+    char status[256];
+    int n = snprintf(status, sizeof status,
+                     "version=1\n"
+                     "session=%s\n"
+                     "request_id=%s\n"
+                     "last_connected_epoch=0\n"
+                     "current_verified=0\n"
+                     "last_reason=\n"
+                     "last_event_epoch=0\n",
+                     session_id, request_id);
+    if (n < 0 || (size_t)n >= sizeof status) {
+        vu_err_set(e, "state: status record too long"); return false;
+    }
+    return write_small(p->status, status, e);
+}
+
+bool vu_state_read_session(const vu_state_paths *p, uid_t expect_uid,
+                           char out[VU_HEXID_MAX], bool *present, vu_err *e)
+{
+    if (!p || !out || !present) { vu_err_set(e, "state: null argument"); return false; }
+    *present = false;
+    char buf[VU_HEXID_MAX + 1];
+    vu_err scratch; vu_err_clear(&scratch);
+    if (!read_small(p->session, expect_uid, buf, sizeof buf, &scratch)) {
+        if (scratch.msg[0] == '\0') return true;   /* absent: a normal answer */
+        *e = scratch;
+        return false;
+    }
+    if (strlen(buf) != VU_HEXID_LEN) return true;  /* malformed: read as absent */
+    memcpy(out, buf, VU_HEXID_LEN + 1);
+    *present = true;
+    return true;
+}
+
+/* One key=value line, in the exact position `vu_state_write_fresh_telemetry`
+ * and the vpnc-script wrapper both always write it. Strict on purpose (see
+ * the header comment on vu_state_read_status): this program controls both
+ * writers, so there is no reason to tolerate a shape neither of them ever
+ * produces. */
+static bool status_line(const char *line, const char *key, const char **value_out)
+{
+    size_t klen = strlen(key);
+    if (strncmp(line, key, klen) != 0 || line[klen] != '=') return false;
+    *value_out = line + klen + 1;
+    return true;
+}
+
+bool vu_state_read_status(const vu_state_paths *p, uid_t expect_uid,
+                          const char *want_session, vu_telemetry *out,
+                          bool *present, vu_err *e)
+{
+    if (!p || !want_session || !out || !present) { vu_err_set(e, "state: null argument"); return false; }
+    *present = false;
+    memset(out, 0, sizeof *out);
+
+    char buf[256];
+    vu_err scratch; vu_err_clear(&scratch);
+    if (!read_small(p->status, expect_uid, buf, sizeof buf, &scratch)) {
+        if (scratch.msg[0] == '\0') return true;   /* absent: a normal answer */
+        *e = scratch;
+        return false;
+    }
+
+    /*
+     * Split into exactly the seven expected lines, in order. Any deviation —
+     * a missing line, extra content, an eighth line — is treated as absent
+     * rather than partially parsed. read_small already trimmed exactly one
+     * trailing newline, so the seventh (last) line legitimately has none of
+     * its own; a bare strchr scan handles that correctly by simply finding
+     * none for the final segment.
+     */
+    char *lines[7];
+    size_t n = 0;
+    char *cursor = buf;
+    bool malformed = false;
+    for (;;) {
+        if (n >= 7) { malformed = true; break; }
+        char *nl = strchr(cursor, '\n');
+        if (!nl) { lines[n++] = cursor; break; }
+        *nl = '\0';
+        lines[n++] = cursor;
+        cursor = nl + 1;
+    }
+    if (malformed || n != 7) return true;          /* malformed: read as absent */
+
+    const char *v;
+    if (!status_line(lines[0], "version", &v) || strcmp(v, "1") != 0) return true;
+    if (!status_line(lines[1], "session", &v) || strcmp(v, want_session) != 0) return true;
+    if (!status_line(lines[2], "request_id", &v) || strlen(v) != VU_HEXID_LEN) return true;
+    memcpy(out->request_id, v, VU_HEXID_LEN + 1);
+
+    if (!status_line(lines[3], "last_connected_epoch", &v)) return true;
+    if (!vu_parse_i32(v, 0, 2147483647, &out->last_connected_epoch, &scratch)) return true;
+
+    if (!status_line(lines[4], "current_verified", &v)) return true;
+    if (strcmp(v, "0") == 0) out->current_verified = false;
+    else if (strcmp(v, "1") == 0) out->current_verified = true;
+    else return true;
+
+    if (!status_line(lines[5], "last_reason", &v)) return true;
+    if (v[0] != '\0' && strcmp(v, "connect") != 0 && strcmp(v, "reconnect") != 0 &&
+        strcmp(v, "attempt-reconnect") != 0 && strcmp(v, "disconnect") != 0) {
+        return true;
+    }
+    if (strlen(v) >= sizeof out->last_reason) return true;
+    memcpy(out->last_reason, v, strlen(v) + 1);
+
+    if (!status_line(lines[6], "last_event_epoch", &v)) return true;
+    if (!vu_parse_i32(v, 0, 2147483647, &out->last_event_epoch, &scratch)) return true;
+
+    *present = true;
+    return true;
+}
+
+bool vu_state_read_pid(const vu_state_paths *p, uid_t expect_uid,
+                       int32_t *pid_out, bool *present, vu_err *e)
+{
+    if (!p || !pid_out || !present) { vu_err_set(e, "state: null argument"); return false; }
+    *present = false;
+    char buf[64];
+    vu_err scratch; vu_err_clear(&scratch);
+    if (!read_small(p->pid, expect_uid, buf, sizeof buf, &scratch)) {
+        if (scratch.msg[0] == '\0') return true;   /* absent: a normal answer */
+        *e = scratch;
+        return false;
+    }
+    if (!vu_parse_i32(buf, 1, 2147483647, pid_out, &scratch)) return true; /* garbage: read as absent */
+    *present = true;
     return true;
 }
 

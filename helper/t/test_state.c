@@ -366,6 +366,36 @@ static void test_identity_and_record(void)
         CHECK(status == VU_STATE_STALE, "unparseable pid is stale");
     }
 
+    /*
+     * session/status are telemetry, not runtime state — vu_state_prune()
+     * must NEVER touch them (connection-state design plan, round 2/round 4).
+     * An ordinary `stop` prunes pid/started/endpoint the moment the process
+     * is confirmed gone; if it pruned session/status too, a concurrently
+     * running `start` reading the event-status verb synchronously would
+     * find its own evidence gone on the single most common shutdown path
+     * there is. Write both leaves directly (no dedicated writer exists yet;
+     * this test only cares that prune leaves them alone), then prune, then
+     * assert they both survived.
+     */
+    {
+        FILE *fs = fopen(p.session, "w");
+        CHECK(fs != NULL, "write session fixture");
+        if (fs) { fputs("deadbeef\n", fs); fclose(fs); }
+        FILE *ft = fopen(p.status, "w");
+        CHECK(ft != NULL, "write status fixture");
+        if (ft) { fputs("version=1\n", ft); fclose(ft); }
+
+        vu_err_clear(&e);
+        CHECK(vu_state_prune(&p, &e), "pruned: %s", e.msg);
+
+        struct stat sb;
+        CHECK(stat(p.session, &sb) == 0, "session survives prune");
+        CHECK(stat(p.status, &sb) == 0, "status survives prune");
+
+        unlink(p.session);
+        unlink(p.status);
+    }
+
     /* Missing state is ABSENT, which is a normal condition rather than an error. */
     vu_err_clear(&e);
     CHECK(vu_state_prune(&p, &e), "pruned: %s", e.msg);
@@ -405,11 +435,18 @@ static void test_harden(void)
         if (fcntl(keep, F_GETFD) < 0) _exit(13);           /* must survive */
         if (fcntl(doomed, F_GETFD) >= 0) _exit(14);        /* must be closed */
 
-        char **env = vu_clean_env();
-        if (!env || !env[0] || env[1] != NULL) _exit(15);
+        char **env = vu_clean_env(1000, "11111111-1111-1111-1111-111111111111",
+                                  "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                                  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+        if (!env || !env[0] || !env[1] || !env[2] || !env[3] || !env[4] || env[5] != NULL)
+            _exit(15);
         if (strncmp(env[0], "PATH=", 5) != 0) _exit(16);
         if (env[0][5] == '\0') _exit(17);                  /* never empty: see the
                                                              vpnc-script PATH note */
+        if (strcmp(env[1], "VUP_STATE_UID=1000") != 0) _exit(18);
+        if (strcmp(env[2], "VUP_PROFILE_ID=11111111-1111-1111-1111-111111111111") != 0) _exit(19);
+        if (strcmp(env[3], "VUP_SESSION_ID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") != 0) _exit(20);
+        if (strcmp(env[4], "VUP_REQUEST_ID=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") != 0) _exit(21);
         _exit(0);
     }
 
@@ -465,6 +502,145 @@ static void test_self_trusted(void)
     CHECK(strstr(e.msg, "/") != NULL, "the reason must name a path, got '%s'", e.msg);
 }
 
+/* --------------------------------------------------------------- telemetry */
+
+/* Connection-state design plan §2: session/status, the fresh-zeroed write at
+ * connect time, the session-consistency check, and strict format parsing —
+ * all unprivileged here for the same reason the rest of this file is: the
+ * code under test must be the code that runs as root. */
+static void test_telemetry(void)
+{
+    vu_err e; vu_err_clear(&e);
+    uid_t me = geteuid();
+    vu_state_paths p;
+    CHECK(vu_state_paths_in(g_root, me, PROFILE, &p, &e), "paths: %s", e.msg);
+    CHECK(vu_dir_ensure(p.uid_dir, me, 0700, &e), "uid dir: %s", e.msg);
+    vu_err_clear(&e);
+    CHECK(vu_dir_ensure(p.profile_dir, me, 0700, &e), "profile dir: %s", e.msg);
+
+    /* Two different-looking ids: format is 32 lowercase hex, and two calls
+     * do not collide (proof-by-absence-of-collision, not a real guarantee,
+     * but a repeat here would indicate a broken generator, e.g. an unseeded
+     * or truncated read). */
+    char sess1[VU_HEXID_MAX], sess2[VU_HEXID_MAX];
+    vu_err_clear(&e);
+    CHECK(vu_generate_hex_id(sess1, &e), "generate 1: %s", e.msg);
+    vu_err_clear(&e);
+    CHECK(vu_generate_hex_id(sess2, &e), "generate 2: %s", e.msg);
+    CHECK(strlen(sess1) == VU_HEXID_LEN, "id is 32 chars, got %zu", strlen(sess1));
+    for (size_t i = 0; i < VU_HEXID_LEN; ++i) {
+        char c = sess1[i];
+        CHECK((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'),
+              "id is lowercase hex, got '%c' at %zu", c, i);
+    }
+    CHECK(strcmp(sess1, sess2) != 0, "two generated ids do not collide");
+
+    char req1[VU_HEXID_MAX];
+    vu_err_clear(&e);
+    CHECK(vu_generate_hex_id(req1, &e), "generate request id: %s", e.msg);
+
+    /* Before any connect: no session, no status — both normal, valid
+     * answers, never errors. */
+    char session_out[VU_HEXID_MAX];
+    bool present = false;
+    vu_err_clear(&e);
+    CHECK(vu_state_read_session(&p, me, session_out, &present, &e), "read empty session: %s", e.msg);
+    CHECK(!present, "no session before any connect");
+
+    vu_telemetry tel;
+    vu_err_clear(&e);
+    CHECK(vu_state_read_status(&p, me, sess1, &tel, &present, &e), "read empty status: %s", e.msg);
+    CHECK(!present, "no status before any connect");
+
+    int32_t pid_out = 0;
+    vu_err_clear(&e);
+    CHECK(vu_state_read_pid(&p, me, &pid_out, &present, &e), "read empty pid: %s", e.msg);
+    CHECK(!present, "no pid before any connect");
+
+    /* cmd_connect's fresh write: a new generation always starts zeroed,
+     * never carrying anything forward. */
+    vu_err_clear(&e);
+    CHECK(vu_state_write_fresh_telemetry(&p, sess1, req1, &e), "fresh telemetry: %s", e.msg);
+
+    vu_err_clear(&e);
+    CHECK(vu_state_read_session(&p, me, session_out, &present, &e), "read session: %s", e.msg);
+    CHECK(present, "session present after connect");
+    CHECK(strcmp(session_out, sess1) == 0, "session matches what was written");
+
+    vu_err_clear(&e);
+    CHECK(vu_state_read_status(&p, me, sess1, &tel, &present, &e), "read fresh status: %s", e.msg);
+    CHECK(present, "status present and matches the current session");
+    CHECK(strcmp(tel.request_id, req1) == 0, "request id round-trips");
+    CHECK(tel.last_connected_epoch == 0, "fresh record is never-verified");
+    CHECK(!tel.current_verified, "fresh record's live bit is down");
+    CHECK(tel.last_reason[0] == '\0', "fresh record has no reason yet");
+
+    /*
+     * The session-consistency check (round 4 item 4): status's own session
+     * must match the authoritative leaf, or the record is treated as absent
+     * — never surfaced, never emitted twice. Simulate a stale record left
+     * over from a previous generation by asking with the WRONG session.
+     */
+    vu_err_clear(&e);
+    CHECK(vu_state_read_status(&p, me, sess2, &tel, &present, &e),
+          "read with wrong session ran: %s", e.msg);
+    CHECK(!present, "a session mismatch reads as absent, not as corrupted-but-trusted");
+
+    /* Malformed records — each individually — must never parse as present,
+     * per the strict-format requirement (round 4 item 8). */
+    {
+        struct { const char *label; const char *text; } bad[] = {
+            { "wrong version",
+              "version=2\nsession=x\nrequest_id=y\nlast_connected_epoch=0\n"
+              "current_verified=0\nlast_reason=\nlast_event_epoch=0\n" },
+            { "non-numeric epoch",
+              "version=1\nsession=x\nrequest_id=y\nlast_connected_epoch=nope\n"
+              "current_verified=0\nlast_reason=\nlast_event_epoch=0\n" },
+            { "current_verified out of range",
+              "version=1\nsession=x\nrequest_id=y\nlast_connected_epoch=0\n"
+              "current_verified=2\nlast_reason=\nlast_event_epoch=0\n" },
+            { "undocumented reason",
+              "version=1\nsession=x\nrequest_id=y\nlast_connected_epoch=0\n"
+              "current_verified=0\nlast_reason=bogus\nlast_event_epoch=0\n" },
+            { "missing trailing line",
+              "version=1\nsession=x\nrequest_id=y\nlast_connected_epoch=0\n"
+              "current_verified=0\nlast_reason=\n" },
+        };
+        for (size_t i = 0; i < sizeof bad / sizeof *bad; ++i) {
+            FILE *f = fopen(p.status, "w");
+            CHECK(f != NULL, "%s: write fixture", bad[i].label);
+            if (f) { fputs(bad[i].text, f); fclose(f); }
+            vu_err_clear(&e);
+            CHECK(vu_state_read_status(&p, me, "x", &tel, &present, &e),
+                  "%s: read ran: %s", bad[i].label, e.msg);
+            CHECK(!present, "%s: never reads as present", bad[i].label);
+        }
+    }
+
+    /* pid: present once written (mirroring vu_state_record's own pid write),
+     * absent again once garbage. */
+    {
+        FILE *f = fopen(p.pid, "w");
+        CHECK(f != NULL, "write pid fixture");
+        if (f) { fprintf(f, "%ld\n", (long)getpid()); fclose(f); }
+        chmod(p.pid, 0600);   /* fopen's mode is masked by umask; a fresh file needs this made explicit */
+        vu_err_clear(&e);
+        CHECK(vu_state_read_pid(&p, me, &pid_out, &present, &e), "read pid: %s", e.msg);
+        CHECK(present, "pid present once written");
+        CHECK(pid_out == getpid(), "pid matches what was written");
+
+        f = fopen(p.pid, "w");
+        if (f) { fputs("not-a-pid\n", f); fclose(f); }
+        vu_err_clear(&e);
+        CHECK(vu_state_read_pid(&p, me, &pid_out, &present, &e), "read garbage pid: %s", e.msg);
+        CHECK(!present, "garbage pid reads as absent, not as an error");
+    }
+
+    unlink(p.pid);
+    unlink(p.session);
+    unlink(p.status);
+}
+
 /* --------------------------------------------------------------------- entry */
 
 void vu_test_state(void)
@@ -478,5 +654,6 @@ void vu_test_state(void)
     test_identity_and_record();
     test_harden();
     test_self_trusted();
+    test_telemetry();
     vu_rm_rf(g_root);
 }

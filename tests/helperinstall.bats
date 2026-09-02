@@ -38,6 +38,11 @@ setup() {
   : > "$LOG"
 
   export VPN_UP_HELPER_DIR="$TARGET"        # honoured by twophase.sh's helper_dir
+  # The wrapper's path, like VU_VPNC_SCRIPT in the real binaries, is a FIXED
+  # constant independent of which copy (staged or final) happens to be
+  # answering `version` - never derived from $0. Exported so the fake
+  # binaries below (deferred, single-quoted heredocs) can read it at runtime.
+  export VPN_UP_TEST_WRAPPER_PATH="$TARGET/vpn-up-vpnc-wrapper"
   _vu_sudoers_dir() { printf '%s' "$SUDOERS"; }
   _vu_build_dir()   { printf '%s' "$BUILD"; }
 
@@ -54,9 +59,21 @@ setup() {
 #!/bin/sh
 case "$1" in
   version)        echo "$(basename "$0") (policy engine 1)"
+                  echo "  vpnc-script     $VPN_UP_TEST_WRAPPER_PATH (wrapper)"
+                  echo "  vpnc-script.real /etc/vpnc/vpnc-script"
                   echo "  registry root /etc/vpn-up"
                   echo "  state root    /run/vpn-up" ;;
-  verify-closure) echo "closure: all objects trusted"; exit "${FAKE_CLOSURE_RC:-0}" ;;
+  verify-closure) echo "closure: all objects trusted"
+                  # A SEPARATE outcome for the STAGED candidate (its path ends
+                  # in ".new") vs. Phase A's own build-dir candidate, so tests
+                  # can tell the two closure gates apart - exactly the
+                  # distinction round 4 item 3 depends on (Phase A's early,
+                  # general eligibility check vs. _vu_install_script's later
+                  # proof of the actual staged, root-owned file).
+                  case "$*" in
+                    *.new) exit "${FAKE_STAGED_CLOSURE_RC:-${FAKE_CLOSURE_RC:-0}}" ;;
+                    *)     exit "${FAKE_CLOSURE_RC:-0}" ;;
+                  esac ;;
   list)           echo "no approved profiles for uid $(id -u)"; exit "${FAKE_LIST_RC:-0}" ;;
   *)              exit 2 ;;
 esac
@@ -64,9 +81,19 @@ EOS
     chmod +x "$1"
   }
 
+  # A stand-in for the wrapper: never executed by anything in this suite
+  # (vu_sudo's install stub only copies it), so its own body does not matter -
+  # it only needs to exist and be executable for _vu_install_script's staging
+  # and the closure-gate calls to have something real to point at.
+  _vu_fake_wrapper() {
+    printf '#!/bin/sh\nexit 0\n' > "$1"
+    chmod +x "$1"
+  }
+
   _vu_build_binaries() {
     _vu_fake_binary "$BUILD/vpn-up-helper"
     _vu_fake_binary "$BUILD/vpn-up-admin"
+    _vu_fake_wrapper "$BUILD/vpn-up-vpnc-wrapper"
   }
   _vu_have_toolchain() { return 0; }
   # The sandbox lives under BATS_TEST_TMPDIR, which is user-owned, so the real
@@ -120,7 +147,17 @@ EOS
                  garbage)      echo "something else entirely";     return 0 ;;
                  *) return 1 ;;
                esac ;;
-          *"vpn-up-helper") return "$NOPASSWD_HELPER" ;;
+          *"vpn-up-helper")
+            # event-status is a DIFFERENT sudoers Cmnd_Spec from the
+            # whole-binary grant (round 4 item 2), so it gets its own
+            # controllable outcome; unset, it defaults to NOPASSWD_HELPER's
+            # value so every test written before this distinction existed
+            # keeps behaving exactly as it did.
+            case "${2:-}" in
+              event-status) return "${NOPASSWD_EVENT_STATUS:-$NOPASSWD_HELPER}" ;;
+              *)            return "$NOPASSWD_HELPER" ;;
+            esac
+            ;;
           *"vpn-up-admin")  return "$NOPASSWD_ADMIN" ;;
           *) return 1 ;;
         esac
@@ -242,6 +279,95 @@ sudo_log()     { cat "$LOG"; }
   [[ "$output" != *"$(id -un)"* ]] || skip "this account's name is its uid"
 }
 
+# --- the always-on event-status (telemetry) grant, four-state lifecycle ----
+# (connection-state design plan §2, round 4 item 2)
+
+@test "a plain install with no --passwordless still creates the narrow event-status rule" {
+  run install_helper --yes
+  [ "$status" -eq 0 ]
+  local rule="$SUDOERS/vpn-up-$(id -u)-status"
+  [ -f "$rule" ]
+  [ "$(cat "$rule")" = "#$(id -u) ALL=(root) NOPASSWD: $TARGET/vpn-up-helper event-status *" ]
+  # It is a DIFFERENT grammar from the whole-binary rule, which --passwordless
+  # alone controls and this run never asked for.
+  [ ! -e "$SUDOERS/vpn-up-$(id -u)" ]
+}
+
+@test "install-helper --passwordless adds the full grant without touching an already-correct event-status rule" {
+  run install_helper --yes
+  [ "$status" -eq 0 ]
+  local telemetry="$SUDOERS/vpn-up-$(id -u)-status"
+  local before; before="$(cat "$telemetry")"
+  : > "$LOG"
+  NOPASSWD_HELPER=0
+  run install_helper --yes --passwordless
+  [ "$status" -eq 0 ]
+  [ "$(cat "$telemetry")" = "$before" ]
+  [ -f "$SUDOERS/vpn-up-$(id -u)" ]
+  run sudo_log
+  # Not re-staged: only validated in place.
+  [[ "$output" != *".vpn-up-$(id -u)-status.new"* ]]
+}
+
+@test "a failed post-check on --passwordless rolls back to ours-telemetry, never to absent" {
+  run install_helper --yes
+  [ "$status" -eq 0 ]
+  [ -f "$SUDOERS/vpn-up-$(id -u)-status" ]
+  NOPASSWD_HELPER=1                     # the newly created full grant never takes effect
+  run install_helper --yes --passwordless
+  [ "$status" -ne 0 ]
+  [ ! -e "$SUDOERS/vpn-up-$(id -u)" ]           # rolled back
+  [ -f "$SUDOERS/vpn-up-$(id -u)-status" ]      # the telemetry rule survives the rollback
+}
+
+@test "uninstall refuses to remove the binaries while a FOREIGN event-status-only rule still names them" {
+  run install_helper --yes
+  [ "$status" -eq 0 ]
+  # A foreign rule scoped only to event-status - not the exact line this
+  # installer writes, so it is left alone rather than removed, and the OLD
+  # vu_helper_passwordless probe alone (which only ever asked about `version`)
+  # could not see this shape at all.
+  printf '#%s ALL=(root) NOPASSWD: %s event-status --profile-id *\n' \
+    "$(id -u)" "$TARGET/vpn-up-helper" > "$SUDOERS/vpn-up-$(id -u)-status"
+  NOPASSWD_HELPER=1            # the whole-binary probe alone would say "safe to remove"
+  NOPASSWD_EVENT_STATUS=0      # but the event-status probe still succeeds
+  run uninstall_helper
+  [ "$status" -ne 0 ]
+  [ -x "$TARGET/vpn-up-helper" ]
+  [[ "$output" == *"still reachable as root without a password"* ]]
+  # Left alone, exactly as an unrecognised whole-binary rule would be.
+  [[ "$(cat "$SUDOERS/vpn-up-$(id -u)-status")" == *"--profile-id *"* ]]
+}
+
+# --- the vpnc-script wrapper: staged candidate, never live-swapped early ----
+# (connection-state design plan §2, round 4 item 3)
+
+@test "a fresh install stages the wrapper via install(1), then renames it into place" {
+  run install_helper --yes
+  [ "$status" -eq 0 ]
+  [ -x "$TARGET/vpn-up-vpnc-wrapper" ]
+  run sudo_log
+  [[ "$output" == *"install -o 0 -g 0 -m 0755 -- $BUILD/vpn-up-vpnc-wrapper $TARGET/.vpn-up-vpnc-wrapper.new"* ]]
+  [[ "$output" == *"mv -f -- $TARGET/.vpn-up-vpnc-wrapper.new $TARGET/vpn-up-vpnc-wrapper"* ]]
+}
+
+@test "a failing wrapper closure check on an UPGRADE leaves the live wrapper untouched and installs nothing" {
+  run install_helper --yes
+  [ "$status" -eq 0 ]
+  local live="$TARGET/vpn-up-vpnc-wrapper"
+  printf 'the-previously-working-wrapper\n' > "$live"     # simulate real prior content
+  local before; before="$(cat "$live")"
+
+  # Phase A's OWN gate (the build-dir candidate) still passes here - this
+  # specifically exercises _vu_install_script's later, separate proof of the
+  # STAGED candidate, which is the mechanism round 4 item 3 actually added.
+  export FAKE_STAGED_CLOSURE_RC=1
+  run install_helper --yes
+  [ "$status" -ne 0 ]
+  [ "$(cat "$live")" = "$before" ]              # untouched - never removed, never replaced
+  [ ! -e "$TARGET/.vpn-up-vpnc-wrapper.new" ]   # the failed candidate was cleaned up, not left behind
+}
+
 # --- the sudoers transaction ------------------------------------------------
 
 @test "visudo validates the staged dot-file before the move, and a failure moves nothing" {
@@ -249,9 +375,13 @@ sudo_log()     { cat "$LOG"; }
   run install_helper --yes --passwordless
   [ "$status" -ne 0 ]
   [ ! -e "$SUDOERS/vpn-up-$(id -u)" ]
+  [ ! -e "$SUDOERS/vpn-up-$(id -u)-status" ]
   run sudo_log
-  [[ "$output" == *"visudo -cf $SUDOERS/.vpn-up-$(id -u).new"* ]]
-  [[ "$output" != *"mv -f $SUDOERS/.vpn-up-$(id -u).new"* ]]
+  # The always-on event-status rule is activated first (round 4 item 2), so a
+  # universally failing visudo is caught there before the whole-binary rule's
+  # own staged file is ever written.
+  [[ "$output" == *"visudo -cf $SUDOERS/.vpn-up-$(id -u)-status.new"* ]]
+  [[ "$output" != *"mv -f $SUDOERS/.vpn-up-$(id -u)"* ]]
 }
 
 @test "the staged sudoers name contains a dot, so sudo ignores it while it exists" {
