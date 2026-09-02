@@ -112,6 +112,17 @@ the openconnect command, just before the gateway host:
   passwordless sudoers rule they form a root-execution path — point them only at
   a program on a path that only root can write. See
   [Known limitations](https://github.com/sorinipate/vpn-up-for-openconnect/blob/main/SECURITY.md#known-limitations).
+- ⚠️ **These flags don't work with `install-helper`.** The privileged helper's
+  closed argument schema has no room for a flag that can name a program to run,
+  so `--script`/`-s`, `--script-tun`/`-S`, `--csd-wrapper`, `--csd-user`,
+  `--config`, and `--xmlconfig`/`-x` are refused outright — the connection fails
+  with a config error instead of silently falling back. For a profile that needs
+  one of these (split tunnelling via vpn-slice is the common case, see
+  [Split tunneling]({{ '/split-tunnel/' | relative_url }})), either keep it on
+  the legacy sudoers rule, or run that one connection with
+  `VPN_UP_FORCE_PROMPT_MODE=TRUE` to fall back to a typed sudo password. Neither
+  option is unattended, so these profiles aren't supported in `service install`
+  once the helper is installed.
 
 See also: [SSO & Duo 2FA]({{ '/sso-duo/' | relative_url }}) and
 [supported protocols]({{ '/protocols/' | relative_url }}).
