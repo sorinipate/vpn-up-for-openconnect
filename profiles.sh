@@ -265,6 +265,16 @@ set_protocol_description() {
   esac
 }
 
+# Single source of truth for which protocols support browser SSO (docs/protocols.md:
+# anyconnect and gp only -- pulse and nc use password/Duo flows). Was two independent
+# denylists (setup.sh, core.sh) naming only 'nc'; pulse silently passed both.
+protocol_supports_sso() {
+  case "$1" in
+    anyconnect|gp) return 0 ;;
+    *)             return 1 ;;
+  esac
+}
+
 # shellcheck disable=SC2034  # description vars are consumed by core.sh
 set_2fa_method_description() {
   case $VPN_DUO2FAMETHOD in

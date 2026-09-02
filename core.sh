@@ -357,8 +357,8 @@ connection_preflight() {
       print_danger "Profile '%s' uses SSO (interactive browser); it cannot run as a service.\n" "${VPN_NAME}"
       return "$VPN_RC_CONFIG"
     fi
-    if [ "$PROTOCOL" = nc ]; then
-      print_danger "SSO (external browser) is not supported for the 'nc' protocol.\n"
+    if ! protocol_supports_sso "$PROTOCOL"; then
+      print_danger "SSO (external browser) is not supported for the '%s' protocol.\n" "$PROTOCOL"
       return "$VPN_RC_CONFIG"
     fi
     require_openconnect_sso || return "$VPN_RC_CONFIG"

@@ -117,8 +117,8 @@ add_profile_wizard() {
   local _in_sso=""
   read -r -p "Use SSO / browser-based login (Okta, Azure AD, Ping + Duo)? [y/N]: " _in_sso
   if [ "$(_bool_default "${_in_sso}" "FALSE")" = TRUE ]; then
-    if [ "$proto" = nc ]; then
-      print_danger "SSO (external browser) is not supported for the 'nc' protocol.\n"
+    if ! protocol_supports_sso "$proto"; then
+      print_danger "SSO (external browser) is not supported for the '%s' protocol.\n" "$proto"
       return 1
     fi
     authmode=sso
