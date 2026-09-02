@@ -106,7 +106,10 @@ upgrades. There is a gap for a **terminal-first, secure, scriptable** front end.
   current code from a seed held in the secrets backend (via `oathtool`) and feed it
   as the gateway's 2FA answer. The seed never reaches openconnect's argv or disk
   (no `--token-secret`); being non-interactive, a TOTP profile can run as an
-  auto-reconnecting login service.
+  auto-reconnecting login service. The algorithm (SHA1/SHA256/SHA512), digit
+  count, and time step are configurable per profile (`totpAlgorithm`/
+  `totpDigits`/`totpStepSeconds`), defaulting to `oathtool`'s own implicit
+  values (SHA1/6/30s) when unset.
 - **FR-22** Support **client-certificate authentication** (`clientCertificate`,
   `clientKey`): an X.509 cert/key **file** or a **PKCS#11 URI** (smartcard /
   YubiKey PIV), applied additively alongside any auth mode (or cert-only). The

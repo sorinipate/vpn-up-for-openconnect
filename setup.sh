@@ -61,7 +61,7 @@ CFG
 # Append a <VPN> block to the profiles file (password stays empty — secrets
 # belong in the secrets backend, set separately).
 append_profile() {
-  local name="$1" proto="$2" host="$3" group="$4" user="$5" duo="$6" authmode="${7:-password}" tokenmode="${8:-}" extraargs="${9:-}" clientcert="${10:-}" clientkey="${11:-}" proxy="${12:-}"
+  local name="$1" proto="$2" host="$3" group="$4" user="$5" duo="$6" authmode="${7:-password}" tokenmode="${8:-}" extraargs="${9:-}" clientcert="${10:-}" clientkey="${11:-}" proxy="${12:-}" totpalgo="${13:-}" totpdigits="${14:-}" totpstep="${15:-}"
   local tmp="${PROFILES_FILE}.tmp"
   xmlstarlet ed \
     -s '/VPNs' -t elem -n VPN -v '' \
@@ -79,6 +79,9 @@ append_profile() {
     -s '/VPNs/VPN[last()]' -t elem -n clientCertificate -v "$clientcert" \
     -s '/VPNs/VPN[last()]' -t elem -n clientKey -v "$clientkey" \
     -s '/VPNs/VPN[last()]' -t elem -n proxy -v "$proxy" \
+    -s '/VPNs/VPN[last()]' -t elem -n totpAlgorithm -v "$totpalgo" \
+    -s '/VPNs/VPN[last()]' -t elem -n totpDigits -v "$totpdigits" \
+    -s '/VPNs/VPN[last()]' -t elem -n totpStepSeconds -v "$totpstep" \
     "${PROFILES_FILE}" > "${tmp}" && mv "${tmp}" "${PROFILES_FILE}" && chmod 600 "${PROFILES_FILE}"
 }
 
@@ -91,6 +94,7 @@ add_profile_wizard() {
   profiles_xml_ok || return 1
 
   local name proto host group user duo authmode tokenmode extraargs clientcert clientkey proxy
+  local totpalgo="" totpdigits="" totpstep=""
   read -r -p "Profile name: " name
   [ -n "$name" ] || { print_danger "Profile name is required.\n"; return 1; }
   if profile_exists "$name"; then
@@ -132,8 +136,25 @@ add_profile_wizard() {
         local _seed=""
         read -r -s -p "Enter the TOTP secret (base32, from your authenticator app): " _seed; echo
         if [ -n "$_seed" ]; then
+          local _adv=""
+          read -r -p "Configure advanced TOTP options (algorithm/digits/time step)? [y/N]: " _adv
+          if [ "$(_bool_default "${_adv}" "FALSE")" = TRUE ]; then
+            read -r -p "TOTP algorithm (SHA1/SHA256/SHA512) [SHA1]: " totpalgo
+            totpalgo="$(printf '%s' "${totpalgo:-SHA1}" | tr '[:lower:]' '[:upper:]')"
+            case "$totpalgo" in
+              SHA1|SHA256|SHA512) : ;;
+              *) print_danger "Unknown algorithm '%s'; using SHA1.\n" "$totpalgo"; totpalgo=SHA1 ;;
+            esac
+            read -r -p "TOTP digits [6]: " totpdigits
+            totpdigits="${totpdigits:-6}"
+            case "$totpdigits" in *[!0-9]*|"") totpdigits=6 ;; esac
+            read -r -p "TOTP time step in seconds [30]: " totpstep
+            totpstep="${totpstep:-30}"
+            case "$totpstep" in *[!0-9]*|"") totpstep=30 ;; esac
+          fi
           # Seed on stdin, not argv — an argv key is world-visible in the process table.
-          if command -v oathtool >/dev/null 2>&1 && [ -n "$(printf '%s\n' "$_seed" | oathtool --totp -b - 2>/dev/null)" ]; then
+          if command -v oathtool >/dev/null 2>&1 && \
+             [ -n "$(printf '%s\n' "$_seed" | oathtool "--totp=${totpalgo:-SHA1}" -b -d "${totpdigits:-6}" -s "${totpstep:-30}" - 2>/dev/null)" ]; then
             if secrets_set "$name" "token_secret" "$_seed"; then
               print_success "TOTP secret stored securely.\n"
             else
@@ -201,7 +222,7 @@ add_profile_wizard() {
   extraargs=""
   read -r -p "Extra openconnect arguments (advanced, optional): " extraargs
 
-  append_profile "$name" "$proto" "$host" "$group" "$user" "$duo" "$authmode" "$tokenmode" "$extraargs" "$clientcert" "$clientkey" "$proxy" \
+  append_profile "$name" "$proto" "$host" "$group" "$user" "$duo" "$authmode" "$tokenmode" "$extraargs" "$clientcert" "$clientkey" "$proxy" "$totpalgo" "$totpdigits" "$totpstep" \
     || { print_danger "Failed to update %s\n" "$PROFILES_FILE"; return 1; }
   print_success "Added profile '%s' to %s\n" "$name" "$PROFILES_FILE"
 

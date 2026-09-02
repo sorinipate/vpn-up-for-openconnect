@@ -56,6 +56,17 @@
              identifier, not a secret; avoid embedding user:pass in the URL
              (that would put credentials on the command line). -->
         <proxy></proxy>
+        <!-- totpAlgorithm / totpDigits / totpStepSeconds (optional, tokenMode=totp
+             only): RFC 6238 parameters passed to oathtool. Left empty (or
+             absent), they default to oathtool's own implicit values:
+               totpAlgorithm:    SHA1, SHA256, or SHA512 (default SHA1)
+               totpDigits:       digit count (default 6)
+               totpStepSeconds:  time-step length in seconds (default 30)
+             The add-profile wizard offers these as an opt-in "advanced TOTP
+             options" prompt when tokenMode=totp is chosen. -->
+        <totpAlgorithm></totpAlgorithm>
+        <totpDigits></totpDigits>
+        <totpStepSeconds></totpStepSeconds>
     </VPN>
 
     <!-- VPN PROFILE 2 -->
@@ -84,6 +95,10 @@
         <clientKey></clientKey>
         <!-- proxy: see VPN PROFILE 1 (HTTP/SOCKS proxy URL for openconnect). -->
         <proxy></proxy>
+        <!-- totpAlgorithm / totpDigits / totpStepSeconds: see VPN PROFILE 1. -->
+        <totpAlgorithm></totpAlgorithm>
+        <totpDigits></totpDigits>
+        <totpStepSeconds></totpStepSeconds>
     </VPN>
     <!-- Add more VPN profiles as needed -->
 </VPNs>

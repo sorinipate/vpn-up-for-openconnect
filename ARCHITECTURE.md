@@ -90,10 +90,14 @@ namespace; `DISPLAY_NAME` (`vpn-up`) is used only in user-facing text.
 `serverCertificate`, `authMode` (`password` default | `sso`), `tokenMode`
 (empty | `totp`), `extraArgs` (verbatim openconnect flags), `clientCertificate` /
 `clientKey` (a file path or a PKCS#11 URI for client-certificate auth), `proxy` (an
-HTTP/SOCKS proxy URL → `--proxy`).
+HTTP/SOCKS proxy URL → `--proxy`), `profileId` (immutable approval-registry
+identity, added lazily by `profile_id_ensure`, not written by `append_profile`),
+`totpAlgorithm`/`totpDigits`/`totpStepSeconds` (optional, `tokenMode=totp` only —
+RFC 6238 parameters passed to `oathtool`; empty/absent defaults to `SHA1`/`6`/`30`).
 `load_profile_fields` reads them positionally via `mapfile`, so **new fields are
 appended last** to avoid shifting indices (`extraArgs` is index 10,
-`clientCertificate`/`clientKey` are 11/12, `proxy` is 13). Secrets are *not* in the XML — the TOTP
+`clientCertificate`/`clientKey` are 11/12, `proxy` is 13, `profileId` is 14,
+`totpAlgorithm`/`totpDigits`/`totpStepSeconds` are 15/16/17). Secrets are *not* in the XML — the TOTP
 **seed** (`token_secret`) and any client-key **passphrase / PKCS#11 PIN**
 (`key_password`) live in the secrets backend.
 

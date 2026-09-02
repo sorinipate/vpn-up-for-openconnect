@@ -680,8 +680,8 @@ run_admitted_connection() {
       [ -n "$seed" ] && secrets_set "${VPN_NAME}" token_secret "$seed"
     fi
     if [ "$rc" = 0 ]; then
-      if totp_wait_for_fresh_step "$name"; then
-        VPN_SECOND_FACTOR="$(generate_totp "$seed")"
+      if totp_wait_for_fresh_step "$name" "$VPN_TOTP_STEP"; then
+        VPN_SECOND_FACTOR="$(generate_totp "$seed" "$VPN_TOTP_ALGORITHM" "$VPN_TOTP_DIGITS" "$VPN_TOTP_STEP")"
         if [ -z "$VPN_SECOND_FACTOR" ]; then
           print_danger "Could not generate a TOTP code (check the stored secret with: %s set-secret '%s' token_secret).\n" "${DISPLAY_NAME}" "${VPN_NAME}"
           rc="$VPN_RC_CONFIG"
@@ -900,8 +900,13 @@ resolve_external_browser() {
 # transits (on stdin). It is fed to oathtool on STDIN rather than argv: an argv
 # key is visible in the process table to every user on the machine, which
 # oathtool's own help calls out as "not recommended on multi-user systems".
+#
+# algo/digits/step default to oathtool's own implicit defaults (SHA1/6/30s) so
+# an existing profile with no <totpAlgorithm>/<totpDigits>/<totpStepSeconds>
+# behaves exactly as before.
 generate_totp() {
-  printf '%s\n' "$1" | oathtool --totp -b - 2>/dev/null
+  local seed="$1" algo="${2:-SHA1}" digits="${3:-6}" step="${4:-30}"
+  printf '%s\n' "$seed" | oathtool "--totp=${algo}" -b -d "$digits" -s "${step}" - 2>/dev/null
 }
 
 # Percent-encode a byte string for use as a pkcs11: URI query-attribute value
