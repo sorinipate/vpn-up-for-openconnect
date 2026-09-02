@@ -884,3 +884,82 @@ EOF
   [ "$(sed -n '3p' "$ORDER")" = "Disconnected from Helper VPN" ]
   [ "$(sed -n '4p' "$ORDER")" = "disconnected" ]
 }
+
+# --- _VPN_LAST_ATTEMPT_VERIFIED (outcome.sh's ninth invariant, record_attempt_verification) ---
+#
+# `run` is required here, not optional: bats runs a @test body under errexit,
+# and run_openconnect_helper's own `wait "$poller_pid"` legitimately reports
+# 128+SIGTERM whenever the poller is still mid-sleep at kill time (harmless
+# in production -- nothing here runs under `set -e` -- but a bare, un-`run`
+# invocation would abort the test function right there, before ever reaching
+# the assignment being tested). `run` captures output in a subshell, though,
+# which would make a plain assignment to this module-global invisible
+# afterwards -- so the value is threaded out through stdout instead, via a
+# small wrapper `run` actually invokes.
+_wrap_capture_verified() {
+  run_openconnect_helper "$@"
+  printf 'VERIFIED=%s\n' "$_VPN_LAST_ATTEMPT_VERIFIED"
+}
+
+@test "run_openconnect_helper sets _VPN_LAST_ATTEMPT_VERIFIED=1 for a genuinely confirmed connect" {
+  _helper_argv_setup
+  local req="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  sudo() {
+    case "$1" in
+      -k)
+        cat >/dev/null 2>&1
+        printf 'request_id=%s\n' "$req"
+        printf 'last_connected_epoch=1700000000\n'
+        printf 'current_verified=1\n'
+        ;;
+      *)
+        cat >/dev/null
+        echo "Connected as 10.0.0.2, using SSL"
+        ;;
+    esac
+  }
+  run _wrap_capture_verified "$req"
+  [[ "$output" == *"VERIFIED=1"* ]]
+}
+
+@test "run_openconnect_helper sets _VPN_LAST_ATTEMPT_VERIFIED=0 when the final read cannot confirm one" {
+  # A request-id mismatch is inconclusive, not evidence of anything -- same
+  # case _helper_final_event_had_tunnel's own tests cover. This attempt was
+  # genuinely admitted in helper mode (a request id WAS generated), it just
+  # never got proof of a tunnel -- exactly what the unverified streak exists
+  # to count.
+  _helper_argv_setup
+  local req="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  sudo() {
+    case "$1" in
+      -k)
+        cat >/dev/null 2>&1
+        printf 'request_id=ffffffffffffffffffffffffffffffff\n'
+        printf 'last_connected_epoch=1700000000\n'
+        printf 'current_verified=1\n'
+        ;;
+      *)
+        cat >/dev/null
+        echo "Session terminated by server"
+        ;;
+    esac
+  }
+  run _wrap_capture_verified "$req"
+  [[ "$output" == *"VERIFIED=0"* ]]
+}
+
+@test "run_openconnect_helper leaves _VPN_LAST_ATTEMPT_VERIFIED unset when no request id was ever generated" {
+  # An old client/helper pair produces no request id at all (round 4 item 5)
+  # -- core.sh must see "no signal available" ("") here, never a guessed 0,
+  # so record_attempt_verification's no-op-on-empty path is what actually
+  # runs, not an accidental streak increment for a mode that can never
+  # produce the genuine telemetry in the first place. Preset to "" (empty),
+  # matching core.sh's own per-attempt reset (run_admitted_connection) --
+  # not some other stale value, since "unset" and "left at whatever it
+  # already was" are the same claim only when it already started empty.
+  _helper_argv_setup
+  sudo() { cat >/dev/null; echo "Connected as 10.0.0.2, using SSL"; }
+  _VPN_LAST_ATTEMPT_VERIFIED=""
+  run _wrap_capture_verified ""
+  grep -qx "VERIFIED=" <<< "$output"
+}

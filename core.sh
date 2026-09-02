@@ -256,6 +256,15 @@ _VPN_CONNECT_MODE=""
 # one of them never fetching at all) independently.
 _VPN_PIN_FILE=""
 
+# Set by run_openconnect_helper (twophase.sh) to 1 or 0 -- did THIS admitted
+# attempt reach a genuine, script-confirmed tunnel-up -- or left as "" when
+# no such signal exists (prompt mode, always; helper mode with an old
+# client/helper pair). Reset to "" before every dispatch below, never carried
+# over from a previous attempt, since a stale "1" from an earlier connection
+# read as this attempt's own verdict would be exactly the kind of false
+# assurance record_attempt_verification (outcome.sh) exists to avoid.
+_VPN_LAST_ATTEMPT_VERIFIED=""
+
 # Distinguishes "this key is not stored" from "the backend itself could not
 # be read" (e.g. the openssl vault failed to decrypt, or a Keychain/Secret
 # Service call errored) -- a bare `[ -z "$(secrets_get ...)" ]` throws that
@@ -607,6 +616,7 @@ run_admitted_connection() {
   # a one-time factor and submitting it" means this reusable-credential-like
   # step must come before, not after, the one-time value.
   _VPN_PIN_FILE=""
+  _VPN_LAST_ATTEMPT_VERIFIED=""
   if [ "$rc" = 0 ]; then
     _prepare_pkcs11_pin "$mode"
     rc=$?
@@ -703,6 +713,18 @@ run_admitted_connection() {
       run_openconnect
     fi
     rc=$?
+  fi
+
+  # Ninth invariant (§15.1 amendment, outcome.sh): feed the genuine tunnel-up
+  # signal to the unverified-streak escalation, SERVICE only -- mirroring
+  # admit_attempt()'s own "only SERVICE ever consumes rate-limit budget", the
+  # escalation this streak feeds is a property of the unattended retry loop,
+  # not of an interactive session sitting at a terminal. Strictly AFTER
+  # dispatch returns and BEFORE release_attempt_owner, same ordering
+  # constraint admit_attempt's own header describes: this can only ever
+  # affect a LATER admission decision, never this one.
+  if [ "$mode" = SERVICE ]; then
+    record_attempt_verification "$name" "$_VPN_LAST_ATTEMPT_VERIFIED"
   fi
 
   # Single cleanup point for both dispatch modes: openconnect (prompt mode,

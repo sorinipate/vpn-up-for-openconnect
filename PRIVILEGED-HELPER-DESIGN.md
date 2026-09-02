@@ -1259,9 +1259,10 @@ authentication, before any credential or one-time value is touched — a Duo
 push is what the limiter protects against, and a Duo push is spent at that
 moment regardless of what happens afterward.
 
-**The eight rate-limiter security invariants**, each independently
-regression-tested (`tests/attemptguard.bats`, `tests/totpstep.bats`) and each
-a plausible thing for a future change to erode without noticing:
+**The eight original rate-limiter security invariants** (a ninth was added
+later, §15.1.1 below), each independently regression-tested
+(`tests/attemptguard.bats`, `tests/totpstep.bats`) and each a plausible thing
+for a future change to erode without noticing:
 
 1. OpenConnect's outcome never changes admission history.
 2. An unattended attempt is charged the moment it is admitted, before
@@ -1771,6 +1772,69 @@ user-side OpenConnect PID file, not root-owned helper state. This is a real
 boundary, not a gap in the rate limiter specifically — reconciling it belongs
 with §17.7's tunnel-up signal and helper-lifecycle work, not with admission.
 
+### 15.1.1 Ninth invariant: escalating on repeated unverified attempts
+
+A code review raised, correctly, that the eight invariants above bound the
+*rate* of unattended attempts but never their *duration*: a permanently bad
+credential, or a permanently rejected Duo push, is throttled to the curve and
+the hourly breaker forever, not stopped. The central design decision (this
+file's header, and outcome.sh's) explains why that is not a bug to fix by
+classifying OpenConnect's exit code — there is no seam there. But commit
+`52cbe8c` (after this review) shipped something the design decision does not
+rule out: a genuine, helper-mode, script-confirmed tunnel-up signal,
+independent of OpenConnect's exit status entirely.
+
+**The addition, precisely:** `outcome.sh` gains one new state field
+(`unverified_streak`) and one new function, `record_attempt_verification
+<profile> <verified: 0|1>`. It is called from `run_admitted_connection`'s
+epilogue (core.sh), strictly AFTER `connect_via_helper`/`run_openconnect`
+returns and BEFORE `release_attempt_owner` — never from inside
+`admit_attempt()` itself, and never touching `ST_ATTEMPTS` or
+`ST_OPEN_UNTIL`. That ordering is what keeps this from being invariant 1's
+mistake reopened: it cannot change whether or how long an attempt already
+admitted was made to wait, only whether a LATER breaker-expiry transition
+treats a quiet retire-and-resume as safe.
+
+At that transition (the moment the breaker would otherwise just retire its
+window and let the curve resume, `admit_attempt`'s `ST_OPEN_UNTIL != 0`
+branch), the streak is checked against `_UNVERIFIED_STREAK_LIMIT`
+(`_ATTEMPT_THRESHOLD * 3` — three full breaker cycles' worth by default).
+Past it, the transition escalates to `pause_set()` (a real caller for a
+function that existed, unused, since §3.6's "flagged, not decided" gap) and a
+louder, distinct notification, instead of the ordinary silent retire. A human
+clearing the pause (`pause_clear`, or fixing the credential via
+`secrets_set` → `attempt_history_clear`, which also resets the streak) is
+required to resume; the escalation is deliberately not a permanent
+`VPN_RC_CONFIG` stop, because the tool still cannot prove *why* verification
+never happened — a persistent server-side outage produces the identical
+signal (no verified connect, ever) as a stuck credential.
+
+**Where the signal comes from, and where it does not reach:** helper mode's
+`run_openconnect_helper` (twophase.sh) already computes exactly this boolean
+— `_helper_final_event_had_tunnel`'s result — to decide `had_tunnel` for the
+diagnostics-only outcome code; it is now also captured separately into a
+module-global, `_VPN_LAST_ATTEMPT_VERIFIED`, specifically so the escalation
+never uses `had_tunnel`'s OR'd-in heuristic fallback (`_helper_run_had_tunnel`,
+"a process seemed to run") — using that would reintroduce exactly the
+false-confidence problem `write_connection_state`'s `evidence=heuristic` vs
+`verified` split already exists to avoid. **Prompt mode produces no signal at
+all, ever** (`outcome.sh`'s own comment on `outcome_from_run`: "prompt mode
+has no such signal and always passes 1") — `record_attempt_verification`'s
+tri-state treats the empty string as "no signal available" and leaves the
+streak untouched, so a profile that only ever runs in prompt mode structurally
+cannot escalate via this path. That is correct, not a gap: prompt mode cannot
+distinguish "stuck at a Duo prompt" from "about to succeed" either
+(`_record_foreground_openconnect_pid`'s own comment), so it must not pretend
+to here.
+
+Tests: `tests/attemptguard.bats` (streak accounting via
+`record_attempt_verification`, the empty-string no-op case, the ninth-
+invariant regression proving `ST_ATTEMPTS`/`ST_OPEN_UNTIL` are unaffected by
+any streak value, escalation at the limit, no escalation just below it) and
+`tests/twophase.bats` (`_VPN_LAST_ATTEMPT_VERIFIED` set to 1/0/unset for a
+confirmed, unconfirmed, and no-request-id run of `run_openconnect_helper`
+respectively).
+
 ### Release gate
 
 The "login service not recommended" warning stays until **both** the helper is
@@ -2008,15 +2072,21 @@ rule can reasonably default on for installations that came through it, and the
 assumption paragraph in `SECURITY.md` changes rather than being deleted: an
 install from a user-writable checkout will still carry it.
 
-### 17.7 A structured tunnel-up/down signal
+### 17.7 A structured tunnel-up/down signal — **PARTIALLY ANSWERED, shipped as `52cbe8c`; used by §15.1.1**
 
-Nothing in §15.1's rate limiter depends on knowing whether a tunnel actually
-came up — that is the whole point of gating admission rather than trying to
-classify outcomes. But a real signal would still let step 13 do better:
-accurate `connected`/`disconnected` hooks, real diagnostics, and a way to
-answer §15.1's closing question (whether an orphaned privileged tunnel can
-outlive the VPN Up process that started it) instead of merely documenting the
-boundary.
+Admission itself still depends on nothing about whether a tunnel actually
+came up — that half of this section's claim stands, and is exactly the point
+of gating admission rather than trying to classify outcomes (§15.1's central
+design decision, unchanged). What has changed since this was written: the
+signal below was built (the vpnc-script wrapper, `helper/src/exec.c`'s
+`--script` pin, and the `event-status` verb this section anticipated), and
+§15.1.1 gives it its first real consumer OUTSIDE admission — the unverified-
+streak escalation, which reads it strictly after an attempt has already been
+admitted and finished, never to decide whether or how long a new one waits.
+Accurate `connected`/`disconnected` hooks and real diagnostics (this
+section's other two promised uses) are also delivered, via
+`write_connection_state`'s `evidence=verified` path. Still open: the
+orphaned-privileged-tunnel question below.
 
 OpenConnect invokes `--script` with `$reason=connect/disconnect/reconnect`,
 which the helper already pins (`helper/src/exec.c:82`) — well positioned,

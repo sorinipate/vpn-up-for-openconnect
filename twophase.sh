@@ -530,14 +530,28 @@ run_openconnect_helper() {
   # generated; anything it cannot confirm (no record, a mismatched request id,
   # a connect that was never verified) falls through to the same heuristic
   # this always used, unchanged.
+  #
+  # The genuine result is captured SEPARATELY from had_tunnel (which also
+  # folds in the heuristic fallback below) into _VPN_LAST_ATTEMPT_VERIFIED --
+  # the signal outcome.sh's unverified-streak escalation (§15.1's ninth
+  # invariant) needs is specifically "did THIS admitted attempt reach a
+  # script-confirmed tunnel-up", never "a process seemed to run", which is
+  # exactly the heuristic the escalation exists to be immune to. Left unset
+  # (core.sh resets it to "" before every attempt) when no request id was
+  # generated at all -- an old client/helper pair produces no signal here,
+  # ever, same as write_connection_state's evidence=heuristic case.
+  local final_verified=0
+  if [ -n "$request_id" ] && _helper_final_event_had_tunnel "$request_id" "${VPN_PROFILE_ID}" "$h"; then
+    final_verified=1
+  fi
   local had_tunnel=1
-  if { [ -n "$request_id" ] && _helper_final_event_had_tunnel "$request_id" "${VPN_PROFILE_ID}" "$h"; } \
-     || _helper_run_had_tunnel "$mark"; then
+  if [ "$final_verified" = 1 ] || _helper_run_had_tunnel "$mark"; then
     notify "VPN Up" "Disconnected from ${VPN_NAME:-VPN}"
     run_hooks disconnected "${VPN_NAME:-}" "${VPN_HOST:-}"
   else
     had_tunnel=0
   fi
+  [ -n "$request_id" ] && _VPN_LAST_ATTEMPT_VERIFIED="$final_verified"
   local outcome; outcome="$(outcome_from_run "$rc" "$had_tunnel")"
   return "$outcome"
 }

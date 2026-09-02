@@ -154,6 +154,123 @@ _sf() { attempt_state_file "$1"; }
   [ "$ST_TOTP_STEP" -eq 999 ]
 }
 
+@test "record_attempt_verification: verified resets the streak, unverified increments it" {
+  local f; f="$(_sf "Work VPN")"
+  record_attempt_verification "Work VPN" 0
+  record_attempt_verification "Work VPN" 0
+  record_attempt_verification "Work VPN" 0
+  _state_read "$f"
+  [ "$ST_UNVERIFIED_STREAK" -eq 3 ]
+
+  record_attempt_verification "Work VPN" 1
+  _state_read "$f"
+  [ "$ST_UNVERIFIED_STREAK" -eq 0 ]
+}
+
+@test "record_attempt_verification leaves the streak untouched when no signal is available" {
+  # The empty string (prompt mode, or a helper/client pair predating
+  # event-status telemetry) must not be read as "unverified" -- that would
+  # escalate a mode that can never produce the genuine signal in the first
+  # place, exactly the false confidence this design exists to avoid.
+  local f; f="$(_sf "Work VPN")"
+  record_attempt_verification "Work VPN" 0
+  record_attempt_verification "Work VPN" 0
+  _state_read "$f"
+  [ "$ST_UNVERIFIED_STREAK" -eq 2 ]
+
+  record_attempt_verification "Work VPN" ""
+  _state_read "$f"
+  [ "$ST_UNVERIFIED_STREAK" -eq 2 ]
+}
+
+@test "record_attempt_verification never touches admission history (ninth invariant)" {
+  # Mirrors "admission is what's counted, not outcome" above: this is the
+  # regression test for the ninth invariant specifically -- ST_ATTEMPTS and
+  # ST_OPEN_UNTIL must be bit-for-bit identical no matter what this records.
+  local f; f="$(_sf "Work VPN")"
+  admit_attempt "Work VPN" SERVICE
+  release_attempt_owner "Work VPN"
+  _state_read "$f"
+  local attempts_before="$ST_ATTEMPTS" open_before="$ST_OPEN_UNTIL"
+
+  record_attempt_verification "Work VPN" 0
+  record_attempt_verification "Work VPN" 1
+  record_attempt_verification "Work VPN" 0
+
+  _state_read "$f"
+  [ "$ST_ATTEMPTS" = "$attempts_before" ]
+  [ "$ST_OPEN_UNTIL" -eq "$open_before" ]
+}
+
+@test "attempt_history_clear also resets the unverified streak" {
+  local f; f="$(_sf "Work VPN")"
+  record_attempt_verification "Work VPN" 0
+  record_attempt_verification "Work VPN" 0
+  _state_read "$f"
+  [ "$ST_UNVERIFIED_STREAK" -eq 2 ]
+
+  attempt_history_clear "Work VPN"
+  _state_read "$f"
+  [ "$ST_UNVERIFIED_STREAK" -eq 0 ]
+}
+
+@test "breaker expiry escalates to a pause once the unverified-streak limit is reached" {
+  local f; f="$(_sf "Work VPN")"
+  local now; now="$(date +%s)"
+  token="$(_state_lock "$f")"
+  _state_read "$f"
+  ST_ATTEMPTS="$now $now $now $now $now $now"
+  ST_OPEN_UNTIL=$(( now - 1 ))   # already expired
+  ST_UNVERIFIED_STREAK="$_UNVERIFIED_STREAK_LIMIT"
+  _state_persist_current "$f" "Work VPN"
+  _state_unlock "$f" "$token"
+
+  # admit_attempt would poll forever once paused (by design), so run it in
+  # the background and assert it has NOT been admitted.
+  ( admit_attempt "Work VPN" SERVICE; touch "$BATS_TEST_TMPDIR/admitted" ) &
+  local bgpid=$!
+  sleep 0.3
+  [ ! -e "$BATS_TEST_TMPDIR/admitted" ]
+  kill "$bgpid" 2>/dev/null || true
+  wait "$bgpid" 2>/dev/null || true
+
+  _state_read "$f"
+  [ "$ST_PAUSED" -eq 1 ]
+  [ "$ST_OPEN_UNTIL" -eq 0 ]
+  [ "$ST_UNVERIFIED_STREAK" -eq 0 ]
+  local n=0; for a in $ST_ATTEMPTS; do n=$((n+1)); done
+  [ "$n" -eq 0 ]
+  # Not pause_clear'd here: it needs _state_lock, and the backgrounded
+  # admit_attempt above was killed via $bgpid while the LOCK's own recorded
+  # owner is $$ (the test's own pid, per outcome.sh's documented `( ... ) &`
+  # limitation) -- genuinely still alive, so a killed-but-not-unlocked lock
+  # from this exact pattern is never reclaimable as "dead" and _state_lock
+  # would spin forever by design. _state_read needs no lock, so the
+  # assertions above are unaffected; bats gives the next test its own fresh
+  # tmpdir regardless.
+}
+
+@test "breaker expiry below the unverified-streak limit does the ordinary retire, not a pause" {
+  local f; f="$(_sf "Work VPN")"
+  local now; now="$(date +%s)"
+  token="$(_state_lock "$f")"
+  _state_read "$f"
+  ST_ATTEMPTS="$now $now $now $now $now $now"
+  ST_OPEN_UNTIL=$(( now - 1 ))
+  ST_UNVERIFIED_STREAK=$(( _UNVERIFIED_STREAK_LIMIT - 1 ))
+  _state_persist_current "$f" "Work VPN"
+  _state_unlock "$f" "$token"
+
+  admit_attempt "Work VPN" SERVICE
+  release_attempt_owner "Work VPN"
+
+  _state_read "$f"
+  [ "$ST_PAUSED" -eq 0 ]
+  # The streak survives the ordinary retire transition: only escalation
+  # resets it early.
+  [ "$ST_UNVERIFIED_STREAK" -eq $(( _UNVERIFIED_STREAK_LIMIT - 1 )) ]
+}
+
 @test "a delay is respected: a fresh attempt after one recent one waits" {
   local f; f="$(_sf "Work VPN")"
   local now; now="$(date +%s)"
