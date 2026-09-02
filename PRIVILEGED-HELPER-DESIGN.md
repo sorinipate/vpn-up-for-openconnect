@@ -839,7 +839,7 @@ Also found while verifying paths: `/var/run` is `drwxrwxr-x root:daemon` — gro
 writable. Our own directory is still required to be root-owned `0700`, so a
 squatted `/var/run/vpn-up` makes the helper **fail closed** rather than trust
 it. That is correct but is a denial-of-service vector, and `/var/db` is
-`root:wheel 0755`. Revisit the macOS state root at step 13.
+`root:wheel 0755`. Revisit the macOS state root at step 14.
 
 #### State verification on `stop` — amended during step 9
 
@@ -925,10 +925,14 @@ that matters and is checked unconditionally — but the shebang is what runs if 
 script is ever executed directly, and one naming a user-writable prefix says
 something about the installation either way.
 
-macOS is unimplemented and therefore **fails closed**, with §11.7's wording, as
-a report row rather than a special case at the call site. Mach-O `LC_LOAD_DYLIB`,
-the dyld shared cache and the `DYLD_*` rules are a different mechanism from ELF
-and `ld.so`, not a port of it. That is step 13.
+macOS is implemented (step 14, `helper/src/macho.c`, `vu_macho.h`) — Mach-O
+`LC_LOAD_DYLIB`, the dyld shared cache and `@rpath`/`@loader_path`/
+`@executable_path` are a different mechanism from ELF and `ld.so`, not a port
+of it, so this is a separate parser and a separate, recursive closure walk
+(`check_dylib_closure`, `closure.c`), not a variation on the Linux one — see
+§17.1 for what a real install actually needed. Any OTHER platform (neither
+Linux nor Darwin) still fails closed, with §11.7's wording, as a report row
+rather than a special case at the call site.
 
 **Verified against a real installation**, which is what §11.6 rested on until
 now. Pointed at this machine's Homebrew install, the check reports:
@@ -1007,7 +1011,7 @@ passing installation, not an exemption.
 | OpenConnect installation | Prompt mode | Helper mode |
 |---|---|---|
 | Linux distro package, closure passes | yes | **yes** |
-| macOS MacPorts, closure passes | yes | **yes** (pending §17.1) |
+| macOS MacPorts, closure passes | yes | **yes** (verified, §17.1) |
 | Manually installed root-owned, closure passes | yes | **yes** |
 | macOS Homebrew | yes | **no** |
 | Any user-writable installation | yes, with the §1 caveat understood | **no** |
@@ -1823,15 +1827,94 @@ break.
 These are the only questions left open. Everything else in this document is
 settled, and reopening any of it needs a new review (see the status banner).
 
-### 17.1 Verify a real MacPorts OpenConnect against §11.4, dylib closure included
+### 17.1 Verify a real MacPorts OpenConnect against §11.4, dylib closure included — **ANSWERED, implemented and verified**
 
 §11.6 makes MacPorts the recommended macOS source on the strength of its
-root-owned `/opt/local` prefix. Before that reaches a README, an actual install
-must be checked: the binary, its parent chain, the `vpnc-script` MacPorts
-configures, `/etc/vpnc`, and **the dynamic library closure** — a root-owned
-binary loading a user-writable library fails the invariant just as surely. If
-MacPorts fails, macOS helper mode has no packaged source and §11.6's matrix row
-changes.
+root-owned `/opt/local` prefix. Checked directly against a real install
+(MacPorts 2.11.5, `openconnect` port, macOS 26.6, arm64) rather than reasoned
+about:
+
+**MacPorts passes the ownership half of the invariant.** `/opt/local` and
+every directory down to the binary and its libraries are `root:wheel`/
+`root:admin`, mode 755, not group- or world-writable. `openconnect` itself
+lands at `/opt/local/sbin/openconnect`, `root:admin` 0755.
+
+**Its own `vpnc-script` is a separate port (`vpnc-scripts`), at a
+macOS-specific path**, not the Linux FHS location: `/opt/local/etc/vpnc-scripts/vpnc-script`
+(`root:wheel`, 0755), alongside `vpnc-script-ptrtd`/`vpnc-script-sshd`, no
+`.d` hook-directory convention there — `check_hooks`'s Linux-side
+`/etc/vpnc*` path is a constant that needs a macOS-specific equivalent, not a
+port of the same literal path.
+
+**The library closure has no `LC_RPATH`, `@rpath`, `@loader_path`, or
+`@executable_path` anywhere in this binary's full transitive dependency
+graph** (checked with `otool -l`/`otool -L`, every direct and indirect
+dependency, recursively) — every `LC_LOAD_DYLIB` names a plain absolute path.
+That's a materially simpler picture than ELF's `$ORIGIN`/`DT_RPATH`/
+`DT_RUNPATH`/`ld.so.conf` search-path problem, though a hand-crafted
+malicious binary could still use those tokens, so the parser must still
+handle and validate them defensively (refusing an unresolvable token exactly
+as the ELF side refuses `$LIB`/`$PLATFORM`), even though real MacPorts builds
+don't exercise that path.
+
+**The dyld shared cache is real and must be special-cased, not treated as a
+missing file.** `/usr/lib/libSystem.B.dylib` — linked by every single
+dependency in the graph, directly or transitively — does not exist as a file
+on disk at all (`stat` returns ENOENT), nor do system frameworks pulled in
+transitively (`libgnutls` → `Security.framework`, `CoreFoundation.framework`;
+`libp11-kit` → `CoreServices.framework`, also transitively): confirmed by
+direct `stat`/`ls` against
+`/System/Library/Frameworks/Security.framework/Versions/A/Security` (ENOENT)
+while `otool -L` reports it as a normal linked dependency. A closure walker
+that `check_file`s every `LC_LOAD_DYLIB` target will spuriously fail on the C
+runtime library itself — not a rare edge case.
+
+The resolution: `_dyld_shared_cache_contains_path(const char *path)` answers
+this correctly and was verified directly against this install — `yes` for
+`/usr/lib/libSystem.B.dylib` and all three system frameworks above, `no` for
+every `/opt/local/lib/*.dylib` (real on-disk files) and a nonexistent path.
+It is not declared in any public SDK header (`<mach-o/dyld_priv.h>` isn't
+shipped), but the symbol itself is exported by `libSystem`/`libdyld` and is
+callable with nothing more than an `extern` declaration — no subprocess, no
+private header, no new library dependency, consistent with this project's
+existing no-shell-out-inside-the-root-TCB stance. The shared cache itself
+lives under a SIP-protected path
+(`/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/`, confirmed
+`root:admin` and outside the ordinary root-write threat model this
+project's ownership checks defend against) — a stronger trust anchor than an
+ordinary root-owned directory, so a path the API confirms as cache-resident
+needs no further directory walk at all; only a resolved on-disk path (the
+`/opt/local/lib/...` case) goes through `vu_path_trusted`, exactly as ELF's
+libraries do today.
+
+**Recursion is required, not optional**: `libgnutls.30.dylib` alone pulls in
+`libidn2`, `libunistring`, `libtasn1`, `libnettle`, each a separate
+`/opt/local/lib` file needing its own closure check, several of which have
+their own further dependencies. A Mach-O closure walker must parse each
+resolved non-cache dylib in turn, the same transitive-closure requirement
+ELF's directory-search approach already satisfies implicitly.
+
+**Resolved.** The parser (`helper/src/macho.c`, `vu_macho.h`), its recursive
+wiring into `closure.c`'s `check_libraries()` (`check_dylib_closure`), and its
+test corpus (`test_macho_reader`, plus a Mach-O `test_closure_walk` branch
+proving two-level recursion catches a writable dependency) are written and
+pass — native, forced-ELF, forced-Mach-O, and ubsan. Run end-to-end against
+this same real MacPorts install via `vpn-up-admin verify-closure`: the walk
+covers all 35 objects in the transitive closure correctly (dyld-shared-cache
+entries — `libSystem`, `Security.framework`, `CoreFoundation.framework`,
+`CoreServices.framework`, `libc++` — all correctly recognized without a
+filesystem check; every on-disk `/opt/local/lib` dependency individually
+verified and recursed into), and correctly flagged one genuine, pre-existing
+problem on that machine — `libz.1.3.1.dylib` is user-owned, not root — which
+is the check doing its job, not a defect in it. Three real bugs were caught
+by that run and fixed, not merely reasoned about: the Mach-O magic-detection
+byte order was backwards (every real little-endian binary failed to parse at
+all until fixed), an off-by-one in the `@executable_path` token match (16
+chars, not 17), and a hardcoded 8 MB whole-file read cap that `libicudata`
+(30+ MB, a real transitive dependency via `libicuuc`) exceeded — fixed by
+reading a bounded prefix of the file rather than the whole thing, since
+Mach-O load commands always live in a small region near the start regardless
+of the file's total size. §11.6's matrix row is updated accordingly.
 
 ### 17.2 Build and distribution for the compiled binaries — **ANSWERED, installer step**
 

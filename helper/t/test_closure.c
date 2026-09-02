@@ -23,6 +23,7 @@
 #include "harness.h"
 #include "vu_closure.h"
 #include "vu_elf.h"
+#include "vu_macho.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -434,6 +435,334 @@ static void test_elf_reader(void)
 }
 
 /* ------------------------------------------------------------------------- */
+/* A synthetic Mach-O image (design doc §17.1, §16 step 13).                 */
+/* ------------------------------------------------------------------------- */
+
+/* Mach-O load command constants, spelled out here too rather than shared with
+ * macho.c: this corpus is meant to catch the parser disagreeing with the
+ * actual ABI, so it must encode that ABI independently, the same reasoning
+ * test_elf_reader already applies to the ELF constants above. */
+#define T_MH_MAGIC     0xfeedfaceu
+#define T_MH_CIGAM     0xcefaedfeu
+#define T_MH_MAGIC_64  0xfeedfacfu
+#define T_MH_CIGAM_64  0xcffaedfeu
+#define T_LC_REQ_DYLD          0x80000000u
+#define T_LC_LOAD_DYLIB        0x0cu
+#define T_LC_LOAD_WEAK_DYLIB  (0x18u | T_LC_REQ_DYLD)
+#define T_LC_RPATH            (0x1cu | T_LC_REQ_DYLD)
+#define T_CPU_TYPE_X86_64  0x01000007u
+#define T_CPU_TYPE_ARM64   0x0100000cu
+#if defined(__x86_64__) || defined(__amd64__)
+#  define T_HOST_CPU_TYPE T_CPU_TYPE_X86_64
+#  define T_OTHER_CPU_TYPE T_CPU_TYPE_ARM64
+#elif defined(__aarch64__) || defined(__arm64__)
+#  define T_HOST_CPU_TYPE T_CPU_TYPE_ARM64
+#  define T_OTHER_CPU_TYPE T_CPU_TYPE_X86_64
+#endif
+
+typedef struct {
+    unsigned char b[0x400];
+    size_t n;
+    bool   is64, le;
+} macho_build;
+
+static void mput32(macho_build *m, size_t off, uint32_t v)
+{
+    for (size_t i = 0; i < 4; ++i) {
+        unsigned char byte = (unsigned char)((v >> (8 * i)) & 0xff);
+        m->b[off + (m->le ? i : 3 - i)] = byte;
+    }
+}
+
+/* Always big-endian, matching how a real fat_header/fat_arch is written to
+ * disk regardless of host or slice byte order — see macho.c's be32_at. */
+static void bput32(unsigned char *b, size_t off, uint32_t v)
+{
+    b[off] = (unsigned char)(v >> 24); b[off + 1] = (unsigned char)(v >> 16);
+    b[off + 2] = (unsigned char)(v >> 8); b[off + 3] = (unsigned char)v;
+}
+
+static void macho_header(macho_build *m, bool is64, bool le, uint32_t cputype,
+                         uint32_t ncmds, uint32_t sizeofcmds)
+{
+    memset(m, 0, sizeof *m);
+    m->is64 = is64; m->le = le; m->n = sizeof m->b;
+    /* Always the CANONICAL magic value (never MH_CIGAM/MH_CIGAM_64) — a real
+     * Mach-O file's magic is always MH_MAGIC(_64), encoded in the file's OWN
+     * byte order by mput32 below; MH_CIGAM(_64) is not a second thing a file
+     * ever legitimately contains, it is what a BIG-endian-only reader sees
+     * when it reads a LITTLE-endian file's bytes without byte-swapping (or
+     * vice versa) — a fact about the READER's interpretation, not the file.
+     * Verified directly against a real binary (`xxd`) before writing this;
+     * an earlier version of this function encoded MH_CIGAM(_64) for the
+     * le=false case, producing a fixture no real Mach-O file would ever be —
+     * caught by the big-endian half of the reader corpus below the moment it
+     * ran, not by inspection. */
+    uint32_t magic = is64 ? T_MH_MAGIC_64 : T_MH_MAGIC;
+    mput32(m, 0, magic);
+    mput32(m, 4, cputype);
+    mput32(m, 12, 2);           /* filetype = MH_EXECUTE */
+    mput32(m, 16, ncmds);
+    mput32(m, 20, sizeofcmds);
+}
+
+/* Append one dylib/rpath-shaped load command (cmd, cmdsize, then a lc_str
+ * offset field, then whatever `str_off` says comes next) with an embedded,
+ * NUL-terminated string at that offset — real Mach-O uses str_off=24 for a
+ * dylib_command (after timestamp/current_version/compatibility_version) and
+ * 12 for an rpath_command (nothing else in it), and the parser is meant to
+ * trust the on-disk value either way, not assume either number. */
+static size_t append_str_lc(macho_build *m, size_t off, uint32_t cmd,
+                            uint32_t str_off, const char *str)
+{
+    size_t slen = strlen(str) + 1;
+    size_t end = (size_t)str_off + slen;
+    size_t cmdsize = (end + 3) & ~(size_t)3;
+    CHECK(off + cmdsize <= sizeof m->b, "fixture macho image full");
+    if (off + cmdsize > sizeof m->b) return off;
+    memset(m->b + off, 0, cmdsize);
+    mput32(m, off, cmd);
+    mput32(m, off + 4, (uint32_t)cmdsize);
+    mput32(m, off + 8, str_off);
+    memcpy(m->b + off + str_off, str, slen);
+    return off + cmdsize;
+}
+
+static void write_macho(const char *path, const macho_build *m, mode_t mode)
+{
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0600);
+    CHECK(fd >= 0, "cannot create %s: %s", path, strerror(errno));
+    if (fd < 0) return;
+    CHECK(write(fd, m->b, m->n) == (ssize_t)m->n, "write macho: %s", strerror(errno));
+    CHECK(fchmod(fd, mode) == 0, "fchmod %s: %s", path, strerror(errno));
+    close(fd);
+}
+
+static void test_macho_reader(void)
+{
+    make_base("macho");
+    char path[VU_PATH_MAX];
+    vu_path(path, sizeof path, "%s/openconnect", g_base);
+    vu_err e;
+
+    /* Both classes and both byte orders, two dylib dependencies (realistic
+     * str_off=24 layout) and one LC_RPATH (str_off=12). */
+    for (int class64 = 0; class64 <= 1; ++class64) {
+        for (int little = 0; little <= 1; ++little) {
+            macho_build m;
+            macho_header(&m, class64 == 1, little == 1, T_HOST_CPU_TYPE, 0, 0);
+            size_t hdr = class64 ? 32u : 28u;
+            size_t off = hdr;
+            off = append_str_lc(&m, off, T_LC_LOAD_DYLIB, 24, "/opt/local/lib/libssl.dylib");
+            off = append_str_lc(&m, off, T_LC_LOAD_WEAK_DYLIB, 24, "/opt/local/lib/libxml2.dylib");
+            off = append_str_lc(&m, off, T_LC_RPATH, 12, "/opt/local/lib");
+            mput32(&m, 16, 3);                         /* ncmds */
+            mput32(&m, 20, (uint32_t)(off - hdr));      /* sizeofcmds */
+            write_macho(path, &m, 0755);
+
+            vu_macho_info info;
+            vu_err_clear(&e);
+            CHECK(vu_macho_dylibs(path, path, &info, &e),
+                  "Mach-O%d %s-endian must parse: %s", class64 ? 64 : 32,
+                  little ? "little" : "big", e.msg);
+            CHECK(info.is_macho, "must be recognised as Mach-O");
+            CHECK(info.is_64 == (class64 == 1), "class misdetected");
+            CHECK(info.is_le == (little == 1), "byte order misdetected");
+            CHECK(info.n_dylib == 2, "expected 2 dylibs, got %zu", info.n_dylib);
+            if (info.n_dylib == 2) {
+                CHECK(strcmp(info.dylib[0], "/opt/local/lib/libssl.dylib") == 0, "got %s", info.dylib[0]);
+                CHECK(strcmp(info.dylib[1], "/opt/local/lib/libxml2.dylib") == 0, "got %s", info.dylib[1]);
+            }
+            CHECK(info.n_rpath == 1, "expected 1 rpath entry, got %zu", info.n_rpath);
+            if (info.n_rpath == 1)
+                CHECK(strcmp(info.rpath[0], "/opt/local/lib") == 0, "got %s", info.rpath[0]);
+        }
+    }
+
+    /* @loader_path expands to the directory holding the FILE BEING PARSED. */
+    {
+        macho_build m;
+        macho_header(&m, true, true, T_HOST_CPU_TYPE, 0, 0);
+        size_t off = append_str_lc(&m, 32, T_LC_LOAD_DYLIB, 24, "@loader_path/../lib/x.dylib");
+        mput32(&m, 16, 1); mput32(&m, 20, (uint32_t)(off - 32));
+        write_macho(path, &m, 0755);
+        vu_macho_info info;
+        vu_err_clear(&e);
+        CHECK(vu_macho_dylibs(path, path, &info, &e), "@loader_path must parse: %s", e.msg);
+        CHECK(info.n_dylib == 1, "one dependency expected, got %zu", info.n_dylib);
+        if (info.n_dylib == 1) {
+            char want[VU_PATH_MAX];
+            vu_path(want, sizeof want, "%s/../lib/x.dylib", g_base);
+            CHECK(strcmp(info.dylib[0], want) == 0,
+                  "@loader_path must expand to the FILE's own directory: got %s, want %s",
+                  info.dylib[0], want);
+        }
+    }
+
+    /* @executable_path expands to the TOP-LEVEL binary's directory, which is
+     * a DIFFERENT path from the file being parsed when this is a dependency
+     * several levels deep — the whole reason vu_macho_dylibs takes both
+     * paths separately rather than one. */
+    {
+        char deep[VU_PATH_MAX], nested[VU_PATH_MAX];
+        vu_path(deep, sizeof deep, "%s/deep", g_base);
+        make_dir(deep, 0755);
+        vu_path(nested, sizeof nested, "%s/nested", deep);
+        make_dir(nested, 0755);
+        vu_path(nested, sizeof nested, "%s/deep/nested/libfoo.dylib", g_base);
+        macho_build m;
+        macho_header(&m, true, true, T_HOST_CPU_TYPE, 0, 0);
+        size_t off = append_str_lc(&m, 32, T_LC_LOAD_DYLIB, 24, "@executable_path/../lib/y.dylib");
+        mput32(&m, 16, 1); mput32(&m, 20, (uint32_t)(off - 32));
+        write_macho(nested, &m, 0755);
+        vu_macho_info info;
+        vu_err_clear(&e);
+        CHECK(vu_macho_dylibs(nested, path, &info, &e), "@executable_path must parse: %s", e.msg);
+        CHECK(info.n_dylib == 1, "one dependency expected, got %zu", info.n_dylib);
+        if (info.n_dylib == 1) {
+            char want[VU_PATH_MAX];
+            vu_path(want, sizeof want, "%s/../lib/y.dylib", g_base);   /* exe_path's dir, not nested's */
+            CHECK(strcmp(info.dylib[0], want) == 0,
+                  "@executable_path must expand to the TOP-LEVEL exe's directory: got %s, want %s",
+                  info.dylib[0], want);
+        }
+    }
+
+    /* An unresolved @rpath/... entry is left as-is: resolving it needs the
+     * CALLER's own LC_RPATH search, not this parser (vu_macho.h point 2). */
+    {
+        macho_build m;
+        macho_header(&m, true, true, T_HOST_CPU_TYPE, 0, 0);
+        size_t off = append_str_lc(&m, 32, T_LC_LOAD_DYLIB, 24, "@rpath/libfoo.dylib");
+        mput32(&m, 16, 1); mput32(&m, 20, (uint32_t)(off - 32));
+        write_macho(path, &m, 0755);
+        vu_macho_info info;
+        vu_err_clear(&e);
+        CHECK(vu_macho_dylibs(path, path, &info, &e), "@rpath entry must parse: %s", e.msg);
+        CHECK(info.n_dylib == 1 && strcmp(info.dylib[0], "@rpath/libfoo.dylib") == 0,
+              "an unresolved @rpath entry must be passed through unchanged, got %s",
+              info.n_dylib ? info.dylib[0] : "(none)");
+    }
+
+    /* A fat/universal binary: the slice matching the HOST architecture must
+     * be selected, never the other one (a hostile foreign-arch slice must
+     * never influence the verdict on a machine that can never run it). */
+    {
+        unsigned char fat[0x800]; memset(fat, 0, sizeof fat);
+        bput32(fat, 0, 0xcafebabeu);
+        bput32(fat, 4, 2);                              /* nfat_arch */
+        size_t slice_a = 0x100, slice_b = 0x300;
+
+        bput32(fat, 8,  T_OTHER_CPU_TYPE);
+        bput32(fat, 16, (uint32_t)slice_a);
+        macho_build ma;
+        macho_header(&ma, true, true, T_OTHER_CPU_TYPE, 0, 0);
+        size_t offa = append_str_lc(&ma, 32, T_LC_LOAD_DYLIB, 24, "/opt/local/lib/decoy.dylib");
+        mput32(&ma, 16, 1); mput32(&ma, 20, (uint32_t)(offa - 32));
+        bput32(fat, 20, (uint32_t)offa);                /* size */
+        memcpy(fat + slice_a, ma.b, offa);
+
+        bput32(fat, 8 + 20,  T_HOST_CPU_TYPE);
+        bput32(fat, 16 + 20, (uint32_t)slice_b);
+        macho_build mb;
+        macho_header(&mb, true, true, T_HOST_CPU_TYPE, 0, 0);
+        size_t offb = append_str_lc(&mb, 32, T_LC_LOAD_DYLIB, 24, "/opt/local/lib/real.dylib");
+        mput32(&mb, 16, 1); mput32(&mb, 20, (uint32_t)(offb - 32));
+        bput32(fat, 20 + 20, (uint32_t)offb);           /* size */
+        memcpy(fat + slice_b, mb.b, offb);
+
+        int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0755);
+        CHECK(fd >= 0, "cannot create fat fixture: %s", strerror(errno));
+        if (fd >= 0) {
+            CHECK(write(fd, fat, sizeof fat) == (ssize_t)sizeof fat, "write fat: %s", strerror(errno));
+            close(fd);
+        }
+
+        vu_macho_info info;
+        vu_err_clear(&e);
+        CHECK(vu_macho_dylibs(path, path, &info, &e), "fat binary must parse: %s", e.msg);
+        CHECK(info.is_fat, "must be reported as fat");
+        CHECK(info.n_dylib == 1 && strcmp(info.dylib[0], "/opt/local/lib/real.dylib") == 0,
+              "must select the HOST slice, not the other one: got %s",
+              info.n_dylib ? info.dylib[0] : "(none)");
+    }
+
+    /* A fat binary with no slice for this host: refused, not guessed at. */
+    {
+        unsigned char fat[64]; memset(fat, 0, sizeof fat);
+        bput32(fat, 0, 0xcafebabeu);
+        bput32(fat, 4, 1);
+        bput32(fat, 8, T_OTHER_CPU_TYPE);
+        bput32(fat, 16, 32); bput32(fat, 20, 8);
+        int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, 0755);
+        CHECK(fd >= 0, "cannot create fixture: %s", strerror(errno));
+        if (fd >= 0) { CHECK(write(fd, fat, sizeof fat) == (ssize_t)sizeof fat, "write: %s", strerror(errno)); close(fd); }
+        vu_macho_info info;
+        vu_err_clear(&e);
+        CHECK(!vu_macho_dylibs(path, path, &info, &e), "no matching slice must be refused");
+    }
+
+    /* A dylib/rpath string offset pointing outside its own load command. */
+    {
+        macho_build m;
+        macho_header(&m, true, true, T_HOST_CPU_TYPE, 1, 16);
+        mput32(&m, 32, T_LC_LOAD_DYLIB);
+        mput32(&m, 36, 16);                /* cmdsize: too small for str_off below */
+        mput32(&m, 40, 9999);              /* str_off, far outside this command    */
+        write_macho(path, &m, 0755);
+        vu_macho_info info;
+        vu_err_clear(&e);
+        CHECK(!vu_macho_dylibs(path, path, &info, &e), "an out-of-range lc_str offset must be refused");
+    }
+
+    /* Not Mach-O at all: NOT an error, same as elf.c's shell-script case. */
+    {
+        write_file(path, "#!/bin/sh\necho hello\n", 0755);
+        vu_macho_info info;
+        vu_err_clear(&e);
+        CHECK(vu_macho_dylibs(path, path, &info, &e), "a non-Mach-O file is a verdict, not an error: %s", e.msg);
+        CHECK(!info.is_macho, "a shell script must not be reported as Mach-O");
+        CHECK(info.n_dylib == 0 && info.n_rpath == 0, "nothing to report for a script");
+    }
+
+    /* A stub too short to hold a full mach_header, even one starting with the
+     * right magic bytes: NOT an error, same reasoning and same threshold
+     * shape as elf.c's "13 bytes cannot be a binary" case. */
+    {
+        macho_build m; memset(&m, 0, sizeof m);
+        m.n = 10; m.le = true; m.is64 = true;
+        mput32(&m, 0, T_MH_MAGIC_64);
+        write_macho(path, &m, 0755);
+        vu_macho_info info;
+        vu_err_clear(&e);
+        CHECK(vu_macho_dylibs(path, path, &info, &e),
+              "a too-short stub is a verdict, not an error: %s", e.msg);
+        CHECK(!info.is_macho, "a stub under the header size must not be reported as Mach-O");
+    }
+
+    /* A full-size header claiming MORE load-command bytes than the file
+     * actually holds: this one genuinely must be refused. */
+    {
+        macho_build m;
+        macho_header(&m, true, true, T_HOST_CPU_TYPE, 1, 1u << 20);
+        write_macho(path, &m, 0755);
+        vu_macho_info info;
+        vu_err_clear(&e);
+        CHECK(!vu_macho_dylibs(path, path, &info, &e),
+              "load commands claiming more bytes than the file holds must be refused");
+    }
+
+    /* A directory is not a file. */
+    {
+        vu_err_clear(&e);
+        vu_macho_info info;
+        CHECK(!vu_macho_dylibs(g_base, g_base, &info, &e), "a directory must be refused");
+    }
+
+    drop_base();
+}
+
+/* ------------------------------------------------------------------------- */
 /* The closure walk.                                                         */
 /* ------------------------------------------------------------------------- */
 
@@ -456,8 +785,20 @@ static void build_fixture(fixture *f)
     make_dir(f->sbin, 0755);
 
     vu_path(f->openconnect, sizeof f->openconnect, "%s/openconnect", f->sbin);
-    /* A minimal valid ELF with no libraries: enough for the walk to accept the
-     * library row when the ELF path is compiled in. */
+    /* A minimal valid binary with no dependencies: enough for the walk to
+     * accept the library row when a library-closure implementation is
+     * compiled in. Built in whichever format that implementation actually
+     * parses — an ELF fixture would make check_libraries's Mach-O branch
+     * refuse it as "not a Mach-O binary", which is a true statement about
+     * the fixture but not what this shared fixture is meant to establish
+     * (baseline_failures below depends on this format actually matching). */
+#if VU_LIBRARY_CLOSURE_MACHO && !VU_LIBRARY_CLOSURE_ELF
+    {
+        macho_build m;
+        macho_header(&m, true, true, T_HOST_CPU_TYPE, 0, 0);
+        write_macho(f->openconnect, &m, 0755);
+    }
+#else
     {
         strtab st; memset(&st, 0, sizeof st);
         (void)str_add(&st, "");
@@ -466,6 +807,7 @@ static void build_fixture(fixture *f)
         build_elf(&m, true, true, dyn, 2, &st);
         write_elf(f->openconnect, &m, 0755);
     }
+#endif
 
     vu_path(f->script, sizeof f->script, "%s/vpnc-script", f->root);
     write_file(f->script, "#!/bin/sh\n# fixture\n", 0755);
@@ -526,17 +868,18 @@ static bool failed_on(const vu_closure_report *r, const char *needle)
 /*
  * How many failures a correct baseline has.
  *
- * Zero where the library closure is compiled in. One where it is not, because
- * §11.7 requires the check to fail CLOSED rather than skip the row — so on a
- * default macOS build the baseline legitimately reports exactly one failure, and
- * a test that demanded zero would be demanding the wrong behaviour.
- *
- * `make test-elf-closure` builds this corpus with the ELF path forced on, so
- * both configurations are exercised on both platforms.
+ * Zero where a library closure implementation is compiled in and matches the
+ * fixture's own binary format (build_fixture picks the format to match, so
+ * this holds for both `make test-elf-closure` and `make test-macho-closure`,
+ * and for a plain `make test` on either platform). One when NEITHER is
+ * compiled in, because §11.7 requires the check to fail CLOSED rather than
+ * skip the row — that residual platform legitimately reports exactly one
+ * failure, and a test that demanded zero would be demanding the wrong
+ * behaviour.
  */
 static size_t baseline_failures(void)
 {
-    return VU_LIBRARY_CLOSURE_ELF ? 0u : 1u;
+    return (VU_LIBRARY_CLOSURE_ELF || VU_LIBRARY_CLOSURE_MACHO) ? 0u : 1u;
 }
 
 static void check_only_library_row_failed(const vu_closure_report *r)
@@ -933,11 +1276,86 @@ static void test_loader_config(void)
     }
 
     drop_base();
+#elif VU_LIBRARY_CLOSURE_MACHO
+    /*
+     * The macOS default (design doc §17.1, §16 step 13). Mirrors the ELF
+     * branch above: a trusted dependency (and its own further dependency,
+     * proving the walk actually recurses rather than only checking the
+     * top-level binary) passes; an untrusted one, however deep, is refused;
+     * a non-Mach-O openconnect is refused.
+     */
+    make_base("macho-walk");
+    fixture f;
+    build_fixture(&f);
+    vu_closure_spec s;
+    vu_closure_report rep;
+    vu_err e;
+
+    char libdir[VU_PATH_MAX], lib1[VU_PATH_MAX], lib2[VU_PATH_MAX];
+    vu_path(libdir, sizeof libdir, "%s/lib", f.root);
+    make_dir(libdir, 0755);
+    vu_path(lib1, sizeof lib1, "%s/lib1.dylib", libdir);
+    vu_path(lib2, sizeof lib2, "%s/lib2.dylib", libdir);
+
+    /* lib2 has no further dependencies; lib1 depends on lib2 — proving
+     * recursion, not just a top-level check. */
+    {
+        macho_build m2;
+        macho_header(&m2, true, true, T_HOST_CPU_TYPE, 0, 0);
+        write_macho(lib2, &m2, 0755);
+
+        macho_build m1;
+        macho_header(&m1, true, true, T_HOST_CPU_TYPE, 0, 0);
+        size_t off = append_str_lc(&m1, 32, T_LC_LOAD_DYLIB, 24, lib2);
+        mput32(&m1, 16, 1); mput32(&m1, 20, (uint32_t)(off - 32));
+        write_macho(lib1, &m1, 0755);
+    }
+
+    /* The top-level openconnect fixture depends on lib1. */
+    {
+        macho_build m;
+        macho_header(&m, true, true, T_HOST_CPU_TYPE, 0, 0);
+        size_t off = append_str_lc(&m, 32, T_LC_LOAD_DYLIB, 24, lib1);
+        mput32(&m, 16, 1); mput32(&m, 20, (uint32_t)(off - 32));
+        write_macho(f.openconnect, &m, 0755);
+    }
+
+    spec_for(&s, &f);
+    vu_err_clear(&e);
+    bool ok = vu_closure_check(&s, &rep, &e);
+    CHECK(ok, "a trusted, two-level dependency chain must pass: %s", e.msg);
+    if (!ok) vu_closure_print(&rep, stderr);
+    {
+        bool saw_lib2 = false;
+        for (size_t i = 0; i < rep.n; ++i)
+            if (strstr(rep.items[i].path, "lib2.dylib")) saw_lib2 = true;
+        CHECK(saw_lib2, "the walk must recurse into lib1's own dependency, not stop at lib1");
+    }
+
+    /* lib2 (two levels deep) is user-writable: the recursion must catch it,
+     * not just the top-level binary or its direct dependency. */
+    CHECK(chmod(lib2, 0666) == 0, "chmod: %s", strerror(errno));
+    spec_for(&s, &f);
+    vu_err_clear(&e);
+    CHECK(!vu_closure_check(&s, &rep, &e), "a writable second-level dependency must be refused");
+    CHECK(failed_on(&rep, "lib2.dylib"), "the refusal must name the actual writable file");
+    CHECK(chmod(lib2, 0644) == 0, "chmod back: %s", strerror(errno));
+
+    /* A non-Mach-O openconnect is refused when the Mach-O closure is in force. */
+    {
+        write_file(f.openconnect, "#!/bin/sh\necho not openconnect\n", 0755);
+        spec_for(&s, &f);
+        vu_err_clear(&e);
+        CHECK(!vu_closure_check(&s, &rep, &e), "a non-Mach-O openconnect must be refused");
+    }
+
+    drop_base();
 #else
     /*
-     * The macOS default. §11.7 requires helper mode to be UNAVAILABLE rather
-     * than weakened until the dyld closure exists (step 13), and this asserts
-     * that the code actually does that instead of the document merely saying so.
+     * Neither library-closure implementation is compiled in. §11.7 requires
+     * helper mode to be UNAVAILABLE rather than weakened until one exists,
+     * and this asserts that the code actually does that instead of the
+     * document merely saying so.
      */
     make_base("closed");
     fixture f;
@@ -1080,6 +1498,7 @@ static void test_acl_detection(void)
 void vu_test_closure(void)
 {
     test_elf_reader();
+    test_macho_reader();
     test_closure_walk();
     test_loader_config();
     test_acl_detection();

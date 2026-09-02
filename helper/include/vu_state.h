@@ -161,8 +161,8 @@ bool vu_writable_by(const char *path, uid_t as_uid, bool *writable, vu_err *e);
  * SCOPE, and this matters: this is the file-level part of the trusted execution
  * closure (§11.4), which is all step 7 implements. It does NOT yet cover the
  * dynamic library closure, the sourced hooks under /etc/vpnc, or the PATH entries
- * vpnc-script resolves through. Those are step 10 on Linux and step 13 on
- * macOS, and until they exist the helper is not a finished boundary. Never call
+ * vpnc-script resolves through. Those are step 10 on Linux and step 14 on
+ * macOS (both now implemented — closure.c). Never call
  * this on a caller-supplied path: its safety comes from the path set being
  * fixed and small.
  */

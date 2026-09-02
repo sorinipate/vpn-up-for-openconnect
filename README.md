@@ -370,7 +370,7 @@ Requirements and limits, honestly:
 |---|---|
 | Needs | a C toolchain — Xcode command line tools on macOS, `cc` on Linux (the helper is compiled from this checkout, as you, and installed as root) |
 | Linux | works with a distro-packaged `openconnect` |
-| macOS | **currently refused.** Verifying the dynamic-library closure needs Mach-O/dyld support that is not written yet, so helper mode fails closed rather than claiming a boundary nobody has checked |
+| macOS | works with a MacPorts `openconnect` (root-owned `/opt/local`); verified directly against a real install, dylib closure included — see design section 17.1 |
 | Homebrew | refused on every platform — the prefix is owned by the installing user (see the caveat below) |
 | Assumes | that no process running as your user tampers with the build while you install; read ["What installation itself assumes"](SECURITY.md#what-installation-itself-assumes) before using `--passwordless` |
 

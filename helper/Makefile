@@ -43,7 +43,7 @@ CFLAGS  += $(CSTD) $(FEATURE) $(WARN) $(HARDEN) $(OPT) -Iinclude -It
 # executables. One copy of the validation logic, so the helper and the admin tool
 # cannot drift apart in what they consider acceptable.
 SRC       = src/validate.c src/authparse.c src/policy.c src/request.c \
-            src/state.c src/proc.c src/registry.c src/elf.c src/closure.c \
+            src/state.c src/proc.c src/registry.c src/elf.c src/macho.c src/closure.c \
             src/exec.c
 TEST_SRC  = t/main.c t/harness.c t/test_policy.c t/test_state.c t/test_registry.c \
             t/test_exec.c t/test_adversarial.c t/test_closure.c \
@@ -72,7 +72,7 @@ FAKE_BIN   = build/fake-openconnect
 # not derived from each other, so keeping them in sync is the packager's job,
 # the same as it already is for CFLAGS overrides of the other compiled-in pins.
 ifeq ($(UNAME_S),Darwin)
-  VU_VPNC_SCRIPT_REAL ?= /opt/local/etc/vpnc/vpnc-script
+  VU_VPNC_SCRIPT_REAL ?= /opt/local/etc/vpnc-scripts/vpnc-script
   VU_STATE_ROOT       ?= /var/run/vpn-up
 else
   VU_VPNC_SCRIPT_REAL ?= /etc/vpnc/vpnc-script
@@ -82,7 +82,7 @@ WRAPPER_BIN = build/vpn-up-vpnc-wrapper
 
 SAN_FLAGS = $(CSTD) $(FEATURE) $(WARN) -g -O1 -fno-omit-frame-pointer -Iinclude -It
 
-.PHONY: all test clean ubsan asan sanitize test-elf-closure gcc-check wur-check
+.PHONY: all test clean ubsan asan sanitize test-elf-closure test-macho-closure gcc-check wur-check
 
 all: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN) $(FAKE_BIN) $(WRAPPER_BIN)
 
@@ -106,7 +106,7 @@ $(ADMIN_BIN): $(SRC) src/admin_main.c include/vu.h include/vu_state.h include/vu
 $(HELPER_BIN): $(SRC) src/helper_main.c include/vu.h include/vu_state.h include/vu_registry.h include/vu_exec.h | build
 	$(CC) $(CFLAGS) -o $@ $(SRC) src/helper_main.c
 
-test: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN) $(FAKE_BIN) $(WRAPPER_BIN) test-elf-closure gcc-check wur-check
+test: $(TEST_BIN) $(ADMIN_BIN) $(HELPER_BIN) $(FAKE_BIN) $(WRAPPER_BIN) test-elf-closure test-macho-closure gcc-check wur-check
 	./$(TEST_BIN)
 	# The admin tool must refuse to run without privilege, and must not need
 	# privilege merely to report its own version.
@@ -214,7 +214,7 @@ gcc-check: | build
 	@if [ -z "$(GCC_REAL)" ]; then 		echo "gcc-check: SKIPPED - no real gcc found (macOS 'gcc' is Apple clang)."; 		echo "gcc-check: install one with 'brew install gcc'; see t/README for what"; 		echo "gcc-check: it catches and what it does not."; 	else 		echo "gcc-check: $$($(GCC_REAL) --version | head -1)"; 		$(GCC_REAL) $(CFLAGS) -o build/vu-test-gcc $(SRC) $(TEST_SRC) && 		./build/vu-test-gcc; 	fi
 
 # The ELF/ld.so library closure is compiled in on Linux only, because macOS needs
-# dyld and Mach-O instead (design step 13) and until then §11.7 requires helper
+# dyld and Mach-O instead (design step 14) and until then §11.7 requires helper
 # mode to fail CLOSED there. That leaves a gap this target fills: on macOS the
 # Linux-only branch would otherwise never be compiled or run before CI, which is
 # where three of the four CI failures in steps 5-7 came from.
@@ -226,6 +226,21 @@ gcc-check: | build
 test-elf-closure: $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h include/vu_closure.h $(FAKE_BIN) | build
 	$(CC) $(CFLAGS) -DVU_LIBRARY_CLOSURE_ELF=1 -o build/vu-test-elf $(SRC) $(TEST_SRC)
 	./build/vu-test-elf
+
+# Same reasoning, the other direction (design doc §17.1, §16 step 14): forces
+# the Mach-O/dyld path on wherever it is not already native, so it is
+# compiled and exercised on both platforms, not just discovered broken on
+# whichever one CI happens to be running. Safe for the same reason: on Linux,
+# _dyld_shared_cache_contains_path is a local stub that always returns false
+# (see closure.c) — no real symbol to link against there, and every path in
+# this corpus is a synthetic fixture, never shared-cache-resident, so the
+# stub's answer is correct rather than merely convenient. On a real macOS
+# install, forcing this on changes nothing: it is already the compiled-in
+# default there.
+.PHONY: test-macho-closure
+test-macho-closure: $(SRC) $(TEST_SRC) include/vu.h include/vu_state.h include/vu_closure.h $(FAKE_BIN) | build
+	$(CC) $(CFLAGS) -DVU_LIBRARY_CLOSURE_MACHO=1 -o build/vu-test-macho $(SRC) $(TEST_SRC)
+	./build/vu-test-macho
 
 # The corpus is mostly malformed input, which is exactly where a buffer or
 # overflow bug would hide, so the sanitizer runs matter more here than usual.

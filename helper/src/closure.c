@@ -2,6 +2,7 @@
 
 #include "vu_closure.h"
 #include "vu_elf.h"
+#include "vu_macho.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -224,7 +225,7 @@ static void check_path_entries(vu_closure_report *r, const char *path_env, uid_t
     }
 }
 
-/* ------------------------------------------------- library closure (Linux) */
+/* ------------------------------------------------------ library closure --- */
 
 /*
  * Read a newline-separated list of paths from a root-owned config file, ignoring
@@ -276,6 +277,123 @@ static void check_ldso_list(vu_closure_report *r, const char *file, uid_t owner,
     fclose(f);
 }
 #endif /* VU_LIBRARY_CLOSURE_ELF */
+
+/*
+ * Guarded by both macros, not VU_LIBRARY_CLOSURE_MACHO alone: check_libraries
+ * below picks ELF over Mach-O whenever both are compiled in (its #if/#elif
+ * chain tries ELF first), which is exactly what `make test-elf-closure`
+ * forcing VU_LIBRARY_CLOSURE_ELF=1 on a real Darwin build does — leaving
+ * VU_LIBRARY_CLOSURE_MACHO at its __APPLE__ default of 1 too. Without this
+ * second condition, check_dylib_closure would be compiled but unreachable in
+ * that configuration, which -Werror correctly refuses to build.
+ */
+#if VU_LIBRARY_CLOSURE_MACHO && !VU_LIBRARY_CLOSURE_ELF
+#if defined(__APPLE__)
+/*
+ * Not declared in any public SDK header (<mach-o/dyld_priv.h> is not shipped),
+ * but the symbol itself is exported by libSystem/libdyld and is callable with
+ * nothing more than this declaration — no subprocess, no private header
+ * dependency. Verified directly (design doc §17.1) against a real install:
+ * true for /usr/lib/libSystem.B.dylib and every /System/Library/Frameworks
+ * dependency checked, false for every real on-disk /opt/local/lib dylib.
+ */
+extern bool _dyld_shared_cache_contains_path(const char *path);
+#else
+/*
+ * VU_LIBRARY_CLOSURE_MACHO forced on for testing (make test-macho-closure) on
+ * a non-Darwin build: there is no real dyld shared cache to query, and no
+ * such symbol to link against. Every path in that test corpus is a synthetic
+ * fixture, never shared-cache-resident, so "always false" is not a weakened
+ * check — it is the correct answer, and the ordinary vu_path_trusted walk
+ * below (fully portable POSIX stat/ownership logic) is what actually
+ * exercises the fixtures.
+ */
+static bool _dyld_shared_cache_contains_path(const char *path)
+{
+    (void)path;
+    return false;
+}
+#endif
+
+#define VU_MACHO_VISITED_MAX 256
+
+/*
+ * Recursively verify one dylib and everything it in turn depends on.
+ *
+ * Unlike ELF's "verify every directory the loader will search", a Mach-O
+ * LC_LOAD_DYLIB path (once @executable_path/@loader_path are expanded, which
+ * vu_macho_dylibs already did) can name an absolute path ANYWHERE — it is not
+ * limited to a directory this walk has already verified — so each one has to
+ * be resolved and, if it is a real on-disk file rather than a shared-cache
+ * entry, opened and walked in turn. `visited` prevents re-walking a path
+ * already covered (libSystem-style fan-in makes that common, not rare) and
+ * bounds recursion against a pathological or hostile dependency cycle.
+ */
+static void check_dylib_closure(vu_closure_report *r, const char *path, const char *exe_path,
+                                uid_t owner, char visited[][VU_PATH_MAX], size_t *n_visited)
+{
+    for (size_t i = 0; i < *n_visited; ++i)
+        if (strcmp(visited[i], path) == 0) return;
+
+    if (*n_visited >= VU_MACHO_VISITED_MAX) {
+        record(r, "library closure", path, false, false,
+               "more distinct libraries in the dependency graph than this check can track");
+        return;
+    }
+    snprintf(visited[*n_visited], VU_PATH_MAX, "%s", path);
+    (*n_visited)++;
+
+    if (_dyld_shared_cache_contains_path(path)) {
+        /* The shared cache lives under a SIP-protected path, verified
+         * directly (§17.1) — a stronger trust anchor than an ordinary
+         * root-owned directory, so a cache-resident dependency needs no
+         * further file check or recursion: it is not a standalone file this
+         * walk could open in the first place. */
+        record(r, "linked library (dyld shared cache)", path, true, true, NULL);
+        return;
+    }
+
+    /* Not check_file() here: that returns void, and this needs the verdict
+     * itself (not the last report row, which could belong to something else
+     * entirely if the report has already truncated) to decide whether to
+     * recurse. A file that failed the trust check is not something this walk
+     * should open and parse further — that would recurse into a file we
+     * already know not to trust, for no benefit. */
+    vu_err fe; vu_err_clear(&fe);
+    bool file_ok = vu_path_trusted(path, owner, false, &fe);
+    record(r, "linked library", path, file_ok, true, fe.msg);
+    if (!file_ok) return;
+
+    vu_macho_info info;
+    vu_err e; vu_err_clear(&e);
+    if (!vu_macho_dylibs(path, exe_path, &info, &e)) {
+        record(r, "linked library (dependency parse failed)", path, false, false, e.msg);
+        return;
+    }
+    if (!info.is_macho) return;   /* not a Mach-O file: nothing further to walk */
+    if (info.truncated) {
+        record(r, "library closure", path, false, true,
+               "more dependencies or search paths than this check can enumerate");
+    }
+
+    for (size_t i = 0; i < info.n_rpath; ++i) {
+        if (!exists(info.rpath[i])) continue;
+        check_dir(r, "LC_RPATH library directory", info.rpath[i], owner);
+    }
+    for (size_t i = 0; i < info.n_dylib; ++i) {
+        if (info.dylib[i][0] == '/') {
+            check_dylib_closure(r, info.dylib[i], exe_path, owner, visited, n_visited);
+        } else {
+            /* An unresolved @rpath/... entry (see vu_macho.h): not a
+             * filesystem path this walk can open, covered instead by the
+             * LC_RPATH directory checks above — informational only, same as
+             * ELF's "linked library (resolved from the directories above)". */
+            record(r, "linked library (@rpath, resolved from the directories above)",
+                   info.dylib[i], true, false, NULL);
+        }
+    }
+}
+#endif /* VU_LIBRARY_CLOSURE_MACHO && !VU_LIBRARY_CLOSURE_ELF */
 
 static void check_libraries(vu_closure_report *r, const vu_closure_spec *s)
 {
@@ -360,16 +478,56 @@ static void check_libraries(vu_closure_report *r, const vu_closure_spec *s)
     for (size_t i = 0; i < info.n_needed; ++i)
         record(r, "linked library (resolved from the directories above)",
                info.needed[i], true, false, NULL);
+#elif VU_LIBRARY_CLOSURE_MACHO
+    /*
+     * Unlike ELF, a Mach-O LC_LOAD_DYLIB path can name an absolute path
+     * anywhere, not just within an already-verified search directory (§17.1
+     * found zero @rpath/@loader_path/@executable_path usage in a real
+     * openconnect's dependency graph, but the parser still handles them
+     * defensively). So this walks the actual dependency graph, recursively,
+     * rather than only the search directories — see check_dylib_closure.
+     */
+    vu_macho_info info;
+    vu_err e; vu_err_clear(&e);
+    if (!vu_macho_dylibs(s->openconnect, s->openconnect, &info, &e)) {
+        record(r, "library closure", s->openconnect, false, false, e.msg);
+        return;
+    }
+    if (!info.is_macho) {
+        record(r, "library closure", s->openconnect, false, true,
+               "the pinned openconnect is not a Mach-O binary");
+        return;
+    }
+    if (info.truncated) {
+        record(r, "library closure", s->openconnect, false, true,
+               "more dependencies or search paths than this check can enumerate");
+    }
+
+    for (size_t i = 0; i < info.n_rpath; ++i) {
+        if (!exists(info.rpath[i])) continue;
+        check_dir(r, "LC_RPATH library directory", info.rpath[i], s->owner);
+    }
+
+    char visited[VU_MACHO_VISITED_MAX][VU_PATH_MAX];
+    size_t n_visited = 0;
+    for (size_t i = 0; i < info.n_dylib; ++i) {
+        if (info.dylib[i][0] == '/') {
+            check_dylib_closure(r, info.dylib[i], s->openconnect, s->owner, visited, &n_visited);
+        } else {
+            record(r, "linked library (@rpath, resolved from the directories above)",
+                   info.dylib[i], true, false, NULL);
+        }
+    }
 #else
     /*
-     * §11.7: macOS helper mode is unavailable until this exists, and it fails
-     * CLOSED rather than being weakened. The work is step 13 — Mach-O
-     * LC_LOAD_DYLIB, the dyld shared cache, and the DYLD_* search rules are a
-     * different mechanism from ELF and ld.so, not a port of it.
+     * §11.7: helper mode is unavailable on any platform without an
+     * implemented library closure, and it fails CLOSED rather than being
+     * weakened. Linux (ELF/ld.so) and Darwin (Mach-O/dyld) are implemented;
+     * anything else is a different mechanism again, not yet written.
      */
     record(r, "library closure", s->openconnect, false, false,
            "trusted OpenConnect execution closure could not be established: "
-           "the macOS dynamic library closure is not implemented yet (design step 13)");
+           "the dynamic library closure is not implemented for this platform");
 #endif
 }
 
