@@ -33,11 +33,11 @@
  *
  * Honest scope, stated here because it decides what macOS does:
  *
- *   The LIBRARY closure is implemented for Linux only. macOS needs Mach-O
- *   LC_LOAD_DYLIB, the dyld shared cache and the DYLD_* search rules, which is
- *   step 13. Until then this reports the library row as unverified, so the
- *   overall verdict on macOS is REFUSED — which is §11.7's fail-closed
- *   behaviour, implemented rather than merely documented.
+ *   The LIBRARY closure is implemented for Linux (ELF/ld.so, vu_elf.h) and
+ *   Darwin (Mach-O/dyld, vu_macho.h — design doc §17.1, §16 step 14). Any
+ *   other platform reports the library row as unverified, so the overall
+ *   verdict there is REFUSED — §11.7's fail-closed behaviour, implemented
+ *   rather than merely documented.
  *
  * Everything else is checked on both platforms, and every root and expected
  * owner is a parameter, so the corpus exercises the real checks unprivileged.
@@ -72,6 +72,23 @@
 #    define VU_LIBRARY_CLOSURE_ELF 1
 #  else
 #    define VU_LIBRARY_CLOSURE_ELF 0
+#  endif
+#endif
+
+/*
+ * Same idea, for the Mach-O/dyld side (design doc §17.1, §16 step 14). On by
+ * default on Darwin, off elsewhere. Force-on'able the same way and for the
+ * same reason: `make test-macho-closure` compiles the Mach-O path on Linux
+ * CI against hand-built fixtures, so it is exercised on every platform
+ * regardless of which one is "native" — the ELF side already does this via
+ * test-elf-closure, and one platform never compiling the other's parser is
+ * exactly how three of four early CI failures happened (see above).
+ */
+#ifndef VU_LIBRARY_CLOSURE_MACHO
+#  if defined(__APPLE__)
+#    define VU_LIBRARY_CLOSURE_MACHO 1
+#  else
+#    define VU_LIBRARY_CLOSURE_MACHO 0
 #  endif
 #endif
 

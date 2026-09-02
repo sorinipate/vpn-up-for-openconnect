@@ -12,7 +12,16 @@
 # the mistake this file exists to prevent).
 #
 # See PRIVILEGED-HELPER-DESIGN.md's rate-limiter security invariants for the
-# eight properties admit_attempt() and the locking below exist to hold.
+# nine properties admit_attempt() and the locking below exist to hold. The
+# ninth (record_attempt_verification, below) is additive, not an amendment to
+# the central design decision above: it reads a genuine post-attempt signal
+# (helper-mode tunnel-up telemetry, unrelated to OpenConnect's exit code) but
+# only ever from OUTSIDE admit_attempt(), strictly after an attempt already
+# admitted has finished -- so it still cannot change whether or how long
+# admission itself waited, only whether a LATER breaker-expiry quietly
+# resumes retrying or escalates to a pause. Never held to touch ST_ATTEMPTS
+# or ST_OPEN_UNTIL, which stay exactly as outcome-blind as the original eight
+# invariants require.
 
 # ------------------------------------------------------------- outcome codes
 readonly VPN_RC_RUN_ENDED=0         # ran; no claim about why it ended
@@ -313,6 +322,15 @@ _state_read() {
   case "$v" in 1) v=1 ;; *) v=0 ;; esac
   ST_PAUSED="$v"
 
+  # How many consecutive SERVICE attempts, in a row, never reached a
+  # genuine (helper-mode, script-confirmed) tunnel-up -- see
+  # record_attempt_verification below. Absent on an old state file, which
+  # fails open to 0 exactly like every other field here: an upgrade must
+  # never retroactively treat a profile as already mid-escalation.
+  v="$(_state_field unverified_streak "$f" 2>/dev/null)"
+  case "$v" in ''|*[!0-9]*) v=0 ;; esac
+  ST_UNVERIFIED_STREAK="$v"
+
   if [ "$dirty" = 1 ] && [ -n "$expected_profile" ]; then
     _state_persist_current "$f" "$expected_profile" 2>/dev/null || true
   fi
@@ -326,7 +344,7 @@ _state_read() {
 # prevents collision, this field is only a sanity check.
 _state_persist() {
   local f="$1" profile="$2" attempts="$3" open_until="$4" totp_step="$5" \
-        owner_pid="$6" owner_epoch="$7" paused="$8"
+        owner_pid="$6" owner_epoch="$7" paused="$8" unverified_streak="${9:-0}"
   local dir; dir="$(dirname "$f")"
   ( umask 077; mkdir -p "$dir" ) 2>/dev/null
   chmod 700 "$dir" 2>/dev/null || true
@@ -341,9 +359,9 @@ _state_persist() {
   # on disk. One checked printf, not several independently-unchecked ones.
   if ! (
     umask 077
-    printf 'version=1\nprofile=%s\nattempts=%s\nopen_until_epoch=%s\nlast_totp_step=%s\nattempt_owner_pid=%s\nattempt_owner_epoch=%s\npaused=%s\n' \
+    printf 'version=1\nprofile=%s\nattempts=%s\nopen_until_epoch=%s\nlast_totp_step=%s\nattempt_owner_pid=%s\nattempt_owner_epoch=%s\npaused=%s\nunverified_streak=%s\n' \
       "$profile" "$attempts" "$open_until" "$totp_step" \
-      "$owner_pid" "$owner_epoch" "$paused" > "$tmp"
+      "$owner_pid" "$owner_epoch" "$paused" "$unverified_streak" > "$tmp"
   ) 2>/dev/null; then
     rm -f "$tmp" 2>/dev/null
     return 1
@@ -360,7 +378,7 @@ _state_persist() {
 _state_persist_current() {
   local f="$1" profile="$2"
   _state_persist "$f" "$profile" "$ST_ATTEMPTS" "$ST_OPEN_UNTIL" "$ST_TOTP_STEP" \
-    "$ST_OWNER_PID" "$ST_OWNER_EPOCH" "$ST_PAUSED"
+    "$ST_OWNER_PID" "$ST_OWNER_EPOCH" "$ST_PAUSED" "$ST_UNVERIFIED_STREAK"
 }
 
 # ------------------------------------------------------------ admit_attempt
@@ -387,6 +405,22 @@ _ATTEMPT_THRESHOLD=6        # attempts within the window before the breaker open
 _ATTEMPT_CURVE=(0 60 120 240 480 900)   # seconds, indexed by attempts-in-window
 _ATTEMPT_BREAKER_SECS=3600  # 1h temporary breaker
 _ATTEMPT_POLL="${VPN_UP_ATTEMPT_POLL:-5}"
+
+# Ninth invariant (§15.1 amendment, "unverified-attempt escalation"): past
+# this many CONSECUTIVE admitted SERVICE attempts that never reached a
+# genuine, helper-mode-verified tunnel-up (record_attempt_verification,
+# below -- never OpenConnect's exit code, and never read or written from
+# inside admit_attempt itself), the breaker escalates to a hard pause instead
+# of quietly retiring its window and letting the retry loop resume. Expressed
+# as a multiple of _ATTEMPT_THRESHOLD (attempts per breaker cycle) so it
+# reads as "this many full breaker cycles with zero verified connects in
+# between" -- three, by default: enough that a single bad cycle (a genuine
+# transient outage with no verification signal at all, since prompt mode and
+# a pre-52cbe8c helper/client pair produce none) is never mistaken for a
+# stuck credential, while still bounding a real Duo-push storm to a few hours
+# rather than forever.
+_UNVERIFIED_STREAK_CYCLES=3
+_UNVERIFIED_STREAK_LIMIT=$((_ATTEMPT_THRESHOLD * _UNVERIFIED_STREAK_CYCLES))
 
 admit_attempt() {
   local profile="$1" mode="$2" f
@@ -466,6 +500,32 @@ admit_attempt() {
         # failing persist spins on lock/read/write as fast as the disk lets
         # it, burning CPU instead of backing off (reproduced directly: ~200
         # cycles in 250ms with no sleep on this path).
+        #
+        # Ninth invariant: past _UNVERIFIED_STREAK_LIMIT, quietly retiring the
+        # window and letting the curve resume is exactly the unbounded
+        # Duo-push loop this design otherwise leaves open (see the file
+        # header and PRIVILEGED-HELPER-DESIGN.md §15.1's amendment) -- escalate
+        # to a hard pause instead, which needs a human (pause_clear, or fixing
+        # the credential via secrets_set -> attempt_history_clear) to lift.
+        # The streak resets here too: a paused profile starts its next three
+        # cycles fresh rather than carrying a permanent grudge, the same way
+        # ST_ATTEMPTS/ST_OPEN_UNTIL are retired, not merely frozen.
+        if [ "$ST_UNVERIFIED_STREAK" -ge "$_UNVERIFIED_STREAK_LIMIT" ]; then
+          ST_ATTEMPTS=""
+          ST_OPEN_UNTIL=0
+          ST_PAUSED=1
+          ST_UNVERIFIED_STREAK=0
+          if _state_persist_current "$f" "$profile"; then
+            _state_unlock "$f" "$token"
+            print_danger "%d consecutive attempts for '%s' never established a tunnel -- this looks like a stuck credential or rejected MFA, not a network blip. Paused until you fix it and run: %s start '%s'\n" \
+              "$_UNVERIFIED_STREAK_LIMIT" "$profile" "${DISPLAY_NAME:-vpn-up}" "$profile"
+            notify "VPN Up" "Repeated unverified attempts for ${profile}; paused until you intervene"
+          else
+            _state_unlock "$f" "$token"
+          fi
+          sleep "$_ATTEMPT_POLL"
+          continue
+        fi
         ST_ATTEMPTS=""
         ST_OPEN_UNTIL=0
         if _state_persist_current "$f" "$profile"; then
@@ -558,10 +618,51 @@ release_attempt_owner() {
   _state_unlock "$f" "$token"
 }
 
+# Records whether ONE admitted SERVICE attempt reached a genuine, verified
+# tunnel-up -- ninth invariant (§15.1 amendment): this is called from
+# run_admitted_connection's epilogue (core.sh), AFTER connect_via_helper/
+# run_openconnect has already returned, and NEVER from inside admit_attempt
+# itself. That ordering is what keeps this from becoming the mistake §15.1's
+# header warns about ("we know this was PREAUTH, so let's back off harder"):
+# it cannot retroactively change whether THIS attempt was admitted or how
+# long it was made to wait, only whether the NEXT breaker-expiry transition
+# (admit_attempt, above) treats a quiet retire-and-resume as safe.
+#
+# `verified` is a tri-state, not a bool: "1" (a genuine helper-mode connect
+# was confirmed for this exact attempt) resets the streak, "0" (helper mode
+# ran but never confirmed one) increments it, and anything else -- most
+# commonly the empty string, meaning no signal was available at all (prompt
+# mode, or a helper/client pair predating the event-status telemetry) --
+# leaves the streak untouched rather than guessing. A profile that only ever
+# runs in prompt mode therefore never escalates via this path at all, which
+# is correct: prompt mode has no way to tell "stuck at a Duo prompt" from
+# "about to succeed" (core.sh's own _record_foreground_openconnect_pid
+# comment), so it must not pretend otherwise here either.
+record_attempt_verification() {
+  local profile="$1" verified="$2" f token
+  case "$verified" in
+    0|1) : ;;
+    *) return 0 ;;
+  esac
+  f="$(attempt_state_file "$profile")" || return 0
+  token="$(_state_lock "$f")"
+  _state_read "$f" "$profile"
+  if [ "$verified" = 1 ]; then
+    ST_UNVERIFIED_STREAK=0
+  else
+    ST_UNVERIFIED_STREAK=$((ST_UNVERIFIED_STREAK + 1))
+  fi
+  _state_persist_current "$f" "$profile"
+  _state_unlock "$f" "$token"
+}
+
 # Clears only the attempt-rate history -- never called on a manual start (see
 # §3.6 of the design: "clear history" and "start now" are different signals
 # and must not be conflated, or a sleeping service and a manual start could
 # both admit an attempt at once). Called from secrets_set() on `password`.
+# The unverified streak is cleared alongside it: a corrected credential is
+# exactly the kind of fix that should earn a fresh run at the escalation
+# threshold too, the same reasoning §3.6 already applies to the curve itself.
 attempt_history_clear() {
   local profile="$1" f token
   f="$(attempt_state_file "$profile")" || return 0
@@ -569,6 +670,7 @@ attempt_history_clear() {
   _state_read "$f" "$profile"
   ST_ATTEMPTS=""
   ST_OPEN_UNTIL=0
+  ST_UNVERIFIED_STREAK=0
   _state_persist_current "$f" "$profile"
   _state_unlock "$f" "$token"
 }
@@ -588,8 +690,10 @@ totp_step_reservation_clear() {
   _state_unlock "$f" "$token"
 }
 
-# Reserved for the `vpn-up stop`-under-service gap noted in the design doc as
-# "flagged, not decided" -- not wired into `stop` by this change.
+# Called directly by admit_attempt()'s unverified-streak escalation (ninth
+# invariant, above) -- its first real production caller. Still also the
+# mechanism a future fix for the `vpn-up stop`-under-service gap (design doc,
+# "flagged, not decided") would reuse; not wired into `stop` by this change.
 pause_set() {
   local profile="$1" f token
   f="$(attempt_state_file "$profile")" || return 0

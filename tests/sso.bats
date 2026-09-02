@@ -135,6 +135,17 @@ XML
   [[ "$output" == *"not supported for the 'nc' protocol"* ]]
 }
 
+@test "connection_preflight refuses SSO for the pulse protocol" {
+  _write_profiles
+  set_profile_paths() { PID_FILE_PATH=x; LOG_FILE_PATH=y; STATE_FILE_PATH=z; }
+  require_openconnect_sso() { return 0; }
+  load_profile_fields "SSO VPN"
+
+  PROTOCOL="pulse" run connection_preflight INTERACTIVE
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not supported for the 'pulse' protocol"* ]]
+}
+
 @test "service preflight rejects an SSO profile" {
   _write_profiles
   source "$BATS_TEST_DIRNAME/../service.sh"

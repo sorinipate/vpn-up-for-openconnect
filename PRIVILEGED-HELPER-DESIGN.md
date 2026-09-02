@@ -839,7 +839,7 @@ Also found while verifying paths: `/var/run` is `drwxrwxr-x root:daemon` — gro
 writable. Our own directory is still required to be root-owned `0700`, so a
 squatted `/var/run/vpn-up` makes the helper **fail closed** rather than trust
 it. That is correct but is a denial-of-service vector, and `/var/db` is
-`root:wheel 0755`. Revisit the macOS state root at step 13.
+`root:wheel 0755`. Revisit the macOS state root at step 14.
 
 #### State verification on `stop` — amended during step 9
 
@@ -925,10 +925,14 @@ that matters and is checked unconditionally — but the shebang is what runs if 
 script is ever executed directly, and one naming a user-writable prefix says
 something about the installation either way.
 
-macOS is unimplemented and therefore **fails closed**, with §11.7's wording, as
-a report row rather than a special case at the call site. Mach-O `LC_LOAD_DYLIB`,
-the dyld shared cache and the `DYLD_*` rules are a different mechanism from ELF
-and `ld.so`, not a port of it. That is step 13.
+macOS is implemented (step 14, `helper/src/macho.c`, `vu_macho.h`) — Mach-O
+`LC_LOAD_DYLIB`, the dyld shared cache and `@rpath`/`@loader_path`/
+`@executable_path` are a different mechanism from ELF and `ld.so`, not a port
+of it, so this is a separate parser and a separate, recursive closure walk
+(`check_dylib_closure`, `closure.c`), not a variation on the Linux one — see
+§17.1 for what a real install actually needed. Any OTHER platform (neither
+Linux nor Darwin) still fails closed, with §11.7's wording, as a report row
+rather than a special case at the call site.
 
 **Verified against a real installation**, which is what §11.6 rested on until
 now. Pointed at this machine's Homebrew install, the check reports:
@@ -1007,7 +1011,7 @@ passing installation, not an exemption.
 | OpenConnect installation | Prompt mode | Helper mode |
 |---|---|---|
 | Linux distro package, closure passes | yes | **yes** |
-| macOS MacPorts, closure passes | yes | **yes** (pending §17.1) |
+| macOS MacPorts, closure passes | yes | **yes** (verified, §17.1) |
 | Manually installed root-owned, closure passes | yes | **yes** |
 | macOS Homebrew | yes | **no** |
 | Any user-writable installation | yes, with the §1 caveat understood | **no** |
@@ -1255,9 +1259,10 @@ authentication, before any credential or one-time value is touched — a Duo
 push is what the limiter protects against, and a Duo push is spent at that
 moment regardless of what happens afterward.
 
-**The eight rate-limiter security invariants**, each independently
-regression-tested (`tests/attemptguard.bats`, `tests/totpstep.bats`) and each
-a plausible thing for a future change to erode without noticing:
+**The eight original rate-limiter security invariants** (a ninth was added
+later, §15.1.1 below), each independently regression-tested
+(`tests/attemptguard.bats`, `tests/totpstep.bats`) and each a plausible thing
+for a future change to erode without noticing:
 
 1. OpenConnect's outcome never changes admission history.
 2. An unattended attempt is charged the moment it is admitted, before
@@ -1767,6 +1772,69 @@ user-side OpenConnect PID file, not root-owned helper state. This is a real
 boundary, not a gap in the rate limiter specifically — reconciling it belongs
 with §17.7's tunnel-up signal and helper-lifecycle work, not with admission.
 
+### 15.1.1 Ninth invariant: escalating on repeated unverified attempts
+
+A code review raised, correctly, that the eight invariants above bound the
+*rate* of unattended attempts but never their *duration*: a permanently bad
+credential, or a permanently rejected Duo push, is throttled to the curve and
+the hourly breaker forever, not stopped. The central design decision (this
+file's header, and outcome.sh's) explains why that is not a bug to fix by
+classifying OpenConnect's exit code — there is no seam there. But commit
+`52cbe8c` (after this review) shipped something the design decision does not
+rule out: a genuine, helper-mode, script-confirmed tunnel-up signal,
+independent of OpenConnect's exit status entirely.
+
+**The addition, precisely:** `outcome.sh` gains one new state field
+(`unverified_streak`) and one new function, `record_attempt_verification
+<profile> <verified: 0|1>`. It is called from `run_admitted_connection`'s
+epilogue (core.sh), strictly AFTER `connect_via_helper`/`run_openconnect`
+returns and BEFORE `release_attempt_owner` — never from inside
+`admit_attempt()` itself, and never touching `ST_ATTEMPTS` or
+`ST_OPEN_UNTIL`. That ordering is what keeps this from being invariant 1's
+mistake reopened: it cannot change whether or how long an attempt already
+admitted was made to wait, only whether a LATER breaker-expiry transition
+treats a quiet retire-and-resume as safe.
+
+At that transition (the moment the breaker would otherwise just retire its
+window and let the curve resume, `admit_attempt`'s `ST_OPEN_UNTIL != 0`
+branch), the streak is checked against `_UNVERIFIED_STREAK_LIMIT`
+(`_ATTEMPT_THRESHOLD * 3` — three full breaker cycles' worth by default).
+Past it, the transition escalates to `pause_set()` (a real caller for a
+function that existed, unused, since §3.6's "flagged, not decided" gap) and a
+louder, distinct notification, instead of the ordinary silent retire. A human
+clearing the pause (`pause_clear`, or fixing the credential via
+`secrets_set` → `attempt_history_clear`, which also resets the streak) is
+required to resume; the escalation is deliberately not a permanent
+`VPN_RC_CONFIG` stop, because the tool still cannot prove *why* verification
+never happened — a persistent server-side outage produces the identical
+signal (no verified connect, ever) as a stuck credential.
+
+**Where the signal comes from, and where it does not reach:** helper mode's
+`run_openconnect_helper` (twophase.sh) already computes exactly this boolean
+— `_helper_final_event_had_tunnel`'s result — to decide `had_tunnel` for the
+diagnostics-only outcome code; it is now also captured separately into a
+module-global, `_VPN_LAST_ATTEMPT_VERIFIED`, specifically so the escalation
+never uses `had_tunnel`'s OR'd-in heuristic fallback (`_helper_run_had_tunnel`,
+"a process seemed to run") — using that would reintroduce exactly the
+false-confidence problem `write_connection_state`'s `evidence=heuristic` vs
+`verified` split already exists to avoid. **Prompt mode produces no signal at
+all, ever** (`outcome.sh`'s own comment on `outcome_from_run`: "prompt mode
+has no such signal and always passes 1") — `record_attempt_verification`'s
+tri-state treats the empty string as "no signal available" and leaves the
+streak untouched, so a profile that only ever runs in prompt mode structurally
+cannot escalate via this path. That is correct, not a gap: prompt mode cannot
+distinguish "stuck at a Duo prompt" from "about to succeed" either
+(`_record_foreground_openconnect_pid`'s own comment), so it must not pretend
+to here.
+
+Tests: `tests/attemptguard.bats` (streak accounting via
+`record_attempt_verification`, the empty-string no-op case, the ninth-
+invariant regression proving `ST_ATTEMPTS`/`ST_OPEN_UNTIL` are unaffected by
+any streak value, escalation at the limit, no escalation just below it) and
+`tests/twophase.bats` (`_VPN_LAST_ATTEMPT_VERIFIED` set to 1/0/unset for a
+confirmed, unconfirmed, and no-request-id run of `run_openconnect_helper`
+respectively).
+
 ### Release gate
 
 The "login service not recommended" warning stays until **both** the helper is
@@ -1823,15 +1891,94 @@ break.
 These are the only questions left open. Everything else in this document is
 settled, and reopening any of it needs a new review (see the status banner).
 
-### 17.1 Verify a real MacPorts OpenConnect against §11.4, dylib closure included
+### 17.1 Verify a real MacPorts OpenConnect against §11.4, dylib closure included — **ANSWERED, implemented and verified**
 
 §11.6 makes MacPorts the recommended macOS source on the strength of its
-root-owned `/opt/local` prefix. Before that reaches a README, an actual install
-must be checked: the binary, its parent chain, the `vpnc-script` MacPorts
-configures, `/etc/vpnc`, and **the dynamic library closure** — a root-owned
-binary loading a user-writable library fails the invariant just as surely. If
-MacPorts fails, macOS helper mode has no packaged source and §11.6's matrix row
-changes.
+root-owned `/opt/local` prefix. Checked directly against a real install
+(MacPorts 2.11.5, `openconnect` port, macOS 26.6, arm64) rather than reasoned
+about:
+
+**MacPorts passes the ownership half of the invariant.** `/opt/local` and
+every directory down to the binary and its libraries are `root:wheel`/
+`root:admin`, mode 755, not group- or world-writable. `openconnect` itself
+lands at `/opt/local/sbin/openconnect`, `root:admin` 0755.
+
+**Its own `vpnc-script` is a separate port (`vpnc-scripts`), at a
+macOS-specific path**, not the Linux FHS location: `/opt/local/etc/vpnc-scripts/vpnc-script`
+(`root:wheel`, 0755), alongside `vpnc-script-ptrtd`/`vpnc-script-sshd`, no
+`.d` hook-directory convention there — `check_hooks`'s Linux-side
+`/etc/vpnc*` path is a constant that needs a macOS-specific equivalent, not a
+port of the same literal path.
+
+**The library closure has no `LC_RPATH`, `@rpath`, `@loader_path`, or
+`@executable_path` anywhere in this binary's full transitive dependency
+graph** (checked with `otool -l`/`otool -L`, every direct and indirect
+dependency, recursively) — every `LC_LOAD_DYLIB` names a plain absolute path.
+That's a materially simpler picture than ELF's `$ORIGIN`/`DT_RPATH`/
+`DT_RUNPATH`/`ld.so.conf` search-path problem, though a hand-crafted
+malicious binary could still use those tokens, so the parser must still
+handle and validate them defensively (refusing an unresolvable token exactly
+as the ELF side refuses `$LIB`/`$PLATFORM`), even though real MacPorts builds
+don't exercise that path.
+
+**The dyld shared cache is real and must be special-cased, not treated as a
+missing file.** `/usr/lib/libSystem.B.dylib` — linked by every single
+dependency in the graph, directly or transitively — does not exist as a file
+on disk at all (`stat` returns ENOENT), nor do system frameworks pulled in
+transitively (`libgnutls` → `Security.framework`, `CoreFoundation.framework`;
+`libp11-kit` → `CoreServices.framework`, also transitively): confirmed by
+direct `stat`/`ls` against
+`/System/Library/Frameworks/Security.framework/Versions/A/Security` (ENOENT)
+while `otool -L` reports it as a normal linked dependency. A closure walker
+that `check_file`s every `LC_LOAD_DYLIB` target will spuriously fail on the C
+runtime library itself — not a rare edge case.
+
+The resolution: `_dyld_shared_cache_contains_path(const char *path)` answers
+this correctly and was verified directly against this install — `yes` for
+`/usr/lib/libSystem.B.dylib` and all three system frameworks above, `no` for
+every `/opt/local/lib/*.dylib` (real on-disk files) and a nonexistent path.
+It is not declared in any public SDK header (`<mach-o/dyld_priv.h>` isn't
+shipped), but the symbol itself is exported by `libSystem`/`libdyld` and is
+callable with nothing more than an `extern` declaration — no subprocess, no
+private header, no new library dependency, consistent with this project's
+existing no-shell-out-inside-the-root-TCB stance. The shared cache itself
+lives under a SIP-protected path
+(`/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld/`, confirmed
+`root:admin` and outside the ordinary root-write threat model this
+project's ownership checks defend against) — a stronger trust anchor than an
+ordinary root-owned directory, so a path the API confirms as cache-resident
+needs no further directory walk at all; only a resolved on-disk path (the
+`/opt/local/lib/...` case) goes through `vu_path_trusted`, exactly as ELF's
+libraries do today.
+
+**Recursion is required, not optional**: `libgnutls.30.dylib` alone pulls in
+`libidn2`, `libunistring`, `libtasn1`, `libnettle`, each a separate
+`/opt/local/lib` file needing its own closure check, several of which have
+their own further dependencies. A Mach-O closure walker must parse each
+resolved non-cache dylib in turn, the same transitive-closure requirement
+ELF's directory-search approach already satisfies implicitly.
+
+**Resolved.** The parser (`helper/src/macho.c`, `vu_macho.h`), its recursive
+wiring into `closure.c`'s `check_libraries()` (`check_dylib_closure`), and its
+test corpus (`test_macho_reader`, plus a Mach-O `test_closure_walk` branch
+proving two-level recursion catches a writable dependency) are written and
+pass — native, forced-ELF, forced-Mach-O, and ubsan. Run end-to-end against
+this same real MacPorts install via `vpn-up-admin verify-closure`: the walk
+covers all 35 objects in the transitive closure correctly (dyld-shared-cache
+entries — `libSystem`, `Security.framework`, `CoreFoundation.framework`,
+`CoreServices.framework`, `libc++` — all correctly recognized without a
+filesystem check; every on-disk `/opt/local/lib` dependency individually
+verified and recursed into), and correctly flagged one genuine, pre-existing
+problem on that machine — `libz.1.3.1.dylib` is user-owned, not root — which
+is the check doing its job, not a defect in it. Three real bugs were caught
+by that run and fixed, not merely reasoned about: the Mach-O magic-detection
+byte order was backwards (every real little-endian binary failed to parse at
+all until fixed), an off-by-one in the `@executable_path` token match (16
+chars, not 17), and a hardcoded 8 MB whole-file read cap that `libicudata`
+(30+ MB, a real transitive dependency via `libicuuc`) exceeded — fixed by
+reading a bounded prefix of the file rather than the whole thing, since
+Mach-O load commands always live in a small region near the start regardless
+of the file's total size. §11.6's matrix row is updated accordingly.
 
 ### 17.2 Build and distribution for the compiled binaries — **ANSWERED, installer step**
 
@@ -1925,15 +2072,21 @@ rule can reasonably default on for installations that came through it, and the
 assumption paragraph in `SECURITY.md` changes rather than being deleted: an
 install from a user-writable checkout will still carry it.
 
-### 17.7 A structured tunnel-up/down signal
+### 17.7 A structured tunnel-up/down signal — **PARTIALLY ANSWERED, shipped as `52cbe8c`; used by §15.1.1**
 
-Nothing in §15.1's rate limiter depends on knowing whether a tunnel actually
-came up — that is the whole point of gating admission rather than trying to
-classify outcomes. But a real signal would still let step 13 do better:
-accurate `connected`/`disconnected` hooks, real diagnostics, and a way to
-answer §15.1's closing question (whether an orphaned privileged tunnel can
-outlive the VPN Up process that started it) instead of merely documenting the
-boundary.
+Admission itself still depends on nothing about whether a tunnel actually
+came up — that half of this section's claim stands, and is exactly the point
+of gating admission rather than trying to classify outcomes (§15.1's central
+design decision, unchanged). What has changed since this was written: the
+signal below was built (the vpnc-script wrapper, `helper/src/exec.c`'s
+`--script` pin, and the `event-status` verb this section anticipated), and
+§15.1.1 gives it its first real consumer OUTSIDE admission — the unverified-
+streak escalation, which reads it strictly after an attempt has already been
+admitted and finished, never to decide whether or how long a new one waits.
+Accurate `connected`/`disconnected` hooks and real diagnostics (this
+section's other two promised uses) are also delivered, via
+`write_connection_state`'s `evidence=verified` path. Still open: the
+orphaned-privileged-tunnel question below.
 
 OpenConnect invokes `--script` with `$reason=connect/disconnect/reconnect`,
 which the helper already pins (`helper/src/exec.c:82`) — well positioned,

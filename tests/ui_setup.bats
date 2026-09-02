@@ -80,6 +80,7 @@ EOF
 # both the certificate and the key.
 
 _wizard_stubs() {
+  source "$BATS_TEST_DIRNAME/../profiles.sh"
   source "$BATS_TEST_DIRNAME/../core.sh"
   export PROFILES_FILE="$BATS_TEST_TMPDIR/profiles.xml"
   profiles_xml_ok() { return 0; }
@@ -148,6 +149,41 @@ EOF
   [ -z "$(cat "$APPENDED_CERT")" ]
   [ -z "$(cat "$APPENDED_KEY")" ]
   if grep -qF "918273" "$APPENDED_CERT" "$APPENDED_KEY" "$SECRETS_SET_CALLS"; then false; fi
+}
+
+# --- add_profile_wizard: SSO protocol gate (protocol_supports_sso, profiles.sh) ---
+#
+# nc and pulse both use password/Duo flows per docs/protocols.md; only
+# anyconnect and gp support browser SSO. Was two independent denylists
+# (setup.sh, core.sh) naming only 'nc' -- pulse silently passed both, and
+# neither had wizard-level test coverage at all.
+
+@test "add_profile_wizard refuses SSO for the nc protocol" {
+  _wizard_stubs
+  run add_profile_wizard <<'EOF'
+NcSso
+nc
+h.example.com
+
+user
+y
+EOF
+  [ "$status" -ne 0 ]
+  grep -qF "not supported for the 'nc' protocol" "$DANGERS"
+}
+
+@test "add_profile_wizard refuses SSO for the pulse protocol" {
+  _wizard_stubs
+  run add_profile_wizard <<'EOF'
+PulseSso
+pulse
+h.example.com
+
+user
+y
+EOF
+  [ "$status" -ne 0 ]
+  grep -qF "not supported for the 'pulse' protocol" "$DANGERS"
 }
 
 @test "add_profile_wizard does not offer a PKCS#11 PIN for a plain file certificate and key" {

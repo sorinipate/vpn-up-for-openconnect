@@ -43,7 +43,12 @@
  */
 #ifndef VU_VPNC_SCRIPT_REAL
 #  if defined(__APPLE__)
-#    define VU_VPNC_SCRIPT_REAL "/opt/local/etc/vpnc/vpnc-script"
+/* The "vpnc-scripts" MacPorts port (a declared library dependency of its
+ * "openconnect" port) installs here, confirmed directly against a real
+ * install (`port contents openconnect`, `port contents vpnc-scripts`) —
+ * NOT /opt/local/etc/vpnc, which this constant named before that check and
+ * which vpnc-scripts never creates. */
+#    define VU_VPNC_SCRIPT_REAL "/opt/local/etc/vpnc-scripts/vpnc-script"
 #  else
 #    define VU_VPNC_SCRIPT_REAL "/etc/vpnc/vpnc-script"
 #  endif
