@@ -20,8 +20,9 @@
  * could not pass the real check would not be standing in for much.
  *
  * The report goes to STDOUT, not to a file named by an environment variable,
- * because the helper hands the child a constructed environment with PATH and
- * nothing else — a stand-in that needed an env var to work would be testing a
+ * because the helper hands the child a constructed environment with only PATH
+ * and the four VUP_* telemetry variables (connection-state design plan §2) —
+ * a stand-in that needed a DIFFERENT env var to work would be testing a
  * different program than the one that ships.
  *
  * It reports what it sees and then waits for SIGTERM, so the parent can inspect
