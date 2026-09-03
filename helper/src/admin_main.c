@@ -251,9 +251,25 @@ static int cmd_verify_closure(const char *wrapper_candidate)
     vu_err e; vu_err_clear(&e);
     bool ok = vu_closure_check(&spec, &report, &e);
 
+    /*
+     * A STAGED CANDIDATE (Phase A's build-dir file, or Phase B's not-yet-
+     * activated staged copy) is built/staged UNPRIVILEGED before it is ever
+     * proven and moved into place (helperinstall.sh's stage/prove/rename
+     * shape) - it is legitimately owned by the invoking user at the moment
+     * this runs, not root. Requiring owner 0 here would make the early
+     * eligibility gate impossible to pass on ANY machine, since nothing
+     * unprivileged ever produces a root-owned file. Accepting the invoking
+     * user's own uid does not weaken the real guarantee: trusted_component()
+     * always accepts uid 0 regardless of this parameter, so a STAGED copy
+     * that already went through `install -o 0 -g 0` (root-owned by the time
+     * it is checked) passes exactly as before. Checking the currently
+     * INSTALLED wrapper (wrapper_candidate NULL) still requires owner 0,
+     * as it must: that file needs to already be the real, root-owned thing.
+     */
+    uid_t wrapper_owner = wrapper_candidate ? geteuid() : 0;
     static vu_closure_report wrapper_report;
     vu_err werr; vu_err_clear(&werr);
-    bool wrapper_ok = vu_wrapper_precheck(wrapper_path, 0, &wrapper_report, &werr);
+    bool wrapper_ok = vu_wrapper_precheck(wrapper_path, wrapper_owner, &wrapper_report, &werr);
 
     printf("trusted execution closure\n");
     printf("  openconnect      %s\n", VU_OPENCONNECT);

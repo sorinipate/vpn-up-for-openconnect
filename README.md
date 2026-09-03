@@ -245,7 +245,8 @@ vpn-up set-secret "Work VPN" token_secret   # paste the base32 seed
 
 …then set `<tokenMode>totp</tokenMode>` on the profile (the `add-profile` wizard offers this as a 2FA choice). Requires **`oathtool`** (`brew install oath-toolkit` / `apt install oathtool`; shown by `vpn-up doctor`).
 
-- The **seed stays in your keychain** — it's never passed to openconnect's argv or written to disk; only the short-lived 6-digit code is sent (on stdin), the same path as a Duo passcode.
+- The **seed stays in your keychain** — it's never passed to openconnect's argv or written to disk; only the short-lived code is sent (on stdin), the same path as a Duo passcode.
+- By default the code is a 6-digit SHA1 code on a 30-second step, matching every common authenticator app. For a gateway that needs something else, the wizard's advanced TOTP options (or the `<totpAlgorithm>`/`<totpDigits>`/`<totpStepSeconds>` tags directly) support SHA1/SHA256/SHA512, a custom digit count, and a custom time step — everything `oathtool --totp` itself supports.
 - Because no interaction is needed, a TOTP profile is the **one 2FA method that can run as a login service** with auto-reconnect (Duo passcode and SSO can't).
 - Security note: storing the TOTP seed beside the password in the same keychain is effectively "1.5-factor" — it's opt-in.
 
@@ -494,11 +495,14 @@ Seeded from [config/vpn-up.command.profiles.default](config/vpn-up.command.profi
     <clientCertificate>/etc/vpn/me.pem</clientCertificate>
     <clientKey></clientKey>
     <proxy>http://proxy.corp:8080</proxy>
+    <totpAlgorithm>SHA1</totpAlgorithm>
+    <totpDigits>6</totpDigits>
+    <totpStepSeconds>30</totpStepSeconds>
   </VPN>
 </VPNs>
 ```
 
-Supported tag aliases: `username`/`user`, `group`/`authGroup`, `duoMethod`/`duo2FAMethod`. The `<password>` field is deprecated: plaintext values are migrated to the secrets backend and blanked in the XML automatically on first use — prefer `vpn-up set-secret`. A `duo2FAMethod` of `passcode` prompts for the one-time code at connect time. `<authMode>` is `password` (default) or `sso` for [browser-based SAML/SSO login](#sso--external-browser-login). `<tokenMode>` is empty (default) or `totp` for [authenticator-app 2FA](#totp-authenticator-app-2fa). `<extraArgs>` passes extra openconnect flags verbatim — see [Advanced: extra openconnect arguments](#advanced-extra-openconnect-arguments). `<clientCertificate>`/`<clientKey>` enable [client-certificate authentication](#client-certificate-authentication) — a file path or a PKCS#11 URI; a key passphrase/PIN goes in the secrets backend (`key_password`), never the XML. `<proxy>` routes the connection through an [HTTP/SOCKS proxy](#httpsocks-proxy).
+Supported tag aliases: `username`/`user`, `group`/`authGroup`, `duoMethod`/`duo2FAMethod`. The `<password>` field is deprecated: plaintext values are migrated to the secrets backend and blanked in the XML automatically on first use — prefer `vpn-up set-secret`. A `duo2FAMethod` of `passcode` prompts for the one-time code at connect time. `<authMode>` is `password` (default) or `sso` for [browser-based SAML/SSO login](#sso--external-browser-login). `<tokenMode>` is empty (default) or `totp` for [authenticator-app 2FA](#totp-authenticator-app-2fa). `<extraArgs>` passes extra openconnect flags verbatim — see [Advanced: extra openconnect arguments](#advanced-extra-openconnect-arguments). `<clientCertificate>`/`<clientKey>` enable [client-certificate authentication](#client-certificate-authentication) — a file path or a PKCS#11 URI; a key passphrase/PIN goes in the secrets backend (`key_password`), never the XML. `<proxy>` routes the connection through an [HTTP/SOCKS proxy](#httpsocks-proxy). `<totpAlgorithm>`/`<totpDigits>`/`<totpStepSeconds>` are all optional and only apply to `tokenMode=totp`; left empty (or absent), they default to `SHA1`/`6`/`30` — oathtool's own implicit defaults.
 
 ---
 

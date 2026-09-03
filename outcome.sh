@@ -722,10 +722,14 @@ pause_clear() {
 # reserve-then-generate, not generate-then-record, is the safe failure
 # direction: a mid-transaction crash wastes at most one step, rather than
 # risking a replay.
-TOTP_STEP_SECS=30   # must match oathtool --totp's implicit default (core.sh)
+# Default step length; a profile may override it (totpStepSeconds) and pass
+# its own value as totp_wait_for_fresh_step's second argument -- this constant
+# is only the fallback when a profile doesn't, and must match oathtool
+# --totp's implicit default (core.sh's generate_totp).
+TOTP_STEP_SECS=30
 
 totp_wait_for_fresh_step() {
-  local profile="$1" f token now step persist_failures=0
+  local profile="$1" step_secs="${2:-$TOTP_STEP_SECS}" f token now step persist_failures=0
   [ "${VPN_UP_NO_TOTP_WAIT:-}" = 1 ] && return 0
   # A missing state file path (e.g. no sha256 tool) must not be read as "no
   # reservation needed" -- that would silently drop the whole exclusivity
@@ -735,7 +739,7 @@ totp_wait_for_fresh_step() {
     token="$(_state_lock "$f")"
     _state_read "$f" "$profile"
     now="$(date +%s)"
-    step=$(( now / TOTP_STEP_SECS ))
+    step=$(( now / step_secs ))
     # <=, not ==: if the clock has moved BACKWARDS far enough that step is
     # now LOWER than the last reserved step, treating it as "fresh" would
     # both regenerate an already-used code and overwrite the stored

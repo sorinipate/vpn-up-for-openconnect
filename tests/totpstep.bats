@@ -87,6 +87,15 @@ setup() {
   [ -e "$BATS_TEST_TMPDIR/done-while-locked" ]      # proceeds once released
 }
 
+@test "a custom step length is used instead of the global default" {
+  local f; f="$(attempt_state_file "Work VPN")"
+  local t0
+  t0="$(date +%s)"
+  totp_wait_for_fresh_step "Work VPN" 60
+  _state_read "$f"
+  [ "$ST_TOTP_STEP" -eq $(( t0 / 60 )) ]
+}
+
 @test "a clock rollback does not make an older step eligible again" {
   # Regression test: the freshness check used to be `step == last_totp_step`,
   # so a clock moving BACKWARDS (the current step now LOWER than the

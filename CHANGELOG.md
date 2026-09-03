@@ -5,6 +5,25 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 
 ---
 
+## [Unreleased]
+### Added
+
+- **TOTP 2FA now supports SHA256/SHA512, a custom digit count, and a custom
+  time step** — `oathtool`'s own `--totp=SHA1|SHA256|SHA512`, `-d/--digits`,
+  and `-s/--time-step-size` were previously hardcoded to their implicit
+  defaults. Three new optional profile fields (`totpAlgorithm`, `totpDigits`,
+  `totpStepSeconds`) configure them per profile; left empty or absent, they
+  default to `SHA1`/`6`/`30`, so every existing TOTP profile behaves exactly
+  as before. The `add-profile` wizard offers these behind an opt-in "advanced
+  TOTP options" prompt, so the common case stays a single choice. The
+  step-reservation mechanism that prevents a code from being regenerated
+  within the same window (`totp_wait_for_fresh_step`) now uses each profile's
+  configured step length instead of always the 30s global default.
+  (The TOTP seed itself already goes to `oathtool` on stdin, never argv —
+  fixed and covered by tests in a prior release; unaffected by this change.)
+
+---
+
 ## [v3.13.0] — 2026-09-03
 ### Added
 

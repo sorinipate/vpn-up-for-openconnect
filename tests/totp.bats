@@ -46,6 +46,26 @@ XML
   [ "$VPN_DUO2FAMETHOD" = "push" ]
 }
 
+@test "load_profile_fields defaults TOTP algorithm/digits/step when the tags are absent" {
+  _write_profiles
+  load_profile_fields "Token VPN"
+  [ "$VPN_TOTP_ALGORITHM" = "SHA1" ]
+  [ "$VPN_TOTP_DIGITS" = "6" ]
+  [ "$VPN_TOTP_STEP" = "30" ]
+}
+
+@test "load_profile_fields reads a custom TOTP algorithm/digits/step" {
+  cat > "$PROFILES_FILE" <<'XML'
+<VPNs>
+  <VPN><name>Custom TOTP VPN</name><protocol>anyconnect</protocol><host>c.example.com</host><authGroup></authGroup><user>carol</user><password></password><duo2FAMethod></duo2FAMethod><serverCertificate></serverCertificate><authMode>password</authMode><tokenMode>totp</tokenMode><totpAlgorithm>sha256</totpAlgorithm><totpDigits>8</totpDigits><totpStepSeconds>60</totpStepSeconds></VPN>
+</VPNs>
+XML
+  load_profile_fields "Custom TOTP VPN"
+  [ "$VPN_TOTP_ALGORITHM" = "SHA256" ]
+  [ "$VPN_TOTP_DIGITS" = "8" ]
+  [ "$VPN_TOTP_STEP" = "60" ]
+}
+
 # --- generation + dependency gate ---
 
 @test "generate_totp returns the oathtool output" {
@@ -63,14 +83,32 @@ XML
   # It must arrive on stdin instead, and '-' must be the key argument.
   grep -qx -- "JBSWY3DPEHPK3PXP" "$BATS_TEST_TMPDIR/stdin"
   grep -qx -- "-" "$BATS_TEST_TMPDIR/argv"
-  grep -qx -- "--totp" "$BATS_TEST_TMPDIR/argv"
+  grep -qx -- "--totp=SHA1" "$BATS_TEST_TMPDIR/argv"
   grep -qx -- "-b" "$BATS_TEST_TMPDIR/argv"
 }
 
 @test "generate_totp matches the real oathtool for a known seed (stdin form)" {
   command -v oathtool >/dev/null 2>&1 || skip "oathtool not installed"
-  # Same time step, so the stdin form and the legacy argv form must agree.
+  # Same algorithm/digits/step, so the stdin form and the legacy argv form must agree.
   [ "$(generate_totp JBSWY3DPEHPK3PXP)" = "$(oathtool --totp -b JBSWY3DPEHPK3PXP)" ]
+}
+
+@test "generate_totp honors a custom algorithm/digits/step" {
+  oathtool() { printf '%s\n' "$@" > "$BATS_TEST_TMPDIR/argv"; cat > "$BATS_TEST_TMPDIR/stdin"; echo "13257512"; }
+  [ "$(generate_totp JBSWY3DPEHPK3PXP SHA256 8 60)" = "13257512" ]
+
+  grep -qx -- "JBSWY3DPEHPK3PXP" "$BATS_TEST_TMPDIR/stdin"
+  if grep -q "JBSWY3DPEHPK3PXP" "$BATS_TEST_TMPDIR/argv"; then false; fi
+  grep -qx -- "--totp=SHA256" "$BATS_TEST_TMPDIR/argv"
+  grep -qx -- "-d" "$BATS_TEST_TMPDIR/argv"
+  grep -qx -- "8" "$BATS_TEST_TMPDIR/argv"
+  grep -qx -- "-s" "$BATS_TEST_TMPDIR/argv"
+  grep -qx -- "60" "$BATS_TEST_TMPDIR/argv"
+}
+
+@test "generate_totp with custom settings matches the real oathtool" {
+  command -v oathtool >/dev/null 2>&1 || skip "oathtool not installed"
+  [ "$(generate_totp JBSWY3DPEHPK3PXP SHA256 8 30)" = "$(printf '%s\n' JBSWY3DPEHPK3PXP | oathtool --totp=SHA256 -b -d 8 -s 30 -)" ]
 }
 
 @test "require_oathtool succeeds when oathtool is present" {

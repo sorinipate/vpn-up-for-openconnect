@@ -206,3 +206,58 @@ EOF
   if grep -qF "key_password" "$SECRETS_SET_CALLS"; then false; fi
   grep -qF "passphrase-protected" "$WARNINGS"
 }
+
+# --- add_profile_wizard: advanced TOTP options (algorithm/digits/time step) ---
+
+@test "add_profile_wizard offers advanced TOTP options behind an opt-in gate and passes them to append_profile" {
+  command -v oathtool >/dev/null 2>&1 || skip "oathtool not installed"
+  _wizard_stubs
+  APPENDED_TOTP="$BATS_TEST_TMPDIR/appended-totp"
+  append_profile() { printf '%s %s %s\n' "${13}" "${14}" "${15}" > "$APPENDED_TOTP"; return 0; }
+  add_profile_wizard <<'EOF'
+TotpAdvanced
+anyconnect
+h.example.com
+
+user
+n
+t
+JBSWY3DPEHPK3PXP
+y
+sha256
+8
+60
+
+
+
+n
+n
+EOF
+  grep -qF "token_secret" "$SECRETS_SET_CALLS"
+  [ "$(cat "$APPENDED_TOTP")" = "SHA256 8 60" ]
+}
+
+@test "add_profile_wizard leaves TOTP algorithm/digits/step blank when the advanced gate is declined" {
+  command -v oathtool >/dev/null 2>&1 || skip "oathtool not installed"
+  _wizard_stubs
+  APPENDED_TOTP="$BATS_TEST_TMPDIR/appended-totp"
+  append_profile() { printf '%s %s %s\n' "${13}" "${14}" "${15}" > "$APPENDED_TOTP"; return 0; }
+  add_profile_wizard <<'EOF'
+TotpDefault
+anyconnect
+h.example.com
+
+user
+n
+t
+JBSWY3DPEHPK3PXP
+n
+
+
+
+n
+n
+EOF
+  grep -qF "token_secret" "$SECRETS_SET_CALLS"
+  [ "$(cat "$APPENDED_TOTP")" = "  " ]
+}

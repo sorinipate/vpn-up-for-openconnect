@@ -53,7 +53,10 @@ load_profile_fields() {
       -v "clientCertificate | clientcertificate" -n \
       -v "clientKey | clientkey" -n \
       -v "proxy | proxyUrl" -n \
-      -v "profileId | profileid" -n "${PROFILES_FILE}"
+      -v "profileId | profileid" -n \
+      -v "totpAlgorithm | totpalgorithm" -n \
+      -v "totpDigits | totpdigits" -n \
+      -v "totpStepSeconds | totpstepseconds" -n "${PROFILES_FILE}"
   )
   VPN_NAME="${fields[0]:-}"
   PROTOCOL="${fields[1]:-}"
@@ -83,6 +86,19 @@ load_profile_fields() {
   # while an approval must key off something immutable. Generated on first use
   # by profile_id_ensure.
   VPN_PROFILE_ID="${fields[14]:-}"
+  # RFC 6238 parameters for tokenMode=totp, all optional -- absent/empty falls
+  # back to oathtool's own implicit defaults (SHA1/6 digits/30s step), so an
+  # existing profile with none of these tags behaves exactly as before.
+  VPN_TOTP_ALGORITHM="$(printf '%s' "${fields[15]:-}" | tr '[:lower:]' '[:upper:]')"
+  VPN_TOTP_DIGITS="${fields[16]:-}"
+  VPN_TOTP_STEP="${fields[17]:-}"
+  # `: "${VAR:=default}"` rather than `[ -z "$VAR" ] && VAR=default` -- the
+  # latter returns 1 (and, unguarded, would make THIS FUNCTION return 1) on
+  # every profile that actually sets a non-default value, since it's the
+  # last thing load_profile_fields does. `:` always exits 0.
+  : "${VPN_TOTP_ALGORITHM:=SHA1}"
+  : "${VPN_TOTP_DIGITS:=6}"
+  : "${VPN_TOTP_STEP:=30}"
 
   # Intentionally NOT exported: these are read only by functions in this
   # shell, and exporting would copy the password into the environment of
