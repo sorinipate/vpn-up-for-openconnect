@@ -65,6 +65,18 @@ XML
   profile_exists "Doomed VPN"
 }
 
+@test "remove_profile aborts (keeps the profile, secret, and XML) if the login service cannot be removed" {
+  # remove_profile runs under `set -u`, not `set -e`, so a bare, unchecked
+  # service_uninstall call would fall straight through to deleting the
+  # secret and XML block anyway -- leaving a login service installed for a
+  # profile whose credentials and config no longer exist.
+  service_uninstall() { echo "uninstalled:$1" >> "$BATS_TEST_TMPDIR/calls"; return 1; }
+  run remove_profile "Doomed VPN" <<< "y"
+  [ "$status" -ne 0 ]
+  profile_exists "Doomed VPN"
+  if grep -q "secret-deleted:Doomed VPN" "$BATS_TEST_TMPDIR/calls"; then false; fi
+}
+
 @test "run_hooks executes safe hooks with event env, skips unsafe ones" {
   mkdir -p "$DATA_DIR/hooks/connected.d"
   cat > "$DATA_DIR/hooks/connected.d/10-good" <<'EOF'

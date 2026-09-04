@@ -303,8 +303,16 @@ _service_load() {
     launchctl load -w "$path" && LOADED_OK=1
   else
     if command -v systemctl >/dev/null 2>&1; then
-      systemctl --user daemon-reload
-      systemctl --user enable --now "$(basename "$path")" && LOADED_OK=1
+      # A failed daemon-reload means systemd hasn't seen the file's new
+      # content -- proceeding to `enable --now` anyway risks (re)activating
+      # whatever it still has cached (a stale or even the just-replaced old
+      # unit), which could report LOADED_OK=1 for content that was never
+      # actually loaded. Abort before enabling anything in that case.
+      if systemctl --user daemon-reload; then
+        systemctl --user enable --now "$(basename "$path")" && LOADED_OK=1
+      else
+        print_danger "systemctl --user daemon-reload failed for '%s'; not enabling it against a possibly stale daemon state.\n" "$profile"
+      fi
     else
       print_warning "Wrote %s; systemctl not found, enable it manually.\n" "$path"
       LOADED_OK=1
@@ -316,6 +324,34 @@ _service_load() {
   # launchctl/systemctl failure, that bare call would abort the caller under
   # errexit (bats' own included) before the LOADED_OK check -- and rollback
   # -- ever ran. Same bug class as the service_install ending fixed above.
+  return 0
+}
+
+# Restore whatever service_install's step 2 stopped, after a later step
+# failed -- verifying both that the file ends up back in place and that it
+# actually reloads, rather than assuming either. An unverified "Restored"
+# message would be worse than none: it would tell the operator their VPN
+# service is fine when it might not be. RESTORE_PATH empty means nothing
+# was stopped (a fresh install, nothing previously active) -- nothing to do.
+# TARGET is where a non-legacy restore belongs; a legacy pair is reloaded at
+# its own, never-moved path instead (RESTORE_IS_LEGACY=1).
+_service_restore_previous() {
+  local target="$1" restore_path="$2" restore_is_legacy="$3" profile="$4"
+  [ -n "$restore_path" ] || return 0
+  local reload_path="$restore_path"
+  if [ "$restore_is_legacy" != 1 ]; then
+    reload_path="$target"
+    if [ "$restore_path" != "$target" ] && ! mv -f "$restore_path" "$target" 2>/dev/null; then
+      print_danger "Could not move the previous service definition for '%s' back into place (still at %s); restore it manually.\n" "$profile" "$restore_path"
+      return 1
+    fi
+  fi
+  _service_load "$reload_path" "$profile" >/dev/null 2>&1
+  if [ "$LOADED_OK" != 1 ]; then
+    print_danger "Restored the previous service definition for '%s' at %s but it did not reload; start it manually.\n" "$profile" "$reload_path"
+    return 1
+  fi
+  print_warning "Restored the previous working service for '%s'.\n" "$profile"
   return 0
 }
 
@@ -344,7 +380,11 @@ service_install() {
     [ -s "$staged" ] || { rm -f "$staged"; print_danger "Generated systemd unit for '%s' is empty; nothing changed.\n" "$profile"; return 1; }
   fi
 
-  # 2) Identify what's currently active, so it can be restored on failure.
+  # 2) Identify + stop whatever's currently active, so it can be restored on
+  # failure. restore_path always tracks where the just-stopped definition
+  # CURRENTLY lives -- before a backup-rename attempt succeeds, that's still
+  # $target itself -- so _service_restore_previous can find it regardless of
+  # which later step fails.
   local restore_path="" restore_is_legacy=0
   if [ -f "$target" ]; then
     local old_path="${target}.old"
@@ -362,8 +402,15 @@ service_install() {
       print_warning "Nothing was changed for '%s'.\n" "$profile"
       return 1
     fi
-    mv -f "$target" "$old_path" || { rm -f "$staged"; print_danger "Could not back up the existing service definition for '%s'; nothing changed.\n" "$profile"; return 1; }
-    restore_path="$old_path"
+    restore_path="$target"
+    if mv -f "$target" "$old_path"; then
+      restore_path="$old_path"
+    else
+      print_danger "Stopped the existing service for '%s' but could not back it up; restoring it.\n" "$profile"
+      rm -f "$staged"
+      _service_restore_previous "$target" "$restore_path" 0 "$profile"
+      return 1
+    fi
   else
     local legacy; legacy="$(_service_legacy_path_for "$profile")"
     if [ -f "$legacy" ]; then
@@ -380,7 +427,15 @@ service_install() {
       elif [ -n "$legacy_owner" ]; then
         print_warning "A legacy-named service file exists at %s but belongs to a different profile ('%s'); leaving it untouched.\n" "$legacy" "$legacy_owner"
       else
-        print_warning "A legacy-named service file exists at %s but its owning profile could not be verified; leaving it untouched.\n" "$legacy"
+        # Unverifiable ownership must fail closed, the same as an
+        # unattributable legacy pid/state pair does in
+        # resolve_profile_runtime_files: this file could in fact BE the
+        # requested profile's own pre-collision-fix service, and installing
+        # over it blind risks two registrations (old + new) for the same
+        # VPN, one of them invisible to this code.
+        rm -f "$staged"
+        print_danger "A legacy-named service file exists at %s but its owning profile could not be verified; refusing to install until this is resolved. Check manually and remove or rename it if it does not belong to '%s'.\n" "$legacy" "$profile"
+        return 1
       fi
     fi
   fi
@@ -389,9 +444,7 @@ service_install() {
   if ! mv -f "$staged" "$target"; then
     rm -f "$staged"
     print_danger "Could not activate the service definition for '%s'.\n" "$profile"
-    if [ -n "$restore_path" ] && [ "$restore_is_legacy" != 1 ]; then
-      mv -f "$restore_path" "$target" 2>/dev/null
-    fi
+    _service_restore_previous "$target" "$restore_path" "$restore_is_legacy" "$profile"
     return 1
   fi
 
@@ -406,15 +459,7 @@ service_install() {
       command -v systemctl >/dev/null 2>&1 && systemctl --user disable --now "$(basename "$target")" 2>/dev/null
     fi
     rm -f "$target"
-    if [ "$restore_is_legacy" = 1 ]; then
-      # The legacy file was only unloaded, never moved -- just reload it.
-      _service_load "$restore_path" "$profile" >/dev/null 2>&1
-      print_warning "Restored the previous (legacy-named) working service for '%s'.\n" "$profile"
-    elif [ -n "$restore_path" ]; then
-      mv -f "$restore_path" "$target" 2>/dev/null
-      _service_load "$target" "$profile" >/dev/null 2>&1
-      print_warning "Restored the previous working service for '%s'.\n" "$profile"
-    fi
+    _service_restore_previous "$target" "$restore_path" "$restore_is_legacy" "$profile"
     return 1
   fi
 
@@ -461,6 +506,10 @@ service_uninstall() {
   # failure.
   _service_stop_and_verify "$target" "$profile" || return 1
   rm -f "$target"
+  if [ -e "$target" ]; then
+    print_danger "Stopped the service for '%s' but could not remove its definition file (%s); left in place.\n" "$profile" "$target"
+    return 1
+  fi
   print_success "Removed service for '%s'.\n" "$profile"
   print_warning "If the VPN is still connected, stop it with: %s stop '%s'\n" "${DISPLAY_NAME}" "$profile"
 }

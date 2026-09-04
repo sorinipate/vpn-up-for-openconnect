@@ -119,8 +119,13 @@ attempt_state_file() {
 _rprf_nothing_running() {
   local name="$1" new_pid="$2" new_state="$3" new_dirty="$4"
   if [ "$new_dirty" = 1 ]; then
-    print_warning "Stale-looking connection state for '%s' exists (%s / %s) but was not removed here to avoid a race with a concurrent connection attempt; run '%s status' (which already cleans up dead entries) or check manually, then retry.\n" \
-      "$name" "$new_pid" "$new_state" "${DISPLAY_NAME}"
+    # NOT pointed at `vpn-up status` as a fix: its own stale-pid pruning
+    # reads a pid, decides it's dead, and rm's it with no lifecycle lock --
+    # the exact read-then-delete race this function was deliberately
+    # written to avoid, just not yet closed there either (a separate,
+    # pre-existing issue, not introduced or worsened by this one).
+    print_warning "Stale-looking connection state for '%s' exists (%s / %s) but was not removed here to avoid a race with a concurrent connection attempt. Confirm no connection or 'start' is in progress for this profile, then remove those files manually if they're genuinely stale, and retry.\n" \
+      "$name" "$new_pid" "$new_state"
     return 1
   fi
   return 0

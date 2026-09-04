@@ -271,7 +271,15 @@ remove_profile() {
 
   # login service -- service_uninstall already handles "nothing installed"
   # (new or legacy naming) gracefully, so no existence pre-check is needed.
-  service_uninstall "$name"
+  # Its failure must stop this function: the program runs under `set -u`,
+  # not `set -e`, so a bare, unchecked call here would fall straight through
+  # to deleting the secret and XML block anyway, leaving a login service
+  # installed (and possibly still loaded) for a profile whose credentials
+  # and config no longer exist.
+  if ! service_uninstall "$name"; then
+    print_danger "Could not remove the login service for '%s'; the profile itself was not removed. Resolve the service manually (see the error above), then retry.\n" "$name"
+    return 1
+  fi
 
   # stored secrets (password, TOTP seed, PKCS#11 PIN — all of them)
   secrets_delete_profile "$name"

@@ -26,9 +26,19 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
   now fail closed (refuse, rather than guess) when a legacy pid file's
   ownership can't be positively established. Installing/uninstalling a login
   service for a profile that collides with an existing legacy-named one now
-  verifies the on-disk definition's embedded profile name before touching it,
-  and activation is staged/validated/rolled-back rather than writing straight
-  over a possibly-live file.
+  verifies the on-disk definition's embedded profile name before touching it
+  — refusing outright, rather than warning and proceeding, when that
+  ownership can't be verified at all — and activation is staged/validated,
+  with rollback that both restores the previous definition's file and
+  verifies it actually reloads (a `systemctl --user daemon-reload` failure no
+  longer lets a later `enable --now` silently activate stale daemon state).
+  The rate-limiter's admission gate (`admit_attempt`) now consults the same
+  tri-state resolver directly instead of its boolean wrapper, closing a gap
+  where ambiguous runtime state read as "not running" and let admission
+  continue; `remove_profile` now aborts (instead of continuing on to delete
+  the secret and XML block) if removing the login service fails; and
+  `service_uninstall` verifies its own removal actually succeeded rather than
+  assuming it did.
 
 ### Added
 

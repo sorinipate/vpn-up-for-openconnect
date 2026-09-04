@@ -151,3 +151,108 @@ XML
   run service_uninstall "Svc VPN"   # idempotent
   [ "$status" -eq 0 ]
 }
+
+@test "service_uninstall fails if the definition file cannot actually be removed" {
+  _setup_install_stubs
+  service_install "Svc VPN"
+  local target; target="$(_service_path_for "Svc VPN")"
+  rm() { :; }   # "succeeds" but never actually removes anything
+  run service_uninstall "Svc VPN"
+  [ "$status" -ne 0 ]
+  [ -e "$target" ]
+}
+
+@test "an unverifiable legacy-named service file blocks install, fails closed" {
+  # Mirrors resolve_profile_runtime_files' own rule for an unattributable
+  # legacy pid/state pair: the file could in fact be this profile's own
+  # pre-collision-fix service, so an unreadable owner must refuse, not warn
+  # and proceed.
+  _setup_install_stubs
+  local legacy; legacy="$(_service_legacy_path_for "Svc VPN")"
+  mkdir -p "$(dirname "$legacy")"
+  echo "not a real service definition" > "$legacy"
+  run service_install "Svc VPN"
+  [ "$status" -ne 0 ]
+  [ ! -e "$(_service_path_for "Svc VPN")" ]
+  [ -e "$legacy" ]
+  [[ "$output" == *"could not be verified"* ]]
+}
+
+@test "upgrade rollback restores and verifiably reloads the previous service after a load failure" {
+  _setup_install_stubs
+  service_install "Svc VPN"
+  local target; target="$(_service_path_for "Svc VPN")"
+
+  # Fail only the FIRST "load"/"enable --now" call after this point (the
+  # upgrade's own activation attempt) -- the baseline install above already
+  # succeeded via the original stub, and the restore's reload (the second
+  # call counted here) must still succeed, so this actually exercises
+  # verified rollback rather than "everything fails".
+  echo 0 > "$BATS_TEST_TMPDIR/load-count"
+  launchctl() {
+    echo "launchctl $*" >> "$BATS_TEST_TMPDIR/svc-calls"
+    if [ "$1" = "load" ]; then
+      local n; n=$(( $(cat "$BATS_TEST_TMPDIR/load-count") + 1 )); echo "$n" > "$BATS_TEST_TMPDIR/load-count"
+      [ "$n" -eq 1 ] && return 1
+    fi
+    return 0
+  }
+  systemctl() {
+    echo "systemctl $*" >> "$BATS_TEST_TMPDIR/svc-calls"
+    case "$*" in
+      *"enable --now"*)
+        local n; n=$(( $(cat "$BATS_TEST_TMPDIR/load-count") + 1 )); echo "$n" > "$BATS_TEST_TMPDIR/load-count"
+        [ "$n" -eq 1 ] && return 1
+        ;;
+      *"show --property=ActiveState"*) echo "inactive" ;;
+    esac
+    return 0
+  }
+
+  run service_install "Svc VPN"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Restored the previous working service"* ]]
+  [ -f "$target" ]
+  local reload_calls
+  reload_calls="$(grep -cE '^(launchctl load|systemctl .*enable --now)' "$BATS_TEST_TMPDIR/svc-calls")"
+  [ "$reload_calls" -eq 3 ]   # baseline install + the upgrade's failed attempt + the verified restore
+}
+
+@test "a failed backup-rename still gets the already-stopped service reloaded" {
+  _setup_install_stubs
+  service_install "Svc VPN"
+  local target; target="$(_service_path_for "Svc VPN")"
+
+  mv() {
+    case "$*" in
+      *".old") return 1 ;;
+    esac
+    command mv "$@"
+  }
+
+  run service_install "Svc VPN"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Restored the previous working service"* ]]
+  [ -f "$target" ]
+  local reload_calls
+  reload_calls="$(grep -cE '^(launchctl load|systemctl .*enable --now)' "$BATS_TEST_TMPDIR/svc-calls")"
+  [ "$reload_calls" -eq 2 ]   # baseline install + the in-place reload (no activation was ever attempted)
+}
+
+@test "a failed daemon-reload blocks enabling a possibly-stale unit (systemd)" {
+  if [ "$(uname)" = "Darwin" ]; then
+    skip "daemon-reload is systemd-specific"
+  fi
+  _setup_install_stubs
+  systemctl() {
+    echo "systemctl $*" >> "$BATS_TEST_TMPDIR/svc-calls"
+    case "$*" in
+      "--user daemon-reload") return 1 ;;
+      *"show --property=ActiveState"*) echo "inactive" ;;
+    esac
+    return 0
+  }
+  run service_install "Svc VPN"
+  [ "$status" -ne 0 ]
+  if grep -q "enable --now" "$BATS_TEST_TMPDIR/svc-calls"; then false; fi
+}
