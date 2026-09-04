@@ -355,6 +355,35 @@ _service_restore_previous() {
   return 0
 }
 
+# Clean up a leftover legacy-named service definition for PROFILE, if one
+# exists and is verifiably owned by it -- called unconditionally at the end
+# of a successful service_install, regardless of which branch installed the
+# new definition, so an orphaned legacy registration (e.g. left behind by an
+# install that crashed after activating the new target but before retiring
+# the old one) gets reconciled on the very next successful run rather than
+# never. A legacy file that's absent, or present but not verifiably owned by
+# PROFILE, is left completely untouched (not this function's problem) and
+# is not a failure. Verifies both the stop and the removal, the same
+# discipline this file uses everywhere else -- an unverified "cleaned up"
+# would be as misleading as an unverified "restored".
+_service_reconcile_legacy_leftover() {
+  local profile="$1"
+  local legacy; legacy="$(_service_legacy_path_for "$profile")"
+  [ -f "$legacy" ] || return 0
+  local legacy_owner; legacy_owner="$(_service_definition_profile "$legacy")"
+  [ "$legacy_owner" = "$profile" ] || return 0
+  if ! _service_stop_and_verify "$legacy" "$profile"; then
+    print_danger "A leftover legacy-named service for '%s' exists at %s and could not be confirmed stopped; remove it manually.\n" "$profile" "$legacy"
+    return 1
+  fi
+  rm -f "$legacy"
+  if [ -e "$legacy" ]; then
+    print_danger "A leftover legacy-named service for '%s' at %s could not be removed; remove it manually.\n" "$profile" "$legacy"
+    return 1
+  fi
+  return 0
+}
+
 # Staged, verified, checked, rollback-safe activation. Never writes directly
 # into a possibly-live $target, never leaves a previously working service
 # stopped if the new one fails to load.
@@ -386,17 +415,23 @@ service_install() {
   # $target itself -- so _service_restore_previous can find it regardless of
   # which later step fails.
   local restore_path="" restore_is_legacy=0
+  local old_path="${target}.old"
+  if [ -e "$old_path" ]; then
+    # A previous install attempt crashed between backing up and finishing --
+    # that leftover is the only recovery copy. Checked BEFORE (not inside)
+    # the `-f "$target"` branch below: the natural interrupted-upgrade state
+    # is stop -> rename target to .old -> crash, which leaves $target
+    # ITSELF missing -- if this check only fired while $target existed, that
+    # exact state would be silently treated as "fresh install" and the only
+    # working copy would sit ignored, at risk of being orphaned if the new
+    # activation then failed too (nothing here would have a restore_path to
+    # fall back on). Refuse outright regardless of whether $target exists.
+    rm -f "$staged"
+    print_danger "An unresolved backup from a previous install attempt exists at %s. Resolve it manually (verify which of %s / %s is the working definition, keep that one, remove the other), then retry. Nothing was changed.\n" \
+      "$old_path" "$target" "$old_path"
+    return 1
+  fi
   if [ -f "$target" ]; then
-    local old_path="${target}.old"
-    if [ -e "$old_path" ]; then
-      # A previous install attempt crashed between backing up and finishing
-      # -- that leftover is the only recovery copy; blindly overwriting it
-      # would destroy it. Refuse outright.
-      rm -f "$staged"
-      print_danger "An unresolved backup from a previous install attempt exists at %s. Resolve it manually (verify which of %s / %s is the working definition, keep that one, remove the other), then retry. Nothing was changed.\n" \
-        "$old_path" "$target" "$old_path"
-      return 1
-    fi
     if ! _service_stop_and_verify "$target" "$profile"; then
       rm -f "$staged"
       print_warning "Nothing was changed for '%s'.\n" "$profile"
@@ -453,10 +488,19 @@ service_install() {
 
   if [ "$LOADED_OK" != 1 ]; then
     print_danger "Wrote %s but could not load/start it; rolling back.\n" "$target"
-    if [ "$(uname)" = "Darwin" ]; then
-      launchctl unload -w "$target" 2>/dev/null
-    else
-      command -v systemctl >/dev/null 2>&1 && systemctl --user disable --now "$(basename "$target")" 2>/dev/null
+    # _service_stop_and_verify, not a raw unload/disable -- a failed
+    # load/enable is not proof nothing was actually registered or started;
+    # reloading the previous definition without first CONFIRMING the broken
+    # replacement is stopped risks two active registrations at once. If it
+    # can't be confirmed, the recovery artifact (restore_path) is left
+    # completely untouched -- deliberately NOT restoring the old service
+    # alongside something that might still be alive -- and this reports the
+    # rollback as incomplete rather than claiming a restore that may not be
+    # safe.
+    if ! _service_stop_and_verify "$target" "$profile"; then
+      print_danger "Could not confirm the failed replacement for '%s' is fully stopped; leaving it in place rather than risk two active registrations for the same VPN. The previous working definition is preserved at %s; resolve manually.\n" \
+        "$profile" "${restore_path:-$target}"
+      return 1
     fi
     rm -f "$target"
     _service_restore_previous "$target" "$restore_path" "$restore_is_legacy" "$profile"
@@ -466,14 +510,28 @@ service_install() {
   print_success "Installed and loaded service for '%s': %s\n" "$profile" "$target"
   print_warning "The VPN will now connect at login and auto-reconnect if it drops. Remove with: %s service uninstall '%s'\n" "${DISPLAY_NAME}" "$profile"
   # 5) Only now, having proven the replacement actually loads, remove the
-  # now-superseded backup/legacy file. `[ -n ... ] && rm ...` must not be the
-  # function's last statement: it returns 1 (false) whenever restore_path is
-  # empty -- the common fresh-install case -- which would make this whole,
-  # otherwise-successful function report failure to any caller checking its
-  # exit status directly (bats' own errexit included).
-  if [ -n "$restore_path" ]; then
+  # now-superseded backup, verifying it. `[ -n ... ] && rm ...` must not be
+  # the function's last statement: it returns 1 (false) whenever
+  # restore_path is empty -- the common fresh-install case -- which would
+  # make this whole, otherwise-successful function report failure to any
+  # caller checking its exit status directly (bats' own errexit included).
+  local cleanup_failed=0
+  if [ -n "$restore_path" ] && [ "$restore_is_legacy" != 1 ]; then
     rm -f "$restore_path"
+    if [ -e "$restore_path" ]; then
+      print_danger "Installed and loaded the new service for '%s', but could not remove the old backup at %s; remove it manually.\n" "$profile" "$restore_path"
+      cleanup_failed=1
+    fi
   fi
+  # Reconcile any same-profile legacy-named leftover regardless of which
+  # branch above ran -- not just when THIS run itself migrated one. A prior
+  # migration could have been interrupted after activating the new target
+  # but before retiring the legacy one, a state the "target already exists"
+  # branch in step 2 never looks at, so without this an orphaned legacy
+  # registration for this exact profile would never be reconciled by any
+  # future run either.
+  _service_reconcile_legacy_leftover "$profile" || cleanup_failed=1
+  [ "$cleanup_failed" = 0 ] || return 1
   return 0
 }
 
@@ -488,11 +546,20 @@ service_uninstall() {
       if [ "$legacy_owner" = "$profile" ]; then
         print_warning "Found a legacy-named service for '%s'; removing it.\n" "$profile"
         target="$legacy"
-      else
-        print_warning "A legacy-named service file exists at %s but does not appear to belong to '%s' (%s); leaving it untouched.\n" \
-          "$legacy" "$profile" "${legacy_owner:-owner unverifiable}"
+      elif [ -n "$legacy_owner" ]; then
+        print_warning "A legacy-named service file exists at %s but belongs to a different profile ('%s'); leaving it untouched.\n" "$legacy" "$legacy_owner"
         print_warning "No service installed for '%s' (%s).\n" "$profile" "$target"
         return 0
+      else
+        # Unverifiable ownership must fail closed, not be treated the same
+        # as "belongs to someone else" (which is a legitimate, harmless
+        # no-op here): this file could in fact BE the requested profile's
+        # own pre-collision-fix service. Silently reporting success (as
+        # "belongs to someone else" correctly does) would let a caller like
+        # remove_profile go on to delete the profile's secret and XML block
+        # while its login service is still installed and possibly loaded.
+        print_danger "A legacy-named service file exists at %s but its owning profile could not be verified; refusing to remove until this is resolved. Check manually and remove it if it does not belong to '%s'.\n" "$legacy" "$profile"
+        return 1
       fi
     else
       print_warning "No service installed for '%s' (%s).\n" "$profile" "$target"

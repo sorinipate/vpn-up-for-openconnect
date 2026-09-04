@@ -152,6 +152,90 @@ XML
   [ "$status" -eq 0 ]
 }
 
+@test "an unresolved .old backup blocks install even when target itself is missing (interrupted-upgrade crash state)" {
+  # The natural interrupted-upgrade crash state is stop -> rename target to
+  # .old -> crash, which leaves $target itself missing. The check for it
+  # must not be nested inside "if target exists", or this state is silently
+  # treated as a fresh install and the only working copy sits ignored.
+  _setup_install_stubs
+  local target old_path
+  target="$(_service_path_for "Svc VPN")"
+  old_path="${target}.old"
+  mkdir -p "$(dirname "$target")"
+  echo "previous working content" > "$old_path"
+  run service_install "Svc VPN"
+  [ "$status" -ne 0 ]
+  [ ! -e "$target" ]
+  [ -e "$old_path" ]
+  [ "$(cat "$old_path")" = "previous working content" ]
+  [[ "$output" == *"unresolved backup"* ]]
+}
+
+@test "service_uninstall fails closed when a legacy-named file's owner can't be verified" {
+  _setup_install_stubs
+  local legacy; legacy="$(_service_legacy_path_for "Svc VPN")"
+  mkdir -p "$(dirname "$legacy")"
+  echo "not a real service definition" > "$legacy"
+  run service_uninstall "Svc VPN"
+  [ "$status" -ne 0 ]
+  [ -e "$legacy" ]
+}
+
+@test "service_uninstall leaves a legacy-named file belonging to a different (slug-colliding) profile untouched" {
+  _setup_install_stubs
+  local legacy; legacy="$(_service_legacy_path_for "Svc VPN")"
+  mkdir -p "$(dirname "$legacy")"
+  if [ "$(uname)" = "Darwin" ]; then
+    write_launch_agent_plist "Other VPN" > "$legacy"
+  else
+    write_systemd_unit "Other VPN" > "$legacy"
+  fi
+  run service_uninstall "Svc VPN"
+  [ "$status" -eq 0 ]
+  [ -e "$legacy" ]
+}
+
+@test "install reconciles a same-profile legacy leftover even via the upgrade branch, not just migration" {
+  # Simulates a prior migration interrupted after activating the new target
+  # but before retiring the legacy one -- the "target already exists"
+  # (upgrade) branch never looks at the legacy path on its own, so without
+  # explicit reconciliation this leftover would never be cleaned up by any
+  # future run.
+  _setup_install_stubs
+  service_install "Svc VPN"
+  local legacy; legacy="$(_service_legacy_path_for "Svc VPN")"
+  if [ "$(uname)" = "Darwin" ]; then
+    write_launch_agent_plist "Svc VPN" > "$legacy"
+  else
+    write_systemd_unit "Svc VPN" > "$legacy"
+  fi
+  run service_install "Svc VPN"
+  [ "$status" -eq 0 ]
+  [ ! -e "$legacy" ]
+}
+
+@test "install reports failure if a same-profile legacy leftover cannot actually be removed" {
+  _setup_install_stubs
+  service_install "Svc VPN"
+  local legacy; legacy="$(_service_legacy_path_for "Svc VPN")"
+  if [ "$(uname)" = "Darwin" ]; then
+    write_launch_agent_plist "Svc VPN" > "$legacy"
+  else
+    write_systemd_unit "Svc VPN" > "$legacy"
+  fi
+  rm() {
+    case "$*" in
+      *"$legacy") : ;;   # "succeeds" without actually removing this one file
+      *) command rm "$@" ;;
+    esac
+  }
+  run service_install "Svc VPN"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"leftover legacy-named service"* ]]
+  [ -f "$(_service_path_for "Svc VPN")" ]   # the actual new service is still fine
+  [ -e "$legacy" ]
+}
+
 @test "service_uninstall fails if the definition file cannot actually be removed" {
   _setup_install_stubs
   service_install "Svc VPN"
@@ -216,6 +300,55 @@ XML
   local reload_calls
   reload_calls="$(grep -cE '^(launchctl load|systemctl .*enable --now)' "$BATS_TEST_TMPDIR/svc-calls")"
   [ "$reload_calls" -eq 3 ]   # baseline install + the upgrade's failed attempt + the verified restore
+}
+
+@test "rollback preserves the backup untouched when the failed replacement can't be confirmed stopped" {
+  # A failed load/enable is not proof nothing was registered or started;
+  # rollback must use the same verified stop as everywhere else, not a raw
+  # unload/disable -- and must NOT restore/reload the previous definition
+  # while the broken replacement can't be confirmed inactive, to avoid two
+  # active registrations for the same VPN at once.
+  _setup_install_stubs
+  service_install "Svc VPN"
+  local target; target="$(_service_path_for "Svc VPN")"
+  local before; before="$(cat "$target")"
+  local label; label="$(basename "$target" .plist)"
+
+  # The FIRST stop-verification (step 2, confirming the currently-installed,
+  # healthy target is cleanly stopped before backing it up) must still
+  # succeed; only the SECOND one (step 4's rollback, confirming the broken
+  # replacement is stopped) reports "still there" -- otherwise this would
+  # never even reach activation/load at all.
+  echo 0 > "$BATS_TEST_TMPDIR/verify-count"
+  launchctl() {
+    echo "launchctl $*" >> "$BATS_TEST_TMPDIR/svc-calls"
+    case "$1" in
+      load) return 1 ;;                                # the upgrade's own activation fails
+      list)
+        local n; n=$(( $(cat "$BATS_TEST_TMPDIR/verify-count") + 1 )); echo "$n" > "$BATS_TEST_TMPDIR/verify-count"
+        [ "$n" -gt 1 ] && printf '1234\t0\t%s\n' "$label"
+        ;;
+    esac
+    return 0
+  }
+  systemctl() {
+    echo "systemctl $*" >> "$BATS_TEST_TMPDIR/svc-calls"
+    case "$*" in
+      *"enable --now"*) return 1 ;;                     # the upgrade's own activation fails
+      *"show --property=ActiveState"*)
+        local n; n=$(( $(cat "$BATS_TEST_TMPDIR/verify-count") + 1 )); echo "$n" > "$BATS_TEST_TMPDIR/verify-count"
+        if [ "$n" -gt 1 ]; then echo "active"; else echo "inactive"; fi
+        ;;
+    esac
+    return 0
+  }
+
+  run service_install "Svc VPN"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"leaving it in place"* ]]
+  [ -f "${target}.old" ]
+  [ "$(cat "${target}.old")" = "$before" ]
+  if [[ "$output" == *"Restored the previous working service"* ]]; then false; fi
 }
 
 @test "a failed backup-rename still gets the already-stopped service reloaded" {

@@ -38,7 +38,17 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
   continue; `remove_profile` now aborts (instead of continuing on to delete
   the secret and XML block) if removing the login service fails; and
   `service_uninstall` verifies its own removal actually succeeded rather than
-  assuming it did.
+  assuming it did, and now fails closed (instead of a silent no-op) when a
+  legacy-named service file's owner can't be verified. Service-migration
+  rollback now uses the same verified stop check everywhere, including when
+  recovering from a failed load — never restoring a previous definition
+  alongside a broken replacement that couldn't be confirmed inactive — and a
+  crashed prior install (`target.old` left on disk) is now detected even when
+  `target` itself is also missing, not just when both are present. A same-
+  profile legacy service left over from an interrupted earlier migration is
+  now reconciled (verified stop + verified removal) by the next successful
+  `service install`, regardless of which code path performed it, instead of
+  persisting unnoticed indefinitely.
 
 ### Added
 
