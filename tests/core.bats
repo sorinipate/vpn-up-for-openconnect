@@ -153,13 +153,21 @@ EOF
 }
 
 @test "stop with profile arg targets only that profile" {
+  # Legacy (slug-only) pid files with no state to prove ownership are now
+  # AMBIGUOUS (resolve_profile_runtime_files fails closed) -- a state file's
+  # `profile=` line is required so resolution can positively attribute each
+  # one before stop is allowed to touch it.
   is_openconnect_pid() { return 1; }
   load_config() { :; }
   echo 1 > "$DATA_DIR/pids/${PROGRAM_NAME}.Keep.pid"
+  printf 'profile=Keep\n' > "$DATA_DIR/pids/${PROGRAM_NAME}.Keep.state"
   echo 2 > "$DATA_DIR/pids/${PROGRAM_NAME}.Gone.pid"
+  printf 'profile=Gone\n' > "$DATA_DIR/pids/${PROGRAM_NAME}.Gone.state"
   stop "Gone"
   [ ! -e "$DATA_DIR/pids/${PROGRAM_NAME}.Gone.pid" ]
+  [ ! -e "$DATA_DIR/pids/${PROGRAM_NAME}.Gone.state" ]
   [ -e "$DATA_DIR/pids/${PROGRAM_NAME}.Keep.pid" ]
+  [ -e "$DATA_DIR/pids/${PROGRAM_NAME}.Keep.state" ]
 }
 
 @test "stop reports not running when no pid files exist" {

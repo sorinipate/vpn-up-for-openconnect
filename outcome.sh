@@ -439,7 +439,20 @@ admit_attempt() {
     # closes the exact gap start()'s one-time ensure_profile_not_running()
     # check leaves open once admission is allowed to wait an arbitrary
     # amount of time afterward.
-    if profile_vpn_running "$profile"; then
+    # Called directly rather than via profile_vpn_running(): that wrapper's
+    # boolean return can't distinguish "ambiguous" from "not running" (it
+    # returns false for both), which here would let admission continue as
+    # if nothing were running -- the exact gap this check exists to close.
+    # Unlike a live owner/tunnel below, ambiguity doesn't resolve itself on
+    # a timer (a legacy pid file whose ownership can't be proven, or a
+    # confirmed-dead legacy pair whose cleanup failed, both need a human),
+    # so this fails the admission outright rather than looping -- the
+    # resolver has already printed its own diagnostic.
+    if ! resolve_profile_runtime_files "$profile"; then
+      _state_unlock "$f" "$token"
+      return 1
+    fi
+    if [ -n "$RESOLVED_PID_FILE" ]; then
       _state_unlock "$f" "$token"
       if [ "$mode" = SERVICE ]; then
         sleep "$_ATTEMPT_POLL"

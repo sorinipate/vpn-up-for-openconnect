@@ -55,8 +55,16 @@ load_config() {
 }
 
 ensure_profile_not_running() {
-  set_profile_paths "$VPN_NAME"
-  if profile_vpn_running "$VPN_NAME"; then
+  set_profile_paths "$VPN_NAME" || return 1
+  # Called directly rather than via profile_vpn_running(): that wrapper's
+  # boolean return can't distinguish "not running" from "ambiguous legacy
+  # state" (both come back false), and conflating them here would let a
+  # profile with unresolvable legacy connection state start a second tunnel.
+  if ! resolve_profile_runtime_files "$VPN_NAME"; then
+    print_danger "Cannot determine whether '%s' is already running (unresolvable legacy connection state); resolve it manually before starting.\n" "${VPN_NAME}"
+    return 1
+  fi
+  if [ -n "$RESOLVED_PID_FILE" ]; then
     print_warning "VPN profile '%s' is already running. Run '%s status' or '%s stop \"%s\"' first.\n" "${VPN_NAME}" "${DISPLAY_NAME}" "${DISPLAY_NAME}" "${VPN_NAME}"
     return 1
   fi
@@ -353,8 +361,12 @@ connection_preflight() {
     return "$VPN_RC_CONFIG"
   fi
 
-  # Each profile gets its own PID/state/log files
-  set_profile_paths "${VPN_NAME}"
+  # Each profile gets its own PID/state/log files. A fresh connection always
+  # writes into the new (collision-safe) namespace, unconditionally -- never
+  # touches legacy paths, which is the other half of what makes "never
+  # rename a live legacy file" correct: nothing writes to the legacy
+  # location again after this point.
+  set_profile_paths "${VPN_NAME}" || return "$VPN_RC_CONFIG"
   print_warning "Process ID (PID) stored in %s ...\n" "${PID_FILE_PATH}"
   print_warning "Logs file (LOG) stored in %s ...\n" "${LOG_FILE_PATH}"
 
@@ -861,12 +873,15 @@ stop() {
 
   local files=()
   if [ -n "$requested" ]; then
-    f="${DATA_DIR}/pids/${PROGRAM_NAME}.$(profile_slug "$requested").pid"
-    if [ ! -f "$f" ]; then
+    if ! resolve_profile_runtime_files "$requested"; then
+      print_danger "Cannot determine whether '%s' is running (unresolvable legacy connection state); resolve it manually.\n" "$requested"
+      return 1
+    fi
+    if [ -z "$RESOLVED_PID_FILE" ]; then
       print_warning "VPN profile '%s' is not running.\n" "$requested"
       return 0
     fi
-    files=("$f")
+    files=("$RESOLVED_PID_FILE")
   else
     for f in "${DATA_DIR}/pids/"*.pid; do
       [ -e "$f" ] && files+=("$f")

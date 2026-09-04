@@ -25,13 +25,19 @@ XML
   source "$BATS_TEST_DIRNAME/../setup.sh"
   # stubs for remove_profile collaborators
   _service_path_for() { echo "$BATS_TEST_TMPDIR/no-such-service"; }
+  _service_log_file() { echo "$BATS_TEST_TMPDIR/no-such-svclog"; }
   service_uninstall() { echo "uninstalled:$1" >> "$BATS_TEST_TMPDIR/calls"; }
   secrets_delete() { echo "secret-deleted:$1.$2" >> "$BATS_TEST_TMPDIR/calls"; }
   is_openconnect_pid() { return 1; }
 }
 
 @test "remove_profile deletes the block, secret, and files; keeps others" {
-  touch "$DATA_DIR/pids/${PROGRAM_NAME}.Doomed_VPN.state" "$DATA_DIR/logs/${PROGRAM_NAME}.Doomed_VPN.log"
+  # A legacy pid/state pair needs a `profile=` line to be positively
+  # attributed and retired by resolve_profile_runtime_files; the connection
+  # log lives in the (collision-safe) new namespace, per profile_log_file.
+  printf 'profile=Doomed VPN\n' > "$DATA_DIR/pids/${PROGRAM_NAME}.Doomed_VPN.state"
+  local logfile; logfile="$(profile_log_file "Doomed VPN")"
+  touch "$logfile"
   remove_profile "Doomed VPN" <<< "y"
   if profile_exists "Doomed VPN"; then false; fi
   profile_exists "Keeper VPN"
@@ -41,7 +47,7 @@ XML
   grep -q "secret-deleted:Doomed VPN.key_password" "$BATS_TEST_TMPDIR/calls"
   if grep -q "secret-deleted:Keeper VPN" "$BATS_TEST_TMPDIR/calls"; then false; fi
   [ ! -e "$DATA_DIR/pids/${PROGRAM_NAME}.Doomed_VPN.state" ]
-  [ ! -e "$DATA_DIR/logs/${PROGRAM_NAME}.Doomed_VPN.log" ]
+  [ ! -e "$logfile" ]
   xmlstarlet val -q "$PROFILES_FILE"
 }
 
@@ -57,6 +63,18 @@ XML
   run remove_profile "Doomed VPN" <<< "y"
   [ "$status" -ne 0 ]
   profile_exists "Doomed VPN"
+}
+
+@test "remove_profile aborts (keeps the profile, secret, and XML) if the login service cannot be removed" {
+  # remove_profile runs under `set -u`, not `set -e`, so a bare, unchecked
+  # service_uninstall call would fall straight through to deleting the
+  # secret and XML block anyway -- leaving a login service installed for a
+  # profile whose credentials and config no longer exist.
+  service_uninstall() { echo "uninstalled:$1" >> "$BATS_TEST_TMPDIR/calls"; return 1; }
+  run remove_profile "Doomed VPN" <<< "y"
+  [ "$status" -ne 0 ]
+  profile_exists "Doomed VPN"
+  if grep -q "secret-deleted:Doomed VPN" "$BATS_TEST_TMPDIR/calls"; then false; fi
 }
 
 @test "run_hooks executes safe hooks with event env, skips unsafe ones" {

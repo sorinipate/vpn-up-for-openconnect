@@ -531,8 +531,12 @@ _sf() { attempt_state_file "$1"; }
   # Reproduces the exact gap a review finding described: run_openconnect's
   # background branch releases the owner as soon as OpenConnect finishes
   # DAEMONIZING, not when the tunnel ends -- so a live tunnel can exist with
-  # attempt_owner_pid=0. profile_vpn_running must be checked independently.
-  profile_vpn_running() { [ "$1" = "Work VPN" ]; }
+  # attempt_owner_pid=0. resolve_profile_runtime_files is stubbed directly,
+  # not profile_vpn_running: admit_attempt calls the resolver itself now
+  # (its boolean wrapper can't tell "ambiguous" from "not running" apart --
+  # see the ambiguity test below), the same direct-call pattern
+  # ensure_profile_not_running/stop/remove_profile already use.
+  resolve_profile_runtime_files() { RESOLVED_PID_FILE="/fake/pid"; RESOLVED_STATE_FILE="/fake/state"; return 0; }
   ( admit_attempt "Work VPN" SERVICE; touch "$BATS_TEST_TMPDIR/admitted-despite-live-tunnel" ) &
   local bgpid=$!
   sleep 0.3
@@ -542,9 +546,17 @@ _sf() { attempt_state_file "$1"; }
 }
 
 @test "INTERACTIVE admission returns ALREADY_ACTIVE (2) rather than waiting for a live tunnel" {
-  profile_vpn_running() { [ "$1" = "Work VPN" ]; }
+  resolve_profile_runtime_files() { RESOLVED_PID_FILE="/fake/pid"; RESOLVED_STATE_FILE="/fake/state"; return 0; }
   run admit_attempt "Work VPN" INTERACTIVE
   [ "$status" -eq 2 ]
+}
+
+@test "admission fails closed (does not proceed) when runtime state is ambiguous, for both modes" {
+  resolve_profile_runtime_files() { return 1; }
+  run admit_attempt "Work VPN" INTERACTIVE
+  [ "$status" -eq 1 ]
+  run admit_attempt "Work VPN" SERVICE
+  [ "$status" -eq 1 ]
 }
 
 # ------------------------------------------------- the real _state_persist

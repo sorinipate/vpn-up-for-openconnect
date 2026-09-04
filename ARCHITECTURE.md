@@ -75,14 +75,25 @@ created `700`, files `600`. Legacy in-repo `config/<name>.*` files migrate here 
 ├── vpn-up.command.config        # sourced shell config (BACKGROUND, QUIET, SHOW_BANNER, NOTIFICATIONS, …)
 ├── vpn-up.command.profiles      # <VPNs> XML; one <VPN> per profile
 ├── vpn-up.command.secrets[.enc] # OpenSSL vault (only if that backend is in use)
-├── logs/<name>.<slug>.log       # per-profile connection log (+ service.<slug>.log)
-├── pids/<name>.<slug>.pid       # per-profile PID
-├── pids/<name>.<slug>.state     # profile/host/connected_at for `status`
+├── logs/<name>.<slug>.<hash>.log       # per-profile connection log (+ service.<slug>.<hash>.log)
+├── pids/<name>.<slug>.<hash>.pid       # per-profile PID
+├── pids/<name>.<slug>.<hash>.state     # profile/host/connected_at for `status`
 └── hooks/{connected,disconnected}.d/*   # user lifecycle scripts (must be safely owned)
 ```
 
 `PROGRAM_NAME` (e.g. `vpn-up.command`) namespaces data files, slugs, and the Keychain
 namespace; `DISPLAY_NAME` (`vpn-up`) is used only in user-facing text.
+
+`<slug>` (`profile_slug`) is lossy — `tr -c 'A-Za-z0-9._-' '_'` collapses distinct
+names like `"Work VPN"` and `"Work/VPN"` to the same string — so it's only ever a
+human-readable prefix, never sufficient on its own to keep two profiles' files
+apart. `<hash>` is a full SHA-256 digest of the exact profile name (`profile_key`,
+`logging.sh`), which is what actually guarantees collision-safety; the pair also
+namespaces the installed launchd `Label` / systemd unit filename (`service.sh`).
+Pre-collision-fix (`<name>.<slug>.pid`/`.state`, no hash) pid/state pairs are still
+recognized: `resolve_profile_runtime_files` reads them (matching ownership via the
+state file's `profile=` line) and retires a confirmed-dead one, but never renames a
+live one into the new scheme — see the file's own header comment for why.
 
 ### Profile schema (`<VPN>`)
 `name`, `protocol`, `host`, `authGroup` (alias `group`), `user` (alias `username`),

@@ -6,6 +6,50 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 ---
 
 ## [Unreleased]
+### Fixed
+
+- **Distinct profile names that collapse to the same filesystem slug (e.g.
+  `"Work VPN"` and `"Work/VPN"`, both slugging to `Work_VPN`) could share a
+  PID file, connection-state file, log file, and — for login services — the
+  same launchd `Label`/plist or systemd unit file, now that multiple
+  simultaneous VPN connections are supported.** Every per-profile path
+  (`profile_pid_file`/`profile_state_file`/`profile_log_file`, `logging.sh`;
+  `_service_path_for`/`_service_log_file`, `service.sh`) now includes a full
+  SHA-256 digest of the exact profile name alongside the (still lossy, now
+  merely cosmetic) slug, mirroring the scheme the TOTP rate-limiter's
+  `attempt_state_file` already used. A pre-fix (slug-only) pid/state pair left
+  on disk is still recognized — `resolve_profile_runtime_files` reads it,
+  verifies ownership via the state file's `profile=` line, and retires it once
+  confirmed dead — but is never renamed into the new scheme, since a live
+  pid file is written directly by `openconnect` itself and can't be safely
+  raced against. `stop <profile>`, `remove_profile`, and `ensure_profile_not_running`
+  now fail closed (refuse, rather than guess) when a legacy pid file's
+  ownership can't be positively established. Installing/uninstalling a login
+  service for a profile that collides with an existing legacy-named one now
+  verifies the on-disk definition's embedded profile name before touching it
+  — refusing outright, rather than warning and proceeding, when that
+  ownership can't be verified at all — and activation is staged/validated,
+  with rollback that both restores the previous definition's file and
+  verifies it actually reloads (a `systemctl --user daemon-reload` failure no
+  longer lets a later `enable --now` silently activate stale daemon state).
+  The rate-limiter's admission gate (`admit_attempt`) now consults the same
+  tri-state resolver directly instead of its boolean wrapper, closing a gap
+  where ambiguous runtime state read as "not running" and let admission
+  continue; `remove_profile` now aborts (instead of continuing on to delete
+  the secret and XML block) if removing the login service fails; and
+  `service_uninstall` verifies its own removal actually succeeded rather than
+  assuming it did, and now fails closed (instead of a silent no-op) when a
+  legacy-named service file's owner can't be verified. Service-migration
+  rollback now uses the same verified stop check everywhere, including when
+  recovering from a failed load — never restoring a previous definition
+  alongside a broken replacement that couldn't be confirmed inactive — and a
+  crashed prior install (`target.old` left on disk) is now detected even when
+  `target` itself is also missing, not just when both are present. A same-
+  profile legacy service left over from an interrupted earlier migration is
+  now reconciled (verified stop + verified removal) by the next successful
+  `service install`, regardless of which code path performed it, instead of
+  persisting unnoticed indefinitely.
+
 ### Added
 
 - **TOTP 2FA now supports SHA256/SHA512, a custom digit count, and a custom
