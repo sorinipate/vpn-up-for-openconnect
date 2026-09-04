@@ -6,6 +6,30 @@ The format is inspired by *Keep a Changelog* and this project adheres to **Seman
 ---
 
 ## [Unreleased]
+### Fixed
+
+- **Distinct profile names that collapse to the same filesystem slug (e.g.
+  `"Work VPN"` and `"Work/VPN"`, both slugging to `Work_VPN`) could share a
+  PID file, connection-state file, log file, and — for login services — the
+  same launchd `Label`/plist or systemd unit file, now that multiple
+  simultaneous VPN connections are supported.** Every per-profile path
+  (`profile_pid_file`/`profile_state_file`/`profile_log_file`, `logging.sh`;
+  `_service_path_for`/`_service_log_file`, `service.sh`) now includes a full
+  SHA-256 digest of the exact profile name alongside the (still lossy, now
+  merely cosmetic) slug, mirroring the scheme the TOTP rate-limiter's
+  `attempt_state_file` already used. A pre-fix (slug-only) pid/state pair left
+  on disk is still recognized — `resolve_profile_runtime_files` reads it,
+  verifies ownership via the state file's `profile=` line, and retires it once
+  confirmed dead — but is never renamed into the new scheme, since a live
+  pid file is written directly by `openconnect` itself and can't be safely
+  raced against. `stop <profile>`, `remove_profile`, and `ensure_profile_not_running`
+  now fail closed (refuse, rather than guess) when a legacy pid file's
+  ownership can't be positively established. Installing/uninstalling a login
+  service for a profile that collides with an existing legacy-named one now
+  verifies the on-disk definition's embedded profile name before touching it,
+  and activation is staged/validated/rolled-back rather than writing straight
+  over a possibly-live file.
+
 ### Added
 
 - **TOTP 2FA now supports SHA256/SHA512, a custom digit count, and a custom

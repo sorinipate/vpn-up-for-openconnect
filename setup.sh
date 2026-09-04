@@ -256,9 +256,11 @@ remove_profile() {
     return 1
   fi
 
-  local slug; slug="$(profile_slug "$name")"
-  local pidfile="${DATA_DIR}/pids/${PROGRAM_NAME}.${slug}.pid"
-  if [ -f "$pidfile" ] && is_openconnect_pid "$(cat "$pidfile")"; then
+  if ! resolve_profile_runtime_files "$name"; then
+    print_danger "Cannot determine whether '%s' is currently connected (unresolvable legacy connection state); resolve it manually before removing.\n" "$name"
+    return 1
+  fi
+  if [ -n "$RESOLVED_PID_FILE" ]; then
     print_danger "Profile '%s' is currently connected; stop it first: %s stop '%s'\n" "$name" "${DISPLAY_NAME}" "$name"
     return 1
   fi
@@ -267,10 +269,9 @@ remove_profile() {
   read -r -p "Remove profile '${name}', its stored secret, logs, and any login service? [y/N]: " _confirm
   case "$_confirm" in y|Y|yes|YES) : ;; *) print_warning "Aborted.\n"; return 1 ;; esac
 
-  # login service (also unloads it)
-  if [ -f "$(_service_path_for "$name")" ]; then
-    service_uninstall "$name"
-  fi
+  # login service -- service_uninstall already handles "nothing installed"
+  # (new or legacy naming) gracefully, so no existence pre-check is needed.
+  service_uninstall "$name"
 
   # stored secrets (password, TOTP seed, PKCS#11 PIN — all of them)
   secrets_delete_profile "$name"
@@ -287,11 +288,16 @@ remove_profile() {
     return 1
   fi
 
-  # per-profile state and logs
-  rm -f "$pidfile" \
-        "${DATA_DIR}/pids/${PROGRAM_NAME}.${slug}.state" \
-        "${DATA_DIR}/logs/${PROGRAM_NAME}.${slug}.log" \
-        "${DATA_DIR}/logs/service.${slug}.log"
+  # per-profile state and logs. $RESOLVED_PID_FILE/$RESOLVED_STATE_FILE are
+  # still whatever resolve_profile_runtime_files set earlier in this
+  # function (only ever "" here, since a non-empty RESOLVED_PID_FILE already
+  # returned above) -- kept anyway for symmetry/clarity. Logs are always in
+  # the new namespace; a legacy log, if any, is left as historical text, the
+  # same reasoning resolve_profile_runtime_files itself uses.
+  local logfile svclogfile
+  logfile="$(profile_log_file "$name")" || logfile=""
+  svclogfile="$(_service_log_file "$name")" || svclogfile=""
+  rm -f "$RESOLVED_PID_FILE" "$RESOLVED_STATE_FILE" "$logfile" "$svclogfile"
 
   print_success "Removed profile '%s' (XML, secret, state, logs, service).\n" "$name"
 }

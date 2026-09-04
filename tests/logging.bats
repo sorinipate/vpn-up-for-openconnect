@@ -9,17 +9,24 @@ setup() {
   source "$BATS_TEST_DIRNAME/../logging.sh"
 }
 
-@test "set_profile_paths points globals at slugged per-profile files" {
+@test "set_profile_paths points globals at collision-safe per-profile files" {
+  local key; key="$(profile_key "My Work VPN")"
   set_profile_paths "My Work VPN"
-  [ "$PID_FILE_PATH" = "$DATA_DIR/pids/${PROGRAM_NAME}.My_Work_VPN.pid" ]
-  [ "$STATE_FILE_PATH" = "$DATA_DIR/pids/${PROGRAM_NAME}.My_Work_VPN.state" ]
-  [ "$LOG_FILE_PATH" = "$DATA_DIR/logs/${PROGRAM_NAME}.My_Work_VPN.log" ]
+  [ "$PID_FILE_PATH" = "$DATA_DIR/pids/${PROGRAM_NAME}.${key}.pid" ]
+  [ "$STATE_FILE_PATH" = "$DATA_DIR/pids/${PROGRAM_NAME}.${key}.state" ]
+  [ "$LOG_FILE_PATH" = "$DATA_DIR/logs/${PROGRAM_NAME}.${key}.log" ]
 }
 
-@test "profile path helpers return slugged per-profile files" {
-  [ "$(profile_pid_file "My Work VPN")" = "$DATA_DIR/pids/${PROGRAM_NAME}.My_Work_VPN.pid" ]
-  [ "$(profile_state_file "My Work VPN")" = "$DATA_DIR/pids/${PROGRAM_NAME}.My_Work_VPN.state" ]
-  [ "$(profile_log_file "My Work VPN")" = "$DATA_DIR/logs/${PROGRAM_NAME}.My_Work_VPN.log" ]
+@test "profile path helpers return collision-safe per-profile files" {
+  local key; key="$(profile_key "My Work VPN")"
+  [ "$(profile_pid_file "My Work VPN")" = "$DATA_DIR/pids/${PROGRAM_NAME}.${key}.pid" ]
+  [ "$(profile_state_file "My Work VPN")" = "$DATA_DIR/pids/${PROGRAM_NAME}.${key}.state" ]
+  [ "$(profile_log_file "My Work VPN")" = "$DATA_DIR/logs/${PROGRAM_NAME}.${key}.log" ]
+}
+
+@test "profile_key produces distinct values for slug-colliding names" {
+  [ "$(profile_key "Work VPN")" != "$(profile_key "Work/VPN")" ]
+  [ "$(profile_pid_file "Work VPN")" != "$(profile_pid_file "Work/VPN")" ]
 }
 
 @test "is_openconnect_pid rejects empty, non-numeric, and non-openconnect pids" {
@@ -30,9 +37,10 @@ setup() {
   run is_openconnect_pid "$$";      [ "$status" -ne 0 ]
 }
 
-@test "profile_vpn_running targets one profile and prunes stale state" {
-  echo 111 > "$DATA_DIR/pids/${PROGRAM_NAME}.Work_VPN.pid"
-  touch "$DATA_DIR/pids/${PROGRAM_NAME}.Work_VPN.state"
+@test "profile_vpn_running targets one profile via the new namespace, without pruning it" {
+  local key; key="$(profile_key "Work VPN")"
+  echo 111 > "$DATA_DIR/pids/${PROGRAM_NAME}.${key}.pid"
+  touch "$DATA_DIR/pids/${PROGRAM_NAME}.${key}.state"
   is_openconnect_pid() { [ "$1" = "111" ]; }
   profile_vpn_running "Work VPN"
   run profile_vpn_running "Lab VPN"
@@ -41,8 +49,12 @@ setup() {
   is_openconnect_pid() { return 1; }
   run profile_vpn_running "Work VPN"
   [ "$status" -ne 0 ]
-  [ ! -e "$DATA_DIR/pids/${PROGRAM_NAME}.Work_VPN.pid" ]
-  [ ! -e "$DATA_DIR/pids/${PROGRAM_NAME}.Work_VPN.state" ]
+  # Unlike before this fix, a dead-looking NEW-namespace pid/state pair is
+  # never pruned by profile_vpn_running itself -- that would race a
+  # concurrent connect (see resolve_profile_runtime_files). Cleanup is
+  # status()'s job now.
+  [ -e "$DATA_DIR/pids/${PROGRAM_NAME}.${key}.pid" ]
+  [ -e "$DATA_DIR/pids/${PROGRAM_NAME}.${key}.state" ]
 }
 
 @test "file_mode and file_owner_uid report correct values" {
@@ -58,9 +70,12 @@ setup() {
 }
 
 @test "show_logs picks the named profile's log, or the most recent" {
-  echo "old log" > "$DATA_DIR/logs/${PROGRAM_NAME}.Old_VPN.log"
+  local old_key new_key
+  old_key="$(profile_key "Old VPN")"
+  new_key="$(profile_key "New VPN")"
+  echo "old log" > "$DATA_DIR/logs/${PROGRAM_NAME}.${old_key}.log"
   sleep 1
-  echo "new log" > "$DATA_DIR/logs/${PROGRAM_NAME}.New_VPN.log"
+  echo "new log" > "$DATA_DIR/logs/${PROGRAM_NAME}.${new_key}.log"
   run show_logs "Old VPN"
   [ "$output" = "old log" ]
   run show_logs

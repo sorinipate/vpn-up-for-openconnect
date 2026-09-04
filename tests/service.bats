@@ -41,10 +41,11 @@ setup() {
 }
 
 @test "write_launch_agent_plist produces valid plist with service env and profile" {
+  local key; key="$(profile_key "My Work & VPN")"
   run write_launch_agent_plist "My Work & VPN"
   [ "$status" -eq 0 ]
   [[ "$output" == *"<string>My Work &amp; VPN</string>"* ]]
-  [[ "$output" == *"com.sorinipate.vpn-up.My_Work___VPN"* ]]
+  [[ "$output" == *"com.sorinipate.vpn-up.${key}"* ]]
   [[ "$output" == *"<key>VPN_UP_SERVICE</key>"* ]]
   [[ "$output" == *"<key>KeepAlive</key>"* ]]
   # well-formed XML
@@ -72,11 +73,24 @@ setup() {
   [[ "$output" == *"StartLimitBurst=20"* ]]
 }
 
-@test "_service_path_for uses slugged per-profile filenames" {
+@test "_service_path_for uses collision-safe per-profile filenames" {
+  local key; key="$(profile_key "Work VPN")"
   if [ "$(uname)" = "Darwin" ]; then
-    [ "$(_service_path_for "Work VPN")" = "$VPN_UP_LAUNCH_AGENT_DIR/com.sorinipate.vpn-up.Work_VPN.plist" ]
+    [ "$(_service_path_for "Work VPN")" = "$VPN_UP_LAUNCH_AGENT_DIR/com.sorinipate.vpn-up.${key}.plist" ]
   else
-    [ "$(_service_path_for "Work VPN")" = "$VPN_UP_SYSTEMD_DIR/vpn-up-Work_VPN.service" ]
+    [ "$(_service_path_for "Work VPN")" = "$VPN_UP_SYSTEMD_DIR/vpn-up-${key}.service" ]
+  fi
+}
+
+@test "_service_path_for returns distinct paths for slug-colliding profile names" {
+  [ "$(_service_path_for "Work VPN")" != "$(_service_path_for "Work/VPN")" ]
+}
+
+@test "_service_legacy_path_for uses the old slug-only formula" {
+  if [ "$(uname)" = "Darwin" ]; then
+    [ "$(_service_legacy_path_for "Work VPN")" = "$VPN_UP_LAUNCH_AGENT_DIR/com.sorinipate.vpn-up.Work_VPN.plist" ]
+  else
+    [ "$(_service_legacy_path_for "Work VPN")" = "$VPN_UP_SYSTEMD_DIR/vpn-up-Work_VPN.service" ]
   fi
 }
 
@@ -92,8 +106,22 @@ XML
   source "$BATS_TEST_DIRNAME/../profiles.sh"
   sudo() { return 0; }                 # passwordless sudo "present"
   secrets_get() { echo "stored"; }     # password "stored"
-  launchctl() { echo "launchctl $*" >> "$BATS_TEST_TMPDIR/svc-calls"; return 0; }
-  systemctl() { echo "systemctl $*" >> "$BATS_TEST_TMPDIR/svc-calls"; return 0; }
+  # launchctl list / systemctl show --property=ActiveState must report a
+  # real "confirmed stopped" state on real stdout (not just a call log) --
+  # _service_stop_and_verify distinguishes confirmed-inactive from
+  # couldn't-query, so a bare `return 0` with no output is misread as a
+  # query failure, not as "nothing is loaded/active".
+  launchctl() {
+    echo "launchctl $*" >> "$BATS_TEST_TMPDIR/svc-calls"
+    return 0   # `list` prints nothing -- nothing loaded, by default
+  }
+  systemctl() {
+    echo "systemctl $*" >> "$BATS_TEST_TMPDIR/svc-calls"
+    case "$*" in
+      *"show --property=ActiveState"*) echo "inactive" ;;
+    esac
+    return 0
+  }
 }
 
 @test "service_install writes the service file and loads it" {
@@ -115,8 +143,9 @@ XML
 @test "service_uninstall unloads and removes; status lists installed services" {
   _setup_install_stubs
   service_install "Svc VPN"
+  local key; key="$(profile_key "Svc VPN")"
   run service_status
-  [[ "$output" == *"Svc_VPN"* ]]
+  [[ "$output" == *"${key}"* ]]
   service_uninstall "Svc VPN"
   [ ! -e "$(_service_path_for "Svc VPN")" ]
   run service_uninstall "Svc VPN"   # idempotent
